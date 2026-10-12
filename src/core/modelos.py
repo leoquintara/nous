@@ -32,17 +32,36 @@ class Evento:
 
 
 @dataclass(frozen=True, slots=True)
+class Contexto4D:
+    """Contexto temporal alrededor de un evento en la línea de universo.
+
+    Attributes:
+        previos: Eventos anteriores, del más cercano al más lejano.
+        siguientes: Eventos posteriores, del más cercano al más lejano.
+    """
+
+    previos: tuple[Evento, ...] = ()
+    siguientes: tuple[Evento, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ResultadoBusqueda:
-    """Resultado de búsqueda híbrida con scores parciales y score RRF.
+    """Resultado de búsqueda híbrida con scores parciales y contexto 4D.
 
     Attributes:
         evento_id: Identificador del evento encontrado.
-        score_bm25: Score de la búsqueda lexical (BM25).
-        score_vectorial: Score de la búsqueda semántica (embeddings).
+        score_bm25: Score de la búsqueda lexical (ts_rank).
+        score_vectorial: Similitud coseno de la búsqueda semántica.
         score_rrf: Score fusionado por Reciprocal Rank Fusion.
+        score_final: Score tras re-score coseno y boost por amplitud.
+        evento: Evento completo (poblado tras la fusión).
+        contexto: Vecindad temporal 4D (poblada en la contextualización).
     """
 
     evento_id: str
     score_bm25: float = 0.0
     score_vectorial: float = 0.0
     score_rrf: float = 0.0
+    score_final: float = 0.0
+    evento: Evento | None = None
+    contexto: Contexto4D | None = None

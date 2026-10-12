@@ -37,3 +37,26 @@ def test_fusion_rrf_con_lista_vacia_lanza_value_error() -> None:
     """Verifica que fusion_rrf rechaza listas vacías."""
     with pytest.raises(ValueError):
         fusion_rrf([], [ResultadoBusqueda(evento_id="1")])
+
+
+def test_fusion_rrf_ponderada_prioriza_lista_con_mayor_peso() -> None:
+    """Verifica que los pesos inclinan el ranking hacia la lista favorecida."""
+    lista_lexica = [
+        ResultadoBusqueda(evento_id="a"),
+        ResultadoBusqueda(evento_id="b"),
+    ]
+    lista_vectorial = [
+        ResultadoBusqueda(evento_id="b"),
+        ResultadoBusqueda(evento_id="c"),
+    ]
+
+    resultado = fusion_rrf(lista_lexica, lista_vectorial, pesos=[1.0, 3.0])
+
+    assert resultado[0].evento_id == "b"
+    assert resultado[1].evento_id == "c"
+
+
+def test_fusion_rrf_pesos_desalineados_lanza_value_error() -> None:
+    """Verifica que se rechaza un peso que no corresponde a una lista."""
+    with pytest.raises(ValueError):
+        fusion_rrf([ResultadoBusqueda(evento_id="1")], pesos=[1.0, 2.0])

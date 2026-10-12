@@ -73,7 +73,7 @@ class EventoRepository:
 
     async def buscar_por_texto(
         self, query: str, limite: int = 20
-    ) -> Sequence[EventoModel]:
+    ) -> Sequence[tuple[EventoModel, float]]:
         """Búsqueda full-text sobre contenido vía tsvector (español).
 
         Args:
@@ -81,21 +81,25 @@ class EventoRepository:
             limite: Máximo de resultados.
 
         Returns:
-            Eventos ordenados por ts_rank descendente.
+            Tuplas (evento, ts_rank) ordenadas por rank descendente.
         """
         tsquery = func.plainto_tsquery("spanish", query)
+        rank = func.ts_rank(EventoModel.contenido_tsv, tsquery).label("score")
         stmt = (
-            select(EventoModel)
+            select(EventoModel, rank)
             .where(EventoModel.contenido_tsv.op("@@")(tsquery))
-            .order_by(func.ts_rank(EventoModel.contenido_tsv, tsquery).desc())
+            .order_by(rank.desc())
             .limit(limite)
         )
         resultado = await self._session.execute(stmt)
-        return resultado.scalars().all()
+        return [
+            (fila["EventoModel"], float(fila["score"]))
+            for fila in resultado.mappings().all()
+        ]
 
     async def buscar_por_vector(
         self, vector: list[float], limite: int = 20
-    ) -> Sequence[EventoModel]:
+    ) -> Sequence[tuple[EventoModel, float]]:
         """Búsqueda por similitud coseno sobre el embedding.
 
         Args:
@@ -103,16 +107,23 @@ class EventoRepository:
             limite: Máximo de resultados.
 
         Returns:
-            Eventos ordenados por distancia coseno ascendente.
+            Tuplas (evento, similitud_coseno) ordenadas por similitud
+            descendente.
         """
+        distancia = EventoModel.embedding.cosine_distance(vector).label(
+            "distancia"
+        )
         stmt = (
-            select(EventoModel)
+            select(EventoModel, distancia)
             .where(EventoModel.embedding.is_not(None))
-            .order_by(EventoModel.embedding.cosine_distance(vector))
+            .order_by(distancia)
             .limit(limite)
         )
         resultado = await self._session.execute(stmt)
-        return resultado.scalars().all()
+        return [
+            (fila["EventoModel"], 1.0 - float(fila["distancia"]))
+            for fila in resultado.mappings().all()
+        ]
 
     async def adyacentes(
         self, timestamp_unix: int, cantidad: int = 3

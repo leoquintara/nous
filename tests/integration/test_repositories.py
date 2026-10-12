@@ -4,41 +4,12 @@ Requieren un PostgreSQL real accesible (NOUS_TEST_DATABASE_URL).
 Se saltan automáticamente si la DB no está disponible.
 """
 
-import os
-from collections.abc import AsyncIterator
-
-import pytest
-import pytest_asyncio
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.storage.models import EventoModel
 from src.storage.repositories import EventoRepository
 
-TEST_DB_URL = os.environ.get(
-    "NOUS_TEST_DATABASE_URL",
-    "postgresql+asyncpg://nous:nous@localhost:5433/nous",
-)
-
 EMBEDDING_DIM = 384
-
-
-@pytest_asyncio.fixture
-async def session() -> AsyncIterator[AsyncSession]:
-    """Sesión con rollback al final para no contaminar la DB de test."""
-    engine = create_async_engine(TEST_DB_URL)
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-    except OSError:
-        await engine.dispose()
-        pytest.skip("PostgreSQL de test no disponible")
-
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    async with factory() as session, session.begin():
-        yield session
-        await session.rollback()
-    await engine.dispose()
 
 
 def _evento(timestamp_unix: int, contenido: str, **kwargs: object) -> EventoModel:
@@ -75,7 +46,8 @@ async def test_buscar_por_texto_encuentra_evento(session: AsyncSession) -> None:
     resultados = await repo.buscar_por_texto("meditar")
 
     assert len(resultados) == 1
-    assert "medité" in resultados[0].contenido
+    assert "medité" in resultados[0][0].contenido
+    assert resultados[0][1] > 0.0
 
 
 async def test_buscar_por_vector_ordena_por_similitud(session: AsyncSession) -> None:
@@ -93,7 +65,8 @@ async def test_buscar_por_vector_ordena_por_similitud(session: AsyncSession) -> 
     resultados = await repo.buscar_por_vector(vector_cercano)
 
     assert len(resultados) == 2
-    assert resultados[0].contenido == "evento cercano"
+    assert resultados[0][0].contenido == "evento cercano"
+    assert resultados[0][1] > resultados[1][1]
 
 
 async def test_adyacentes_retorna_previos_y_siguientes(
