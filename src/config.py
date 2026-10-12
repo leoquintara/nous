@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://nous:nous@localhost:5432/nous"
     embedding_provider: Literal["local", "external"] = "local"
-    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_model: str = "sentence-transformers/all-MiniLM-L12-v2"
     mcp_transport: Literal["stdio", "http"] = "stdio"
     api_host: str = "127.0.0.1"
     api_port: int = 8720
