@@ -258,6 +258,12 @@ NUNCA commitear: .env, pycache, *.pyc, datos de usuario, embeddings generados.
 ⚡ Performance
 
 Búsqueda híbrida: objetivo < 200ms p95.
+Índices obligatorios: en timestamp_unix, dimension, fuente de la tabla eventos.
+Usar EXPLAIN ANALYZE antes de mergear cualquier query nueva.
+N+1 queries: prohibido. Usar joinedload o selectinload en SQLAlchemy.
+Connection pooling: usar asyncpg con pool de conexiones.
+Cache: considerar Redis para resultados de búsqueda frecuentes (opcional, feature premium).
+NUNCA modificar el esquema de PostgreSQL sin crear una migración Alembic.
 NUNCA agregar dependencias pesadas (> 50MB) sin justificar en el PR.
 NUNCA usar print() en código de producción. Usar logging con niveles.
 NUNCA dejar código comentado ("por si acaso"). Para eso existe Git.

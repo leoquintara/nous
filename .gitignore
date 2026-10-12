@@ -16,6 +16,7 @@ venv/
 !.env.example
 data/
 embeddings/
+context/
 
 # Herramientas
 .mypy_cache/
