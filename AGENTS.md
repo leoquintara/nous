@@ -257,7 +257,8 @@ NUNCA commitear: .env, pycache, *.pyc, datos de usuario, embeddings generados.
 
 ⚡ Performance
 
-Búsqueda híbrida: objetivo  50MB) sin justificar en el PR.
+Búsqueda híbrida: objetivo < 200ms p95.
+NUNCA agregar dependencias pesadas (> 50MB) sin justificar en el PR.
 NUNCA usar print() en código de producción. Usar logging con niveles.
 NUNCA dejar código comentado ("por si acaso"). Para eso existe Git.
 NUNCA ignorar errores con pass en un except.
@@ -303,7 +304,8 @@ poetry run mypy --strict src/
 
 📊 Métricas de Éxito del Proyecto
 
-Tiempo de respuesta de búsqueda híbrida:  85%
+Tiempo de respuesta de búsqueda híbrida: < 200ms p95
+Precisión de clasificación de dimensiones: > 85%
 Disponibilidad del servidor MCP: 99.9% en entorno local
 Cobertura de tests: > 80% en core
 Cero errores de mypy --strict en CI

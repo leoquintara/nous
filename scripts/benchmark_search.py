@@ -1,4 +1,4 @@
-"""Benchmark de la búsqueda híbrida (objetivo: < 300ms p95)."""
+"""Benchmark de la búsqueda híbrida (objetivo: < 200ms p95)."""
 
 import asyncio
 import logging
