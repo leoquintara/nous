@@ -1,0 +1,57 @@
+[tool.poetry]
+name = "nous"
+version = "0.1.0"
+description = "Memoria persistente 4D para agentes de IA — servidor MCP local-first"
+authors = ["Quintara AI <licensing@quintarai.com>"]
+license = "AGPL-3.0-only"
+readme = "README.md"
+packages = [{ include = "src" }]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.14"
+mcp = "^1.2.0"
+fastapi = "^0.115.0"
+uvicorn = { extras = ["standard"], version = "^0.30.0" }
+sqlalchemy = { extras = ["asyncio"], version = "^2.0.36" }
+asyncpg = "^0.30.0"
+pgvector = "^0.3.6"
+alembic = "^1.14.0"
+pydantic = "^2.9.0"
+pydantic-settings = "^2.6.0"
+sentence-transformers = "^3.3.0"
+jinja2 = "^3.1.4"
+httpx = "^0.28.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.0"
+pytest-asyncio = "^0.24.0"
+pytest-cov = "^6.0.0"
+ruff = "^0.8.0"
+mypy = "^1.13.0"
+pre-commit = "^4.0.0"
+testcontainers = { extras = ["postgres"], version = "^4.8.0" }
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "W"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--cov=src --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["src"]
