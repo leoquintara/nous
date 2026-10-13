@@ -67,7 +67,7 @@ def _posiciones_racha(total: int) -> dict[int, tuple[int, int]]:
     return posiciones
 
 
-async def _sembrar(total: int) -> int:
+async def sembrar(total: int) -> int:
     """Genera y persiste ``total`` eventos con embeddings reales."""
     ahora = int(time.time())
     inicio = ahora - DIAS_HISTORIAL * SEGUNDOS_POR_DIA
@@ -137,7 +137,7 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--eventos", type=int, default=EVENTOS_DEFAULT)
     args = parser.parse_args()
-    sembrados = await _sembrar(args.eventos)
+    sembrados = await sembrar(args.eventos)
     logger.info(
         "Eventos sembrados: %d (rachas detectables: %d)",
         sembrados,
