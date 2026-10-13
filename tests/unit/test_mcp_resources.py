@@ -120,6 +120,17 @@ class TestSerializadores:
 
 
 @pytest.mark.asyncio
+async def test_prompts_registrados_en_servidor() -> None:
+    """Verifica que los prompts guiados quedaron registrados."""
+    from src.mcp.server import mcp_server
+
+    prompts = {p.name for p in await mcp_server.list_prompts()}
+    assert {"reflexion_diaria", "analisis_semanal", "preparar_decision"} <= (
+        prompts
+    )
+
+
+@pytest.mark.asyncio
 async def test_resources_registrados_en_servidor() -> None:
     """Verifica que los resources quedaron registrados en FastMCP."""
     from src.mcp.server import mcp_server
