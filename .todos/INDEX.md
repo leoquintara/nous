@@ -11,6 +11,10 @@
 | 7 | Migrar DSH Memory (cerebro 3D) a TS + Iconoir | ✅ tipos/geometria/fisica/CerebroCanvas + iconoir |
 | 8 | Fix consultar_memoria colgada en stdio | ✅ commit 636a630 (HF offline + warm-up main thread) |
 | 9 | Signal por feature a 5615625539 | ⏳ al final |
+| 10 | CLI completa de Nous | ✅ commit 3f81b20 — serve/version/doctor/db/seed/stats/export/import/benchmark + entry `nous` (argparse, sin deps) |
+| 11 | Upgrade de versiones estilo gbrain | ✅ commit 3f81b20 — check-update/upgrade con detección fuente/paquete + alembic post-upgrade |
+| 12 | Tests CLI + upgrade (Python) | ✅ 37 tests nuevos (unit + integración vs nous_test) — 116 total |
+| 13 | Tests dashboard (vitest) | ✅ commit e62a891 — 28 tests adaptador API + cerebro (tipos/física/geometría) |
 
 ## Notas de entorno
 
