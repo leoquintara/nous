@@ -30,8 +30,8 @@ LOTE_EMBEDDING = 64
 _DIMENSIONES = frozenset({"cognitiva", "somatica", "conductual"})
 
 
-class FilaEvento(TypedDict):
-    """Evento serializado en el formato JSONL de transferencia."""
+class FilaEvento(TypedDict, total=False):
+    """Evento serializado en el formato de transferencia."""
 
     id: str
     timestamp_unix: int
@@ -40,6 +40,8 @@ class FilaEvento(TypedDict):
     contenido: str
     amplitud: float | None
     frecuencia: float | None
+    tags: list[str]
+    rama: str
 
 
 async def exportar(engine: AsyncEngine, archivo: Path) -> int:
@@ -67,34 +69,86 @@ async def exportar(engine: AsyncEngine, archivo: Path) -> int:
                 contenido=e.contenido,
                 amplitud=e.amplitud,
                 frecuencia=e.frecuencia,
+                tags=list(e.tags or []),
+                rama=e.rama,
             )
             salida.write(json.dumps(fila, ensure_ascii=False) + "\n")
     return len(eventos)
 
 
-async def importar(engine: AsyncEngine, archivo: Path) -> dict[str, int]:
-    """Importa eventos desde JSONL regenerando embeddings.
+async def importar(
+    engine: AsyncEngine,
+    ruta: Path,
+    formato: str = "auto",
+    fuente: str | None = None,
+    rama: str | None = None,
+) -> dict[str, int]:
+    """Importa eventos desde una fuente externa regenerando embeddings.
 
     Los eventos cuyo ``id`` ya existe se omiten (idempotente: reimportar
-    el mismo archivo no duplica). Las líneas inválidas se cuentan como
+    el mismo origen no duplica). Las filas inválidas se cuentan como
     errores y se descartan sin abortar el proceso.
 
     Args:
         engine: Motor async de SQLAlchemy.
-        archivo: Ruta del JSONL de origen.
+        ruta: Archivo (JSON/JSONL) o directorio (vault obsidian/gbrain).
+        formato: ``auto`` o uno de los formatos de ``importadores``.
+        fuente: Nombre de ``eventos.fuente`` para las filas (None = el
+            formato usado).
 
     Returns:
-        Contadores ``{"importados", "omitidos", "errores"}``.
+        Contadores ``{"importados", "omitidos", "errores", "vinculos"}``.
     """
-    filas, errores = _leer_jsonl(archivo)
+    from src.cli.importadores import leer_fuente
+
+    filas, vinculos_idx, errores = leer_fuente(ruta, formato, fuente)
+    if rama:
+        for f in filas:
+            f["rama"] = rama
     nuevos = await _filtrar_nuevos(engine, filas)
-    omitidos = len(filas) - len(nuevos)
+    # Los índices de vínculo se refieren a `filas`; tras filtrar hay que
+    # reetiquetarlos a los ids persistidos.
+    idx_a_id = {i: f["id"] for i, f in enumerate(filas)}
+    nuevos_ids = {f["id"] for f in nuevos}
     importados = await _persistir(engine, nuevos)
+    vinculos = await _persistir_vinculos(
+        engine,
+        [
+            (uuid.UUID(idx_a_id[a]), uuid.UUID(idx_a_id[b]))
+            for a, b in vinculos_idx
+            if idx_a_id.get(a) in nuevos_ids or idx_a_id.get(b) in nuevos_ids
+            if a in idx_a_id and b in idx_a_id
+        ],
+    )
     return {
         "importados": importados,
-        "omitidos": omitidos,
+        "omitidos": len(filas) - len(nuevos),
         "errores": errores,
+        "vinculos": vinculos,
     }
+
+
+async def _persistir_vinculos(
+    engine: AsyncEngine, pares: list[tuple[uuid.UUID, uuid.UUID]]
+) -> int:
+    """Crea relaciones explícitas entre eventos ya persistidos."""
+    if not pares:
+        return 0
+    from src.storage.repositories import EventoRepository, RelacionRepository
+
+    creados = 0
+    async with get_session(engine) as session:
+        repo = RelacionRepository(session)
+        eventos = EventoRepository(session)
+        for a, b in pares:
+            if a == b:
+                continue
+            if await eventos.obtener(a) is None or await eventos.obtener(b) is None:
+                continue
+            if await repo.vincular(a, b, "explicita"):
+                creados += 1
+        await session.commit()
+    return creados
 
 
 def _leer_jsonl(archivo: Path) -> tuple[list[FilaEvento], int]:
@@ -140,6 +194,12 @@ def _validar_fila(cruda: dict[str, Any]) -> FilaEvento:
     frecuencia = cruda.get("frecuencia")
     if frecuencia is not None and float(frecuencia) <= 0:
         raise ValueError("frecuencia debe ser positiva")
+    tags = cruda.get("tags")
+    if tags is not None and not isinstance(tags, list):
+        raise ValueError("tags debe ser una lista")
+    rama = str(cruda.get("rama") or "main")
+    if not rama or len(rama) > 64:
+        raise ValueError("rama vacía o excede 64 caracteres")
     return FilaEvento(
         id=str(uuid.UUID(str(cruda["id"]))),
         timestamp_unix=timestamp,
@@ -148,6 +208,8 @@ def _validar_fila(cruda: dict[str, Any]) -> FilaEvento:
         contenido=contenido,
         amplitud=amplitud,
         frecuencia=None if frecuencia is None else float(frecuencia),
+        tags=[str(t)[:64] for t in tags or []],
+        rama=rama,
     )
 
 
@@ -190,6 +252,8 @@ async def _persistir(engine: AsyncEngine, filas: list[FilaEvento]) -> int:
                             else 0.5
                         ),
                         frecuencia=fila["frecuencia"],
+                        tags=fila.get("tags") or [],
+                        rama=fila.get("rama") or "main",
                     )
                 )
             await session.commit()

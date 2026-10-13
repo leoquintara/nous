@@ -85,8 +85,54 @@ def _parser() -> argparse.ArgumentParser:
     ex = sub.add_parser("export", help="Exporta la memoria a JSONL.")
     ex.add_argument("archivo", type=Path, help="Ruta de destino (.jsonl).")
 
-    im = sub.add_parser("import", help="Importa eventos desde JSONL.")
-    im.add_argument("archivo", type=Path, help="Ruta de origen (.jsonl).")
+    im = sub.add_parser(
+        "import",
+        help="Importa memoria desde obsidian/gbrain/memlord/JSON/JSONL.",
+    )
+    im.add_argument(
+        "origen",
+        type=Path,
+        help="Archivo (.json/.jsonl) o directorio (vault .md).",
+    )
+    im.add_argument(
+        "--formato",
+        choices=["auto", "jsonl", "json", "obsidian", "gbrain", "memlord"],
+        default="auto",
+        help="Formato de origen (default: auto por extensión).",
+    )
+    im.add_argument(
+        "--fuente",
+        default=None,
+        help="Nombre de eventos.fuente para lo importado (default: formato).",
+    )
+    im.add_argument(
+        "--rama",
+        default=None,
+        help="Línea de universo donde registrar lo importado.",
+    )
+
+    sk = sub.add_parser(
+        "skills", help="Instala los skills/agentes de Nous en el proyecto."
+    )
+    sk.add_argument(
+        "accion",
+        choices=["install", "list"],
+        help="install copia los artefactos; list muestra lo disponible.",
+    )
+    sk.add_argument(
+        "--target",
+        default=".agents",
+        help=(
+            "Destino: .agents (default), .claude, .opencode, .cursor "
+            "o una ruta personalizada."
+        ),
+    )
+    sk.add_argument(
+        "--dir",
+        type=Path,
+        default=Path("."),
+        help="Raíz del proyecto donde instalar (default: cwd).",
+    )
 
     sub.add_parser(
         "benchmark", help="Ejecuta la suite de benchmarks."
@@ -297,24 +343,26 @@ async def _cmd_export(archivo: Path) -> int:
     return 0
 
 
-async def _cmd_import(archivo: Path) -> int:
-    """Implementa ``nous import``."""
+async def _cmd_import(
+    origen: Path, formato: str, fuente: str | None, rama: str | None
+) -> int:
+    """Implementa ``nous import`` para archivos y directorios."""
     from src.cli.transferencia import importar
     from src.storage.database import crear_engine
 
-    if not archivo.is_file():
-        sys.stderr.write(f"error: {archivo} no existe\n")
+    if not origen.exists():
+        sys.stderr.write(f"error: {origen} no existe\n")
         return 1
     engine = crear_engine()
     try:
-        resumen = await importar(engine, archivo)
+        resumen = await importar(engine, origen, formato, fuente, rama)
     finally:
         await engine.dispose()
     sys.stdout.write(
-        "Importados {importados}, omitidos {omitidos}, errores {errores}\n"
-        .format(**resumen)
+        "Importados {importados}, omitidos {omitidos}, errores {errores},"
+        " vínculos {vinculos}\n".format(**resumen)
     )
-    return 0
+    return 0 if resumen["errores"] == 0 or resumen["importados"] > 0 else 1
 
 
 async def _poda(
@@ -405,7 +453,13 @@ def _despachar(args: argparse.Namespace) -> int:
     if comando == "export":
         return asyncio.run(_cmd_export(args.archivo))
     if comando == "import":
-        return asyncio.run(_cmd_import(args.archivo))
+        return asyncio.run(
+            _cmd_import(args.origen, args.formato, args.fuente, args.rama)
+        )
+    if comando == "skills":
+        from src.cli.skills import cmd_skills
+
+        return cmd_skills(args.accion, args.target, args.dir)
     if comando == "benchmark":
         return _cmd_benchmark()
     if comando == "prune":
