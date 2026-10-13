@@ -2,7 +2,7 @@
 
 A diferencia del reranker de gbrain (API externa de Voyage), Nous
 reordena con un modelo que corre 100% en la máquina del usuario:
-``cross-encoder/ms-marco-MiniLM-L-6-v2`` (~90MB, CPU).
+``cross-encoder/ms-marco-MiniLM-L12-v2`` (~120MB, CPU).
 """
 
 from __future__ import annotations

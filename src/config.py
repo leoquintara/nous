@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     embedding_provider: Literal["local", "external"] = "local"
     embedding_model: str = "sentence-transformers/all-MiniLM-L12-v2"
     reranker_habilitado: bool = True
-    reranker_modelo: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    reranker_modelo: str = "cross-encoder/ms-marco-MiniLM-L12-v2"
     recencia_vida_media_dias: float = 30.0
     mcp_transport: Literal["stdio", "http"] = "stdio"
     api_host: str = "127.0.0.1"
