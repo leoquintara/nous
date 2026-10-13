@@ -25,4 +25,8 @@ async def test_recordar_evento_expone_enum_de_dimension() -> None:
     schema = tools["recordar_evento"].inputSchema
 
     dimension = schema["properties"]["dimension"]
-    assert set(dimension["enum"]) == {"cognitiva", "somatica", "conductual"}
+    variantes = dimension.get("anyOf", [dimension])
+    valores = {
+        v for variante in variantes for v in variante.get("enum", [])
+    }
+    assert valores == {"cognitiva", "somatica", "conductual"}

@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from src.config import get_settings
 from src.core.busqueda import BusquedaHibrida4D
+from src.core.clasificador import ClasificadorDimensiones
 from src.core.embeddings import GeneradorEmbeddings
 from src.core.modelos import Evento, ResultadoBusqueda
 from src.core.reranker import ReordenadorLocal
@@ -19,6 +20,7 @@ from src.storage.repositories import EventoRepository
 
 _embeddings: GeneradorEmbeddings | None = None
 _busqueda: BusquedaHibrida4D | None = None
+_clasificador: ClasificadorDimensiones | None = None
 
 
 def _obtener_embeddings() -> GeneradorEmbeddings:
@@ -27,6 +29,14 @@ def _obtener_embeddings() -> GeneradorEmbeddings:
     if _embeddings is None:
         _embeddings = GeneradorEmbeddings()
     return _embeddings
+
+
+def _obtener_clasificador() -> ClasificadorDimensiones:
+    """Retorna el clasificador de dimensiones compartido del proceso."""
+    global _clasificador
+    if _clasificador is None:
+        _clasificador = ClasificadorDimensiones(_obtener_embeddings())
+    return _clasificador
 
 
 def _obtener_busqueda() -> BusquedaHibrida4D:
@@ -89,7 +99,7 @@ def _resultado_a_dict(r: ResultadoBusqueda) -> dict[str, Any]:
 @mcp_server.tool()
 async def recordar_evento(
     contenido: str,
-    dimension: Literal["cognitiva", "somatica", "conductual"],
+    dimension: Literal["cognitiva", "somatica", "conductual"] | None = None,
     fuente: str = "agente",
     amplitud: float = 0.5,
     timestamp_unix: int | None = None,
@@ -102,22 +112,30 @@ async def recordar_evento(
     NO usar para listar un rango de fechas: obtener_linea_de_universo.
 
     El contenido se vectoriza localmente (nada sale de la máquina) y
-    queda indexado para búsqueda semántica y textual.
+    queda indexado para búsqueda semántica y textual. Si no indicas
+    dimension, se clasifica automáticamente por semejanza semántica.
 
     Args:
         contenido: Texto del evento (p. ej. "decidí usar PostgreSQL").
         dimension: "cognitiva" (ideas/decisiones/reflexiones),
             "somatica" (emociones/energía/cuerpo) o "conductual"
-            (acciones/hábitos/commits).
+            (acciones/hábitos/commits). Omitir para clasificación automática.
         fuente: Origen del evento (p. ej. "devin", "claude", "usuario").
         amplitud: Intensidad/importancia entre 0.0 y 1.0. Default 0.5.
         timestamp_unix: Unix epoch en SEGUNDOS. Default: ahora.
 
     Returns:
-        Dict con "id" y "timestamp_unix" del evento guardado.
+        Dict con "id", "timestamp_unix", "dimension" usada y
+        "confianza_clasificacion" si se clasificó automáticamente.
     """
     if not 0.0 <= amplitud <= 1.0:
         raise ValueError("amplitud debe estar entre 0.0 y 1.0")
+    respuesta: dict[str, Any] = {}
+    if dimension is None:
+        resultado = await _obtener_clasificador().clasificar(contenido)
+        dimension = resultado.dimension.value
+        respuesta["confianza_clasificacion"] = resultado.confianza
+        respuesta["dimension_dudosa"] = resultado.dudoso
     ts = timestamp_unix if timestamp_unix is not None else int(time.time())
     vector = await _obtener_embeddings().generar(contenido)
     evento = EventoModel(
@@ -131,7 +149,10 @@ async def recordar_evento(
     async with get_session(obtener_engine()) as session:
         await EventoRepository(session).crear(evento)
         await session.commit()
-    return {"id": str(evento.id), "timestamp_unix": ts, "dimension": dimension}
+    respuesta.update(
+        {"id": str(evento.id), "timestamp_unix": ts, "dimension": dimension}
+    )
+    return respuesta
 
 
 @mcp_server.tool()

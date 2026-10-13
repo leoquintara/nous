@@ -32,6 +32,23 @@ class Evento:
 
 
 @dataclass(frozen=True, slots=True)
+class ResultadoClasificacion:
+    """Resultado de clasificar un evento en una dimensión.
+
+    Attributes:
+        dimension: Dimensión ganadora por similitud con prototipos.
+        confianza: Margen entre la mejor y segunda similitud (0-1).
+        scores: Similitud coseno del contenido con cada dimensión.
+        dudoso: True si el margen quedó bajo el umbral de confianza.
+    """
+
+    dimension: Dimension
+    confianza: float
+    scores: dict[Dimension, float]
+    dudoso: bool
+
+
+@dataclass(frozen=True, slots=True)
 class Contexto4D:
     """Contexto temporal alrededor de un evento en la línea de universo.
 
