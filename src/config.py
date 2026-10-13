@@ -7,7 +7,10 @@ automáticamente desde ``.env`` si existe.
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+PREFIXO_TOKEN = "ns_"
 
 
 class Settings(BaseSettings):
@@ -31,6 +34,16 @@ class Settings(BaseSettings):
     api_host: str = "127.0.0.1"
     api_port: int = 8720
     log_level: str = "INFO"
+
+    @field_validator("api_token")
+    @classmethod
+    def _validar_prefijo_token(cls, valor: str | None) -> str | None:
+        """Exige el prefijo ``ns_`` en el token configurado."""
+        if valor is not None and not valor.startswith(PREFIXO_TOKEN):
+            raise ValueError(
+                f"NOUS_API_TOKEN debe iniciar con el prefijo '{PREFIXO_TOKEN}'"
+            )
+        return valor
 
 
 @lru_cache

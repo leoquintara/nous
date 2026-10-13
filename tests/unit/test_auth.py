@@ -138,3 +138,23 @@ class TestMiddlewareASGI:
     async def test_scope_no_http_deja_pasar(self) -> None:
         mensajes = await self._ejecutar({"type": "lifespan"}, TOKEN_PRUEBA)
         assert mensajes[0]["status"] == 200
+
+
+class TestPrefijoToken:
+    """Validación del prefijo ns_ en el token configurado."""
+
+    def test_token_sin_prefijo_rechazado(self) -> None:
+        from src.config import Settings
+
+        with pytest.raises(Exception, match="ns_"):
+            Settings(api_token="token-sin-prefijo")
+
+    def test_token_con_prefijo_aceptado(self) -> None:
+        from src.config import Settings
+
+        assert Settings(api_token="ns_abc123").api_token == "ns_abc123"
+
+    def test_token_vacio_aceptado(self) -> None:
+        from src.config import Settings
+
+        assert Settings(api_token=None).api_token is None
