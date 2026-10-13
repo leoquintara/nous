@@ -130,6 +130,14 @@ button:disabled,
   cursor: not-allowed;
 }
 
+/* Micro-interacción: presión física suave en botones. */
+button:not(:disabled) {
+  transition: transform 0.16s ease, filter 0.16s ease;
+}
+button:not(:disabled):active {
+  transform: scale(0.93);
+}
+
 /* Scroll funcional pero invisible — paneles glass sin barra. */
 .sin-scrollbar {
   scrollbar-width: none;

@@ -148,6 +148,8 @@ interface Props {
   alCerrar: () => void;
   /** Salta la selección al nodo vecino pulsado en el acordeón. */
   alSaltar: (idx: number) => void;
+  /** Corre el visor a la izquierda cuando el panel de ajustes está abierto. */
+  desplazado?: boolean;
 }
 
 /** Chip semántico con el color del modo que representa. */
@@ -171,11 +173,13 @@ function Badge({ texto, color }: { texto: string; color: string }) {
 }
 
 /** Tarjeta flotante con el detalle completo del evento seleccionado. */
-export function VisorNodo({ nodo, conectadas, alCerrar, alSaltar }: Props) {
+export function VisorNodo({ nodo, conectadas, alCerrar, alSaltar, desplazado }: Props) {
   const [abierto, setAbierto] = useState<number | null>(0);
   return (
     <aside
-      className="vidrio-fuerte pointer-events-auto absolute top-3 right-3 bottom-3 z-20 flex w-80 max-w-[85%] flex-col overflow-hidden"
+      className={`vidrio-fuerte pointer-events-auto absolute top-3 bottom-3 z-20 flex w-80 max-w-[85%] flex-col overflow-hidden transition-[right] duration-300 ${
+        desplazado ? "right-[19.5rem]" : "right-3"
+      }`}
       aria-label="Detalle del evento"
     >
       <header className="flex items-start justify-between gap-2 border-b p-4 pb-3" style={{ borderColor: "var(--linea-vidrio)" }}>

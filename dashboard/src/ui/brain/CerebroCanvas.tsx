@@ -247,7 +247,41 @@ export function CerebroCanvas({
       composer.addPass(new OutputPass());
 
       const geoNodo = new THREE.SphereGeometry(1, 14, 10);
-      const matNodo = new THREE.MeshBasicMaterial({ color: 0xffffff });
+      /**
+       * Nodo estilo "átomo": núcleo blanco que se degrada al color
+       * semántico hacia el borde (fresnel). El color de instancia
+       * lleva el boost de actividad; el núcleo siempre queda claro.
+       */
+      const matNodo = new THREE.ShaderMaterial({
+        vertexShader: `
+          varying vec3 vN; varying vec3 vV; varying vec3 vC;
+          void main() {
+            vec4 mp = vec4(position, 1.0);
+            vec3 mn = normal;
+            #ifdef USE_INSTANCING
+              mp = instanceMatrix * mp;
+              mn = mat3(instanceMatrix) * mn;
+            #endif
+            #ifdef USE_INSTANCING_COLOR
+              vC = instanceColor;
+            #else
+              vC = vec3(1.0);
+            #endif
+            vN = normalize(normalMatrix * mn);
+            vec4 mv = modelViewMatrix * mp;
+            vV = normalize(-mv.xyz);
+            gl_Position = projectionMatrix * mv;
+          }`,
+        fragmentShader: `
+          varying vec3 vN; varying vec3 vV; varying vec3 vC;
+          void main() {
+            float fres = 1.0 - abs(dot(normalize(vN), normalize(vV)));
+            float borde = pow(fres, 0.85);
+            // Centro blanco candente → rim del color del nodo.
+            vec3 col = mix(vec3(1.12), vC, borde);
+            gl_FragColor = vec4(col, 1.0);
+          }`,
+      });
       const malla = new THREE.InstancedMesh(geoNodo, matNodo, N);
       malla.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       malla.frustumCulled = false;
@@ -337,30 +371,56 @@ export function CerebroCanvas({
       hlLineas.frustumCulled = false;
       scene.add(hlLineas);
 
-      // Pulsos sinápticos viajando por las aristas.
+      // Pulsos sinápticos viajando por las aristas — puntos con escala
+      // por partícula: onda suave (0 en extremos, máx al centro de la arista).
       const NP = pulsos.length;
       const pGeo = new THREE.BufferGeometry();
       const pPos = new Float32Array(NP * 3);
       const pCol = new Float32Array(NP * 3);
+      const pTam = new Float32Array(NP);
       pGeo.setAttribute("position", new THREE.BufferAttribute(pPos, 3).setUsage(THREE.DynamicDrawUsage));
       pGeo.setAttribute("color", new THREE.BufferAttribute(pCol, 3).setUsage(THREE.DynamicDrawUsage));
-      const pPuntos = new THREE.Points(
-        pGeo,
-        new THREE.PointsMaterial({
-          size: 6,
+      pGeo.setAttribute("aSize", new THREE.BufferAttribute(pTam, 1).setUsage(THREE.DynamicDrawUsage));
+      /**
+       * Puntos redondos suaves con escala individual (uEscala = factor de
+       * proyección para atenuación de tamaño; aSize = diámetro en px).
+       */
+      const matPuntosSuaves = (): THREE.ShaderMaterial =>
+        new THREE.ShaderMaterial({
+          uniforms: { uEscala: { value: 540 } },
+          vertexShader: `
+            attribute float aSize;
+            varying vec3 vC;
+            uniform float uEscala;
+            void main() {
+              vC = color;
+              vec4 mv = modelViewMatrix * vec4(position, 1.0);
+              gl_PointSize = aSize * (uEscala / -mv.z);
+              gl_Position = projectionMatrix * mv;
+            }`,
+          fragmentShader: `
+            varying vec3 vC;
+            void main() {
+              float d = length(gl_PointCoord - 0.5);
+              float a = smoothstep(0.5, 0.06, d);
+              gl_FragColor = vec4(vC * a, a);
+            }`,
           vertexColors: true,
           transparent: true,
-          opacity: 0.9,
           blending: THREE.AdditiveBlending,
           depthWrite: false,
-          sizeAttenuation: true,
-        }),
-      );
+        });
+      const pPuntos = new THREE.Points(pGeo, matPuntosSuaves());
       pPuntos.frustumCulled = false;
       scene.add(pPuntos);
 
       // Membrana cerebral procedural + estructuras profundas.
-      const { grupo: memGrupo, tractos, materiales } = construirMembrana(mem);
+      const {
+        grupo: memGrupo,
+        tractos,
+        materiales,
+        material: memMat,
+      } = construirMembrana(mem);
       scene.add(memGrupo);
 
       // Chispas recorriendo los tractos profundos.
@@ -373,20 +433,11 @@ export function CerebroCanvas({
       const tpGeo = new THREE.BufferGeometry();
       const tpPos = new Float32Array(NT * 3);
       const tpCol = new Float32Array(NT * 3);
+      const tpTam = new Float32Array(NT);
       tpGeo.setAttribute("position", new THREE.BufferAttribute(tpPos, 3).setUsage(THREE.DynamicDrawUsage));
       tpGeo.setAttribute("color", new THREE.BufferAttribute(tpCol, 3).setUsage(THREE.DynamicDrawUsage));
-      const tpPuntos = new THREE.Points(
-        tpGeo,
-        new THREE.PointsMaterial({
-          size: 7,
-          vertexColors: true,
-          transparent: true,
-          opacity: 0.9,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-          sizeAttenuation: true,
-        }),
-      );
+      tpGeo.setAttribute("aSize", new THREE.BufferAttribute(tpTam, 1).setUsage(THREE.DynamicDrawUsage));
+      const tpPuntos = new THREE.Points(tpGeo, matPuntosSuaves());
       tpPuntos.frustumCulled = false;
       memGrupo.add(tpPuntos);
 
@@ -863,6 +914,12 @@ export function CerebroCanvas({
         camera.updateProjectionMatrix();
         renderer.setSize(w, h);
         composer.setSize(w, h);
+        // Factor de atenuación de gl_PointSize: h · projM11 · 0.5.
+        const factor = h * camera.projectionMatrix.elements[5] * 0.5;
+        const matPulso = pPuntos.material as THREE.ShaderMaterial;
+        matPulso.uniforms.uEscala.value = factor;
+        (tpPuntos.material as THREE.ShaderMaterial).uniforms.uEscala.value =
+          factor;
       });
       ro.observe(wrap);
 
@@ -1018,9 +1075,12 @@ export function CerebroCanvas({
             pCol[i * 3] = tmpC.r * brillo;
             pCol[i * 3 + 1] = tmpC.g * brillo;
             pCol[i * 3 + 2] = tmpC.b * brillo;
+            // Onda de escala: el pulso nace/muere pequeño y crece al centro.
+            pTam[i] = 10 * Math.sin(Math.PI * pl.t);
           }
           pGeo.attributes.position.needsUpdate = true;
           pGeo.attributes.color.needsUpdate = true;
+          pGeo.attributes.aSize.needsUpdate = true;
           pPuntos.visible = true;
         } else pPuntos.visible = false;
 
@@ -1096,13 +1156,16 @@ export function CerebroCanvas({
             tpCol[i * 3] = 0.94 * g;
             tpCol[i * 3 + 1] = 0.74 * g;
             tpCol[i * 3 + 2] = 0.45 * g;
+            tpTam[i] = 8 * Math.sin(Math.PI * tp.t);
           }
           tpGeo.attributes.position.needsUpdate = true;
           tpGeo.attributes.color.needsUpdate = true;
+          tpGeo.attributes.aSize.needsUpdate = true;
           tpPuntos.visible = true;
         } else tpPuntos.visible = false;
 
         for (const m of materiales) m.uniforms.uTime.value = tNow * 0.001;
+        memMat.uniforms.uStrength.value = 0.25 + P.memOpacity * 1.35;
         memGrupo.visible = P.membrane;
         // Motas de contaminación: destilan del foco a la membrana y
         // vuelven — hollín mnémico en bucle lento.

@@ -242,16 +242,13 @@ export default function PaginaCerebro() {
     }));
   }, [sel, datos]);
 
-  /** Un solo panel activo: abrir ajustes cierra el visor y viceversa. */
+  /** Ajustes y visor coexisten: el visor se corre a la izquierda. */
   const alternarPanel = () => {
-    const abrir = !panelAbierto;
-    setPanelAbierto(abrir);
-    if (abrir) setSel(null);
+    setPanelAbierto((p) => !p);
   };
-  /** Seleccionar un nodo abre su visor y cierra los ajustes. */
+  /** Seleccionar un nodo abre su visor sin cerrar los ajustes. */
   const seleccionar = useCallback((s: { index: number } | null) => {
     setSel(s);
-    if (s) setPanelAbierto(false);
   }, []);
 
   return (
@@ -305,9 +302,13 @@ export default function PaginaCerebro() {
               onClick={alternarPanel}
               aria-label="Ajustes del grafo"
               aria-expanded={panelAbierto}
-              className="texto-suave self-end rounded-lg p-2 hover:text-(--ink)"
+              className="texto-suave self-end rounded-lg p-2 transition-transform duration-200 hover:scale-110 active:scale-90 hover:text-(--ink)"
             >
-              <Settings width={18} height={18} />
+              <Settings
+                width={18}
+                height={18}
+                className={`transition-transform duration-300 ease-out ${panelAbierto ? "rotate-180" : ""}`}
+              />
             </button>
             {panelAbierto && (
               <PanelControl
@@ -333,18 +334,20 @@ export default function PaginaCerebro() {
           </div>
         </div>
 
-        <div className="pointer-events-none absolute right-3 bottom-3 z-10">
-          <div className="vidrio-fuerte pointer-events-auto">
-            <TarjetaVidrio
-              datos={datos}
-              modoColor={prefs.modoColor}
-              alCambiarModo={(m) => setPref("modoColor", m)}
-              alRefrescar={recargar}
-              cargando={cargando}
-              reglas={prefs.rules ?? REGLAS_DEFAULT}
-            />
+        {!panelAbierto && (
+          <div className="pointer-events-none absolute right-3 bottom-3 z-10">
+            <div className="vidrio-fuerte pointer-events-auto">
+              <TarjetaVidrio
+                datos={datos}
+                modoColor={prefs.modoColor}
+                alCambiarModo={(m) => setPref("modoColor", m)}
+                alRefrescar={recargar}
+                cargando={cargando}
+                reglas={prefs.rules ?? REGLAS_DEFAULT}
+              />
+            </div>
           </div>
-        </div>
+        )}
 
         {nodoSel && (
           <VisorNodo
@@ -352,6 +355,7 @@ export default function PaginaCerebro() {
             conectadas={conectadas}
             alCerrar={() => setSel(null)}
             alSaltar={(idx) => setSel({ index: idx })}
+            desplazado={panelAbierto}
           />
         )}
       </section>

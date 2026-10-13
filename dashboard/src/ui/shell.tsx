@@ -7,6 +7,7 @@
 
 import {
   Brain,
+  Database,
   HalfMoon,
   LogOut,
   Refresh,
@@ -23,6 +24,7 @@ import { usarApp } from "@/ui/proveedor-app";
 const ENLACES = [
   { href: "/", etiqueta: "Cerebro", Icono: Brain },
   { href: "/memoria", etiqueta: "Memoria", Icono: Search },
+  { href: "/fuentes", etiqueta: "Fuentes", Icono: Database },
   { href: "/proyeccion", etiqueta: "Proyección", Icono: Timer },
   { href: "/benchmarks", etiqueta: "Benchmarks", Icono: Refresh },
 ] as const;
