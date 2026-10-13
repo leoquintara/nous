@@ -124,6 +124,40 @@ class ProyeccionModel(Base):
     )
 
 
+class BenchmarkRunModel(Base):
+    """Ejecución de un benchmark, persistida para el dashboard.
+
+    Cada corrida guarda qué se midió (``nombre``/``escenario``), con
+    qué parámetros, las métricas resultantes y el commit de git, para
+    comparar el rendimiento del sistema a lo largo del tiempo.
+    """
+
+    __tablename__ = "benchmarks"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    nombre: Mapped[str] = mapped_column(String(50), nullable=False)
+    escenario: Mapped[str | None] = mapped_column(String(200))
+    parametros: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb")
+    )
+    metricas: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb")
+    )
+    git_commit: Mapped[str | None] = mapped_column(String(40))
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_benchmarks_nombre", "nombre"),
+        Index("ix_benchmarks_creado_en", "creado_en"),
+    )
+
+
 class ConfiguracionModel(Base):
     """Configuración persistente del usuario (clave-valor)."""
 

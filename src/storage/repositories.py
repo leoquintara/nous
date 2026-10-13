@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.storage.models import EventoModel
+from src.storage.models import BenchmarkRunModel, EventoModel
 
 
 class EventoRepository:
@@ -153,3 +153,51 @@ class EventoRepository:
         previos = (await self._session.execute(stmt_previos)).scalars().all()
         siguientes = (await self._session.execute(stmt_siguientes)).scalars().all()
         return previos, siguientes
+
+
+class BenchmarkRepository:
+    """Acceso a datos de las corridas de benchmark persistidas."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Inicializa el repositorio con una sesión async.
+
+        Args:
+            session: Sesión async de SQLAlchemy.
+        """
+        self._session = session
+
+    async def registrar(self, corrida: BenchmarkRunModel) -> BenchmarkRunModel:
+        """Persiste una corrida de benchmark.
+
+        Args:
+            corrida: Instancia de BenchmarkRunModel a persistir.
+
+        Returns:
+            La corrida persistida con id y timestamp poblados.
+        """
+        self._session.add(corrida)
+        await self._session.flush()
+        await self._session.refresh(corrida)
+        return corrida
+
+    async def listar(
+        self, nombre: str | None = None, limite: int = 50
+    ) -> Sequence[BenchmarkRunModel]:
+        """Lista corridas de benchmark, más recientes primero.
+
+        Args:
+            nombre: Filtra por nombre de benchmark (None = todas).
+            limite: Máximo de corridas a retornar.
+
+        Returns:
+            Corridas ordenadas por fecha de creación descendente.
+        """
+        stmt = (
+            select(BenchmarkRunModel)
+            .order_by(BenchmarkRunModel.creado_en.desc())
+            .limit(limite)
+        )
+        if nombre is not None:
+            stmt = stmt.where(BenchmarkRunModel.nombre == nombre)
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()

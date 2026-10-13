@@ -6,8 +6,8 @@ Se saltan automáticamente si la DB no está disponible.
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.storage.models import EventoModel
-from src.storage.repositories import EventoRepository
+from src.storage.models import BenchmarkRunModel, EventoModel
+from src.storage.repositories import BenchmarkRepository, EventoRepository
 
 EMBEDDING_DIM = 384
 
@@ -82,3 +82,23 @@ async def test_adyacentes_retorna_previos_y_siguientes(
 
     assert [e.contenido for e in previos] == ["pasado cercano", "pasado lejano"]
     assert [e.contenido for e in siguientes] == ["futuro cercano"]
+
+
+async def test_registrar_y_listar_benchmark(session: AsyncSession) -> None:
+    """Verifica el roundtrip de una corrida de benchmark persistida."""
+    repo = BenchmarkRepository(session)
+    corrida = await repo.registrar(
+        BenchmarkRunModel(
+            nombre="busqueda_hibrida",
+            escenario="test",
+            parametros={"consultas": 30},
+            metricas={"latencia_ms_p95": 42.0},
+            git_commit="abc1234",
+        )
+    )
+
+    corridas = await repo.listar(nombre="busqueda_hibrida")
+
+    assert len(corridas) == 1
+    assert corridas[0].id == corrida.id
+    assert corridas[0].metricas["latencia_ms_p95"] == 42.0

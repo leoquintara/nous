@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 TEST_DB_URL = os.environ.get(
     "NOUS_TEST_DATABASE_URL",
-    "postgresql+asyncpg://nous:nous@localhost:5433/nous",
+    "postgresql+asyncpg://nous:nous@localhost:5433/nous_test",
 )
 
 

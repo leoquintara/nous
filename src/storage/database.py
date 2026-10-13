@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import (
 
 from src.config import get_settings
 
+_engine: AsyncEngine | None = None
+
 
 def crear_engine() -> AsyncEngine:
     """Crea el engine async a partir de la configuración.
@@ -20,6 +22,18 @@ def crear_engine() -> AsyncEngine:
         Engine async de SQLAlchemy con pool_pre_ping habilitado.
     """
     return create_async_engine(get_settings().database_url, pool_pre_ping=True)
+
+
+def obtener_engine() -> AsyncEngine:
+    """Retorna el engine compartido del proceso, creándolo si no existe.
+
+    Returns:
+        Engine async singleton con pool compartido.
+    """
+    global _engine
+    if _engine is None:
+        _engine = crear_engine()
+    return _engine
 
 
 @asynccontextmanager
