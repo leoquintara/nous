@@ -1,7 +1,8 @@
 """Endpoints REST de Nous."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from src.api.auth import verificar_token
 from src.api.schemas import BenchmarkResponse, HealthResponse
 from src.storage.database import get_session, obtener_engine
 from src.storage.repositories import BenchmarkRepository
@@ -19,7 +20,7 @@ async def health() -> HealthResponse:
     return HealthResponse(status="ok")
 
 
-@router.get("/api/benchmarks")
+@router.get("/api/benchmarks", dependencies=[Depends(verificar_token)])
 async def listar_benchmarks(
     nombre: str | None = None, limite: int = 50
 ) -> list[BenchmarkResponse]:

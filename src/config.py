@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     reranker_modelo: str = "cross-encoder/ms-marco-MiniLM-L12-v2"
     recencia_vida_media_dias: float = 30.0
     mcp_transport: Literal["stdio", "http"] = "stdio"
+    api_token: str | None = None
     api_host: str = "127.0.0.1"
     api_port: int = 8720
     log_level: str = "INFO"
