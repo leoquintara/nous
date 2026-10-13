@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Sequence
 from typing import cast
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -149,6 +149,49 @@ class EventoRepository:
             update(EventoModel)
             .where(EventoModel.id.in_(eventos_ids))
             .values(refuerzos=EventoModel.refuerzos + 1)
+        )
+        resultado = cast(
+            CursorResult[EventoModel], await self._session.execute(stmt)
+        )
+        return resultado.rowcount
+
+    async def contar_podables(
+        self, antes_de: int, amplitud_max: float, refuerzos_max: int
+    ) -> int:
+        """Cuenta los eventos candidatos a poda sin eliminarlos.
+
+        Args:
+            antes_de: Timestamp Unix; solo eventos anteriores.
+            amplitud_max: Poda solo huellas con amplitud <= este valor.
+            refuerzos_max: Poda solo huellas con refuerzos <= este valor.
+
+        Returns:
+            Número de eventos que ``podar`` eliminaría.
+        """
+        stmt = select(func.count(EventoModel.id)).where(
+            EventoModel.timestamp_unix < antes_de,
+            EventoModel.amplitud <= amplitud_max,
+            EventoModel.refuerzos <= refuerzos_max,
+        )
+        return int((await self._session.execute(stmt)).scalar_one())
+
+    async def podar(
+        self, antes_de: int, amplitud_max: float, refuerzos_max: int
+    ) -> int:
+        """Elimina las huellas débiles y olvidadas (poda sináptica).
+
+        Args:
+            antes_de: Timestamp Unix; solo eventos anteriores.
+            amplitud_max: Elimina solo eventos con amplitud <= este valor.
+            refuerzos_max: Elimina solo eventos con refuerzos <= este valor.
+
+        Returns:
+            Número de filas eliminadas.
+        """
+        stmt = delete(EventoModel).where(
+            EventoModel.timestamp_unix < antes_de,
+            EventoModel.amplitud <= amplitud_max,
+            EventoModel.refuerzos <= refuerzos_max,
         )
         resultado = cast(
             CursorResult[EventoModel], await self._session.execute(stmt)

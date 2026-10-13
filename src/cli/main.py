@@ -91,6 +91,23 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser(
         "benchmark", help="Ejecuta la suite de benchmarks."
     )
+
+    prune = sub.add_parser(
+        "prune", help="Poda sináptica: elimina huellas débiles y viejas."
+    )
+    prune.add_argument(
+        "--dias", type=int, default=90,
+        help="Solo eventos más antiguos que N días (default 90).",
+    )
+    prune.add_argument(
+        "--amplitud", type=float, default=0.3,
+        help="Poda solo huellas con amplitud <= este valor (default 0.3).",
+    )
+    prune.add_argument(
+        "--aplicar", action="store_true",
+        help="Elimina de verdad; sin él solo muestra el conteo (dry-run).",
+    )
+    prune.add_argument("--json", action="store_true", help="Salida JSON.")
     return p
 
 
@@ -300,6 +317,30 @@ async def _cmd_import(archivo: Path) -> int:
     return 0
 
 
+async def _poda(
+    dias: int, amplitud: float, aplicar: bool
+) -> dict[str, object]:
+    """Cuenta o elimina los eventos débiles anteriores a N días."""
+    import time as _time
+
+    from src.storage.database import crear_engine, get_session
+    from src.storage.repositories import EventoRepository
+
+    antes_de = int(_time.time()) - dias * 86_400
+    engine = crear_engine()
+    try:
+        async with get_session(engine) as session:
+            repo = EventoRepository(session)
+            if aplicar:
+                eliminados = await repo.podar(antes_de, amplitud, 0)
+                await session.commit()
+                return {"eliminados": eliminados, "aplicado": 1}
+            return {"candidatos": await repo.contar_podables(antes_de, amplitud, 0),
+                    "aplicado": 0}
+    finally:
+        await engine.dispose()
+
+
 def _cmd_benchmark() -> int:
     """Ejecuta la suite de benchmarks como subproceso."""
     import subprocess
@@ -367,6 +408,18 @@ def _despachar(args: argparse.Namespace) -> int:
         return asyncio.run(_cmd_import(args.archivo))
     if comando == "benchmark":
         return _cmd_benchmark()
+    if comando == "prune":
+        datos = asyncio.run(_poda(args.dias, args.amplitud, args.aplicar))
+        if args.json:
+            _json(datos)
+        elif datos["aplicado"]:
+            sys.stdout.write(f"Podados {datos['eliminados']} eventos.\n")
+        else:
+            sys.stdout.write(
+                f"{datos['candidatos']} eventos podables "
+                "(usa --aplicar para eliminarlos).\n"
+            )
+        return 0
     return 2
 
 

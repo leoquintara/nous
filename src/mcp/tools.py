@@ -11,6 +11,7 @@ from src.config import get_settings
 from src.core.busqueda import BusquedaHibrida4D
 from src.core.clasificador import ClasificadorDimensiones
 from src.core.embeddings import GeneradorEmbeddings
+from src.core.episodios import GAP_MAX_DEFECTO_SEGUNDOS, segmentar
 from src.core.exceptions import ErrorValidacion
 from src.core.modelos import Evento, ResultadoBusqueda, Trayectoria
 from src.core.reranker import ReordenadorLocal
@@ -335,6 +336,62 @@ async def obtener_linea_de_universo(
         "amplitud","frecuencia"} ordenados cronológicamente.
     """
     return await _linea(desde_unix, hasta_unix, limite)
+
+
+async def _episodios(
+    desde_unix: int, hasta_unix: int, gap_max_segundos: int
+) -> list[dict[str, Any]]:
+    """Agrupa los eventos del rango en episodios por huecos temporales."""
+    if desde_unix > hasta_unix:
+        raise ErrorValidacion("desde_unix debe ser <= hasta_unix")
+    gap = min(max(gap_max_segundos, 60), 86_400)
+    async with get_session(obtener_engine()) as session:
+        modelos = await EventoRepository(session).listar_por_rango(
+            desde_unix, hasta_unix, 500
+        )
+    episodios = segmentar(
+        [Evento.desde_modelo(m) for m in modelos], gap_max_segundos=gap
+    )
+    return [
+        {
+            "inicio": e.inicio,
+            "fin": e.fin,
+            "eventos": len(e.eventos),
+            "dimension_dominante": e.dimension_dominante.value,
+            "amplitud_media": round(e.amplitud_media, 3),
+        }
+        for e in episodios
+    ]
+
+
+@mcp_server.tool()
+async def obtener_episodios(
+    desde_unix: int,
+    hasta_unix: int,
+    gap_max_segundos: int = GAP_MAX_DEFECTO_SEGUNDOS,
+) -> list[dict[str, Any]]:
+    """Agrupa la línea temporal en episodios por huecos de inactividad.
+
+    USAR CUANDO: haya que entender la jornada del usuario en bloques
+    ("¿cómo fue mi día?", "¿en qué sesiones trabajé esta semana?").
+    Cada episodio resume inicio, fin, número de eventos y dimensión
+    dominante — la estructura narrativa de la línea, no los eventos
+    sueltos.
+
+    NO usar para buscar por tema: consultar_memoria.
+    NO usar para el detalle evento a evento: obtener_linea_de_universo.
+
+    Args:
+        desde_unix: Inicio del rango, Unix epoch en segundos.
+        hasta_unix: Fin del rango, Unix epoch en segundos.
+        gap_max_segundos: Hueco que separa dos episodios (60-86400).
+            Default 14400 (4 horas).
+
+    Returns:
+        Episodios cronológicos con "inicio", "fin", "eventos",
+        "dimension_dominante" y "amplitud_media".
+    """
+    return await _episodios(desde_unix, hasta_unix, gap_max_segundos)
 
 
 def _trayectoria_a_dict(t: Trayectoria) -> dict[str, Any]:
