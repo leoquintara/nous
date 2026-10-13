@@ -65,6 +65,7 @@ def _modelo_a_dict(modelo: EventoModel) -> dict[str, Any]:
         "fuente": modelo.fuente,
         "contenido": modelo.contenido,
         "amplitud": modelo.amplitud,
+        "frecuencia": modelo.frecuencia,
     }
 
 
@@ -103,6 +104,7 @@ async def recordar_evento(
     dimension: Literal["cognitiva", "somatica", "conductual"] | None = None,
     fuente: str = "agente",
     amplitud: float = 0.5,
+    frecuencia: float | None = None,
     timestamp_unix: int | None = None,
 ) -> dict[str, Any]:
     """Guarda un evento nuevo en la memoria persistente 4D del usuario.
@@ -123,6 +125,10 @@ async def recordar_evento(
             (acciones/hábitos/commits). Omitir para clasificación automática.
         fuente: Origen del evento (p. ej. "devin", "claude", "usuario").
         amplitud: Intensidad/importancia entre 0.0 y 1.0. Default 0.5.
+        frecuencia: Frecuencia cerebral estimada en Hz si proviene de
+            un wearable/EEG (Delta <4, Theta 4-8, Alfa 8-13, Beta 13-30,
+            Gamma >30). Omitir si no hay dato biométrico; Nous no la
+            estima por sí solo.
         timestamp_unix: Unix epoch en SEGUNDOS. Default: ahora.
 
     Returns:
@@ -131,6 +137,8 @@ async def recordar_evento(
     """
     if not 0.0 <= amplitud <= 1.0:
         raise ValueError("amplitud debe estar entre 0.0 y 1.0")
+    if frecuencia is not None and frecuencia <= 0.0:
+        raise ValueError("frecuencia debe ser positiva (Hz)")
     respuesta: dict[str, Any] = {}
     if dimension is None:
         resultado = await _obtener_clasificador().clasificar(contenido)
@@ -146,6 +154,7 @@ async def recordar_evento(
         contenido=contenido,
         embedding=vector,
         amplitud=amplitud,
+        frecuencia=frecuencia,
     )
     async with get_session(obtener_engine()) as session:
         await EventoRepository(session).crear(evento)
@@ -209,7 +218,7 @@ async def obtener_linea_de_universo(
 
     Returns:
         Eventos {"id","timestamp_unix","dimension","fuente","contenido",
-        "amplitud"} ordenados cronológicamente.
+        "amplitud","frecuencia"} ordenados cronológicamente.
     """
     if desde_unix > hasta_unix:
         raise ValueError("desde_unix debe ser <= hasta_unix")
