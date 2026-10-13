@@ -95,14 +95,19 @@ LEXICON: dict[Dimension, tuple[str, ...]] = {
 class ClasificadorDimensiones:
     """Clasifica texto de eventos en la dimensión más probable."""
 
-    def __init__(self, embeddings: GeneradorEmbeddings) -> None:
+    def __init__(
+        self, embeddings: GeneradorEmbeddings, usar_lexico: bool = True
+    ) -> None:
         """Inicializa el clasificador con el generador de embeddings.
 
         Args:
             embeddings: Generador compartido; los prototipos se embeben
                 perezosamente en la primera clasificación.
+            usar_lexico: False desactiva la señal léxica (semántico
+                puro); útil para benchmarks A/B.
         """
         self._embeddings = embeddings
+        self._usar_lexico = usar_lexico
         self._prototipos: dict[Dimension, list[float]] | None = None
 
     async def clasificar(self, contenido: str) -> ResultadoClasificacion:
@@ -126,7 +131,11 @@ class ClasificadorDimensiones:
         scores = {
             dimension: _fusionar(
                 _coseno(vector, prototipos[dimension]),
-                _puntaje_lexico(contenido_lower, LEXICON[dimension]),
+                (
+                    _puntaje_lexico(contenido_lower, LEXICON[dimension])
+                    if self._usar_lexico
+                    else 0.0
+                ),
             )
             for dimension in prototipos
         }

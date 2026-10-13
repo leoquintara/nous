@@ -57,6 +57,8 @@ def proyectar(
     horizonte_dias: int = 7,
     ahora: int | None = None,
     vida_media_dias: float = VIDA_MEDIA_DIAS,
+    *,
+    boost_racha: float = BOOST_RACHA_ACTIVA,
 ) -> Proyeccion:
     """Proyecta la dimensión dominante probable en el horizonte dado.
 
@@ -68,6 +70,8 @@ def proyectar(
         horizonte_dias: Días hacia adelante de la proyección.
         ahora: Timestamp Unix actual (inyectable para tests).
         vida_media_dias: Vida media del decaimiento por recencia.
+        boost_racha: Factor multiplicador de la dimensión con racha
+            activa (1.0 desactiva el boost; útil para benchmarks A/B).
 
     Returns:
         Proyeccion con la distribución por dimensión y la probabilidad
@@ -91,7 +95,7 @@ def proyectar(
     for trayectoria in detectar_trayectorias(eventos):
         if trayectoria.activa:
             dimension_activa = Dimension(trayectoria.tipo.split("_", 1)[1])
-            pesos[dimension_activa] *= BOOST_RACHA_ACTIVA
+            pesos[dimension_activa] *= boost_racha
 
     total = sum(pesos.values())
     distribucion = {
