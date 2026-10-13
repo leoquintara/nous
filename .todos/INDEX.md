@@ -30,3 +30,4 @@
   `NOUS_DATABASE_URL` usa la IP WSL `172.20.236.171` (localhost forwarding es inestable).
 - `chrome.exe` del sistema no arranca (error SxS) → usar `channel: 'msedge'` o
   el Chromium bundled de Playwright.
+| 21 | Cerebro 3D adaptado a Nous + membrana viva | ✅ 3e7a883 — refuerzos→consolidated, shader respira, onda cortical, marcapaso talámico |
