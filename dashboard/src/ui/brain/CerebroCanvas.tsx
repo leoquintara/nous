@@ -152,8 +152,33 @@ export function CerebroCanvas({
     mem.z = Math.max(200, pct95(pts.map((p) => Math.abs(p.z))) * 1.18 + 30);
 
     let limpiar = () => {};
+    /**
+     * Despachador estable: mientras la escena async se reconstruye,
+     * los pensamientos se encolan en vez de perderse; cuando la
+     * escena está viva, `despacharPensar` apunta a la implementación
+     * real que resuelve ids contra `datos.idToIdx`.
+     */
+    let despacharPensar: ((ev: EventoPensamiento) => void) | null = null;
+    if (onPensarRef) {
+      onPensarRef.current = {
+        pensar: (ev: EventoPensamiento) => {
+          if (despacharPensar) {
+            despacharPensar(ev);
+          } else {
+            pendientesRef.current.push({
+              ev,
+              hasta: performance.now() + 8000,
+            });
+          }
+        },
+      };
+    }
     (async () => {
       const scene = new THREE.Scene();
+      // La bóveda craneal siempre es oscura: todos los efectos
+      // (traza sináptica, halos, bloom) suman luz con
+      // AdditiveBlending — sobre fondo claro serían invisibles.
+      scene.background = new THREE.Color(0x0b0b1e);
       const camera = new THREE.PerspectiveCamera(
         55,
         wrap.clientWidth / Math.max(1, wrap.clientHeight),
@@ -424,10 +449,10 @@ export function CerebroCanvas({
       const motas = new THREE.Points(
         mGeo,
         new THREE.PointsMaterial({
-          color: 0x3d2b38,
+          color: 0x8e3b52,
           size: 3.4,
           transparent: true,
-          opacity: 0.55,
+          opacity: 0.6,
           depthWrite: false,
           sizeAttenuation: true,
         }),
@@ -711,12 +736,13 @@ export function CerebroCanvas({
         if (falta.length) {
           pendientesRef.current.push({
             ev: { ...ev, ids: falta },
-            hasta: performance.now() + 2600,
+            hasta: performance.now() + 8000,
           });
         }
       };
       drenarPendientes();
-      if (onPensarRef) onPensarRef.current = { pensar };
+      if (cancelado) return;
+      despacharPensar = pensar;
 
       // Picking, arrastre y fijado de nodos.
       const ray = new THREE.Raycaster();
@@ -1228,6 +1254,7 @@ export function CerebroCanvas({
       raf = requestAnimationFrame(frame);
 
       limpiar = () => {
+        despacharPensar = null;
         cancelAnimationFrame(raf);
         ro.disconnect();
         window.removeEventListener("pointermove", onMove);

@@ -162,12 +162,20 @@ export default function PaginaCerebro() {
     const procesar = (eventos: EventoActividad[]) => {
       const nuevos = eventos.filter((ev) => {
         const k = `${ev.ts}:${ev.kind}:${ev.q}`;
-        if (ev.ts <= ultimoTs || vistos.has(k)) return false;
+        // ts tiene resolución de segundos: dos eventos distintos en el
+        // mismo segundo solo se distinguen por la clave compuesta.
+        if (vistos.has(k)) return false;
         vistos.add(k);
         return true;
       });
       if (nuevos.length === 0) return;
-      ultimoTs = Math.max(...nuevos.map((e) => e.ts));
+      ultimoTs = Math.max(ultimoTs, ...nuevos.map((e) => e.ts));
+      // Poda: las claves más viejas que el feed ya no pueden repetirse.
+      if (vistos.size > 500) {
+        for (const k of vistos) {
+          if (Number(k.split(":")[0]) < ultimoTs - 120) vistos.delete(k);
+        }
+      }
       setHistorial((h) => [...nuevos.reverse(), ...h].slice(0, 40));
       // Los ids que aún no están en el grafo (store reciente) quedan
       // encolados en el canvas y se animan cuando el recargado llega.
@@ -249,7 +257,7 @@ export default function PaginaCerebro() {
   return (
     <Shell fluid>
       <section
-        className="vidrio relative h-[calc(100dvh-7rem)] overflow-hidden rounded-3xl"
+        className="vidrio relative min-h-0 flex-1 overflow-hidden rounded-3xl"
         aria-label="Cerebro de memoria 3D"
       >
         {error && (
@@ -278,15 +286,19 @@ export default function PaginaCerebro() {
         )}
 
         <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-2 p-3">
-          <div className="vidrio-fuerte pointer-events-auto">
-            <PanelFuentes
-              fuentes={datos?.fuentes ?? []}
-              ocultas={ocultas}
-              alAlternar={alternarFuente}
-              cap={prefs.srcCap}
-              alCambiarCap={(cap) => setPref("srcCap", cap)}
-            />
-          </div>
+          {datos && datos.fuentes.length > 0 ? (
+            <div className="vidrio-fuerte pointer-events-auto">
+              <PanelFuentes
+                fuentes={datos.fuentes}
+                ocultas={ocultas}
+                alAlternar={alternarFuente}
+                cap={prefs.srcCap}
+                alCambiarCap={(cap) => setPref("srcCap", cap)}
+              />
+            </div>
+          ) : (
+            <div />
+          )}
           <div className="vidrio-fuerte">
             <TarjetaVidrio
               datos={datos}

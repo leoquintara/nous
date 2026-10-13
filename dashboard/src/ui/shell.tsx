@@ -100,7 +100,9 @@ export function Shell({
       </header>
       <div
         className={
-          fluid ? "w-full flex-1 px-3 pb-3" : "mx-auto w-full max-w-7xl flex-1 p-4"
+          fluid
+            ? "flex w-full flex-1 flex-col px-4 pt-3 pb-4"
+            : "mx-auto w-full max-w-7xl flex-1 p-4"
         }
       >
         {children}
