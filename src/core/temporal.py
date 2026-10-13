@@ -10,6 +10,7 @@ import time
 from collections.abc import Sequence
 from statistics import fmean
 
+from src.core.exceptions import HistorialInsuficienteError
 from src.core.modelos import Dimension, Evento, Proyeccion, Trayectoria
 
 MIN_RACHA = 3
@@ -73,10 +74,12 @@ def proyectar(
         de la dimensión más probable.
 
     Raises:
-        ValueError: Si no hay eventos sobre los que proyectar.
+        HistorialInsuficienteError: Si no hay eventos para proyectar.
     """
     if not eventos:
-        raise ValueError("No hay eventos en el período para proyectar")
+        raise HistorialInsuficienteError(
+            "No hay eventos en el período para proyectar"
+        )
     ahora_real = ahora if ahora is not None else int(time.time())
 
     pesos = {dimension: 0.0 for dimension in Dimension}

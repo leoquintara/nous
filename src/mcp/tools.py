@@ -11,6 +11,7 @@ from src.config import get_settings
 from src.core.busqueda import BusquedaHibrida4D
 from src.core.clasificador import ClasificadorDimensiones
 from src.core.embeddings import GeneradorEmbeddings
+from src.core.exceptions import ErrorValidacion
 from src.core.modelos import Evento, ResultadoBusqueda, Trayectoria
 from src.core.reranker import ReordenadorLocal
 from src.core.temporal import detectar_trayectorias, proyectar
@@ -136,9 +137,9 @@ async def recordar_evento(
         "confianza_clasificacion" si se clasificó automáticamente.
     """
     if not 0.0 <= amplitud <= 1.0:
-        raise ValueError("amplitud debe estar entre 0.0 y 1.0")
+        raise ErrorValidacion("amplitud debe estar entre 0.0 y 1.0")
     if frecuencia is not None and frecuencia <= 0.0:
-        raise ValueError("frecuencia debe ser positiva (Hz)")
+        raise ErrorValidacion("frecuencia debe ser positiva (Hz)")
     respuesta: dict[str, Any] = {}
     if dimension is None:
         resultado = await _obtener_clasificador().clasificar(contenido)
@@ -221,7 +222,7 @@ async def obtener_linea_de_universo(
         "amplitud","frecuencia"} ordenados cronológicamente.
     """
     if desde_unix > hasta_unix:
-        raise ValueError("desde_unix debe ser <= hasta_unix")
+        raise ErrorValidacion("desde_unix debe ser <= hasta_unix")
     async with get_session(obtener_engine()) as session:
         eventos = await EventoRepository(session).listar_por_rango(
             desde_unix, hasta_unix, min(max(limite, 1), 500)
