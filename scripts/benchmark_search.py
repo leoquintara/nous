@@ -14,11 +14,13 @@ Uso:
 
 import argparse
 import asyncio
+import io
 import logging
 import subprocess
 import sys
 import time
 import tracemalloc
+from typing import cast
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -329,7 +331,7 @@ async def main() -> None:
     args = parser.parse_args()
 
     # La consola de Windows (cp1252) no soporta emojis ni box-drawing.
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    cast(io.TextIOWrapper, sys.stdout).reconfigure(encoding="utf-8", errors="replace")
 
     print("🚀 Nous Benchmark Suite v1.0")
     print("═" * 52)

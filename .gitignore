@@ -33,3 +33,4 @@ htmlcov/
 # SO
 Thumbs.db
 .DS_Store
+.env.bench
