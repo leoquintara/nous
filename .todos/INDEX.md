@@ -16,6 +16,12 @@
 | 12 | Tests CLI + upgrade (Python) | ✅ 37 tests nuevos (unit + integración vs nous_test) — 116 total |
 | 13 | Tests dashboard (vitest) | ✅ commit e62a891 — 28 tests adaptador API + cerebro (tipos/física/geometría) |
 | 14 | Auditoría OWASP + tests | ✅ commit 2a7aee5 — 50 tests (1/regla) + fixes: rate limit login, headers, bounds schema, validación JSONL, sin short-circuit |
+| 15 | R1: cache LRU de embeddings | ✅ a018a2c — memoria de trabajo, hit ~0ms, NOUS_CACHE_EMBEDDINGS_MAX |
+| 16 | R2: consolidación por evocación | ✅ 05864c3 — refuerzos (migración 0003) frenan el olvido; requiere `alembic upgrade head` |
+| 17 | R3: separación de patrones | ✅ fe111d1 — dedup semántico ≥0.95 en ventana 1h + piso de coseno 0.25 |
+| 18 | R4: priming / activación difusa | ✅ 822d84a — hits+vecinos activados 300s, boost 0.15 |
+| 19 | R5: episodios + poda sináptica | ✅ a60fbce — tool obtener_episodios + `nous prune` (dry-run, --aplicar) |
+| 20 | Docs neurociencia | ✅ 4cd3f7a — docs/neuroscience.md con referencias |
 
 ## Notas de entorno
 
