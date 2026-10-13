@@ -230,4 +230,60 @@ describe("eventosAGrafo", () => {
     expect(g.nbrs.get(0)?.has(1)).toBe(true);
     expect(g.nbrs.get(1)?.has(0)).toBe(true);
   });
+
+  it("las relaciones persistidas crean aristas link entre extremos", () => {
+    const e1 = evento({
+      id: "e1",
+      dimension: "conductual",
+      timestamp_unix: AHORA - 3 * DIA,
+    });
+    const e2 = evento({
+      id: "e2",
+      dimension: "somatica",
+      timestamp_unix: AHORA - 2 * DIA,
+    });
+    const e3 = evento({
+      id: "e3",
+      dimension: "conductual",
+      timestamp_unix: AHORA - 1 * DIA,
+    });
+    const g = eventosAGrafo([e1, e2, e3], AHORA, undefined, [
+      { origen_id: "e1", destino_id: "e3", tipo: "explicita", peso: 1 },
+    ]);
+    // e1 y e3 ya están unidos por la cadena tag de conductual; la
+    // relación no duplica la arista pero debe existir el par (0,2).
+    const par = g.edges.some(
+      (e) => (e.a === 0 && e.b === 2) || (e.a === 2 && e.b === 0),
+    );
+    expect(par).toBe(true);
+    expect(g.nbrs.get(0)?.has(2)).toBe(true);
+  });
+
+  it("una relación entre no-adyacentes añade la arista que faltaba", () => {
+    const ids = ["n1", "n2", "n3", "n4"];
+    const g = eventosAGrafo(
+      ids.map((id, i) =>
+        evento({
+          id,
+          dimension: "cognitiva",
+          timestamp_unix: AHORA - (4 - i) * DIA,
+        }),
+      ),
+      AHORA,
+      undefined,
+      [{ origen_id: "n1", destino_id: "n4", tipo: "explicita", peso: 1 }],
+    );
+    expect(
+      g.edges.some(
+        (e) => (e.a === 0 && e.b === 3) || (e.a === 3 && e.b === 0),
+      ),
+    ).toBe(true);
+  });
+
+  it("relaciones con ids fuera del grafo se ignoran", () => {
+    const g = eventosAGrafo([evento({ id: "x" })], AHORA, undefined, [
+      { origen_id: "x", destino_id: "fantasma", tipo: "semantica", peso: 0.8 },
+    ]);
+    expect(g.edges.length).toBe(0);
+  });
 });

@@ -7,7 +7,7 @@
  * el pulso.
  */
 
-import type { Dimension, Evento } from "@/domain/modelos";
+import type { Dimension, Evento, Relacion } from "@/domain/modelos";
 import { colorDeReglas, REGLAS_DEFAULT, type Regla } from "./reglas";
 
 /** Estado de "tejido" de un nodo según su recencia y relevancia. */
@@ -263,11 +263,19 @@ export function estadoDe(e: Evento, ahora: number): EstadoNodo {
   return edad < 30 * DIA && e.amplitud >= 0.6 ? "consolidated" : "decayed";
 }
 
-/** Convierte eventos Nous en nodos, posiciones y aristas del grafo. */
+/**
+ * Convierte eventos Nous en nodos, posiciones y aristas del grafo.
+ *
+ * Las aristas se construyen en tres capas: la cadena temporal
+ * (consecutivos), los lazos por dimensión y los vínculos reales
+ * persistidos (``relaciones`` — explícitas o inferidas por
+ * similitud semántica), que se dibujan como aristas "link".
+ */
 export function eventosAGrafo(
   eventos: Evento[],
   ahora?: number,
   pins?: Record<string, PosicionPin>,
+  relaciones?: Relacion[],
 ): DatosCerebro {
   const t0 = ahora ?? Math.floor(Date.now() / 1000);
   const vacio: DatosCerebro = {
@@ -329,7 +337,11 @@ export function eventosAGrafo(
   // Aristas: rachas temporales (consecutivos) + lazos por dimensión.
   const edges: Arista[] = [];
   const nbrs = new Map<number, Set<number>>();
+  const pares = new Set<string>();
   const agregar = (a: number, b: number, kind: Arista["kind"]) => {
+    const clave = a < b ? `${a}:${b}` : `${b}:${a}`;
+    if (pares.has(clave)) return;
+    pares.add(clave);
     edges.push({ a, b, kind });
     if (!nbrs.get(a)?.add(b)) nbrs.set(a, new Set([b]));
     if (!nbrs.get(b)?.add(a)) nbrs.set(b, new Set([a]));
@@ -347,6 +359,16 @@ export function eventosAGrafo(
   for (const lista of porDim.values()) {
     for (let i = 1; i < lista.length; i++) {
       agregar(lista[i - 1], lista[i], "tag");
+    }
+  }
+  // Vínculos reales persistidos: explícitos (declarados al registrar)
+  // y semánticos (inferidos por similitud al indexarse).
+  if (relaciones) {
+    const idx = new Map(nodes.map((n, i) => [n.id, i]));
+    for (const r of relaciones) {
+      const a = idx.get(r.origen_id);
+      const b = idx.get(r.destino_id);
+      if (a !== undefined && b !== undefined) agregar(a, b, "link");
     }
   }
   for (const e of edges) {

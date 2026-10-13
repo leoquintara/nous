@@ -36,6 +36,17 @@ describe("crearClienteNous", () => {
     );
   });
 
+  it("listarRelaciones pide /api/relaciones con el límite", async () => {
+    const espia = vi.fn().mockResolvedValue(respuestaJson([]));
+    vi.stubGlobal("fetch", espia);
+
+    await crearClienteNous("ns_tok").listarRelaciones(99);
+
+    const [url] = espia.mock.calls[0] as [string];
+    expect(url).toContain("/api/relaciones");
+    expect(url).toContain("limite=99");
+  });
+
   it("buscar codifica la consulta con caracteres especiales", async () => {
     const espia = vi.fn().mockResolvedValue(respuestaJson([]));
     vi.stubGlobal("fetch", espia);

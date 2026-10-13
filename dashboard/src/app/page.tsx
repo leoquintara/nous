@@ -66,10 +66,14 @@ export default function PaginaCerebro() {
     if (!memoria) return;
     const ahora = Math.floor(Date.now() / 1000);
     setCargando(true);
-    memoria
-      .listarEventos(ahora - 90 * DIA, ahora, prefs.srcCap)
-      .then((eventos) => {
-        setDatos(eventosAGrafo(eventos, ahora, pinsRef.current));
+    Promise.all([
+      memoria.listarEventos(ahora - 90 * DIA, ahora, prefs.srcCap),
+      memoria.listarRelaciones(),
+    ])
+      .then(([eventos, relaciones]) => {
+        setDatos(
+          eventosAGrafo(eventos, ahora, pinsRef.current, relaciones),
+        );
         setError(null);
       })
       .catch((e: Error) => setError(e.message))

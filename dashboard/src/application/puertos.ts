@@ -10,6 +10,7 @@ import type {
   EventoActividad,
   Preferencias,
   Proyeccion,
+  Relacion,
   ResultadoBusqueda,
 } from "@/domain/modelos";
 
@@ -26,6 +27,8 @@ export interface NuevoEvento {
 export interface PuertoMemoria {
   /** Lista eventos del rango temporal en orden cronológico. */
   listarEventos(desdeUnix: number, hastaUnix: number, limite?: number): Promise<Evento[]>;
+  /** Lista los vínculos entre eventos (explícitos y semánticos). */
+  listarRelaciones(limite?: number): Promise<Relacion[]>;
   /** Ejecuta la búsqueda híbrida 4D con contexto temporal. */
   buscar(consulta: string, topN?: number): Promise<ResultadoBusqueda[]>;
   /** Persiste un evento nuevo. */

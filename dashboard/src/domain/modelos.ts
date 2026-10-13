@@ -70,6 +70,15 @@ export interface EventoActividad {
   ts: number;
 }
 
+/** Vínculo entre dos eventos de la línea de universo. */
+export interface Relacion {
+  origen_id: string;
+  destino_id: string;
+  /** "explicita" = declarada al registrar; "semantica" = inferida por embedding. */
+  tipo: "explicita" | "semantica";
+  peso: number;
+}
+
 /** Documento de preferencias persistido en PostgreSQL (clave-valor JSON). */
 export type Preferencias = Record<string, unknown>;
 

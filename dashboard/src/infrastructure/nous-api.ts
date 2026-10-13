@@ -16,6 +16,7 @@ import type {
   EventoActividad,
   Preferencias,
   Proyeccion,
+  Relacion,
   ResultadoBusqueda,
 } from "@/domain/modelos";
 
@@ -49,6 +50,8 @@ export function crearClienteNous(token: string): PuertoMemoria {
         `/api/eventos?desde_unix=${desde}&hasta_unix=${hasta}&limite=${limite}`,
         token,
       ),
+    listarRelaciones: (limite = 2000) =>
+      peticion<Relacion[]>(`/api/relaciones?limite=${limite}`, token),
     buscar: (consulta, topN = 10) =>
       peticion<ResultadoBusqueda[]>(
         `/api/buscar?q=${encodeURIComponent(consulta)}&top_n=${topN}`,

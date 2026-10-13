@@ -479,6 +479,8 @@ export function CerebroCanvas({
         glow: THREE.Sprite;
         delay: number;
         col: THREE.Color;
+        /** true tras la llegada — la chispa ya recogió el color del nodo. */
+        fired: boolean;
       }
       interface Pensamiento {
         group: THREE.Group;
@@ -606,7 +608,10 @@ export function CerebroCanvas({
             trail,
             glow,
             delay: Math.random() * 400,
-            col: new THREE.Color(colorNodo(nodes[idx])),
+            col: new THREE.Color(
+              colorNodo(nodes[idx], modoRef.current, datos, livePrefs.current),
+            ),
+            fired: false,
           };
         });
         const seed = new THREE.Mesh(
@@ -1034,7 +1039,9 @@ export function CerebroCanvas({
           }
         }
 
-        // Pensamientos en vuelo: semilla asciende, arcos disparan.
+        // Pensamientos en vuelo: la semilla asciende del tallo al
+        // tálamo, los arcos salen a buscar la memoria y la chispa
+        // regresa "cargada" con el color del nodo encontrado.
         for (let i = pensamientos.length - 1; i >= 0; i--) {
           const th = pensamientos[i];
           const t = tNow - th.t0;
@@ -1043,32 +1050,75 @@ export function CerebroCanvas({
             pensamientos.splice(i, 1);
             continue;
           }
-          const ascenso = Math.min(1, t / 900);
-          th.seed.position.lerpVectors(puertaTallo, corteza, ascenso);
-          const sm = th.seed.material as THREE.MeshBasicMaterial;
-          sm.opacity = ascenso < 1 ? ascenso : Math.max(0, 1 - (t - 2400) / 1800);
-          th.lab.style.opacity = t > 900 && t < 5200 ? "1" : "0";
+          const fade =
+            t < 500 ? t / 500
+            : t > 5300 ? Math.max(0, 1 - (t - 5300) / 1200)
+            : 1;
+          (th.seed.material as THREE.MeshBasicMaterial).opacity =
+            fade * (0.6 + 0.4 * Math.sin(tNow * 0.01));
+          // Ascenso con smoothstep (700ms): los arcos solo disparan
+          // cuando el relevo alcanza el tálamo.
+          const ASCENSO = 700;
+          const ap = Math.min(1, t / ASCENSO);
+          th.seed.position.lerpVectors(
+            puertaTallo,
+            corteza,
+            ap * ap * (3 - 2 * ap),
+          );
           v3.copy(th.seed.position).project(camera);
           th.lab.style.left = `${(v3.x * 0.5 + 0.5) * rect.width}px`;
           th.lab.style.top = `${(-v3.y * 0.5 + 0.5) * rect.height}px`;
+          th.lab.style.opacity = String(fade);
           for (const l of th.lines) {
-            const tt = Math.max(0, Math.min(1, (t - 900 - l.delay) / 1400));
-            if (tt <= 0) continue;
+            const IDA = 1400;
+            const VUELTA = 900;
+            const tt = t - ASCENSO - l.delay;
+            const p = Math.max(0, Math.min(1, tt / IDA));
+            // Parpadeo eléctrico — las sinapsis crepitan, no brillan fijas.
+            const fl = 0.78 + 0.22 * Math.sin(tNow * 0.021 + l.idx * 1.7);
             (l.tube.material as THREE.MeshBasicMaterial).opacity =
-              Math.sin(tt * Math.PI) * 0.4;
+              fade * 0.5 * Math.min(1, p * 3) * fl;
             (l.line.material as THREE.LineBasicMaterial).opacity =
-              Math.sin(tt * Math.PI) * 0.9;
-            const cabeza = l.curve.getPoint(tt);
-            l.spark.position.copy(cabeza);
-            (l.spark.material as THREE.MeshBasicMaterial).opacity =
-              Math.sin(tt * Math.PI);
-            l.trail.position.copy(l.curve.getPoint(Math.max(0, tt - 0.08)));
-            (l.trail.material as THREE.MeshBasicMaterial).opacity =
-              Math.sin(tt * Math.PI) * 0.7;
-            l.glow.position.copy(cabeza);
-            l.glow.material.opacity = Math.sin(tt * Math.PI) * 0.8;
-            if (tt >= 1 && !flashes.has(l.idx)) {
-              flashes.set(l.idx, { s: 1, c: l.col });
+              fade * 0.8 * Math.min(1, p * 3) * fl;
+            const sparkMat = l.spark.material as THREE.MeshBasicMaterial;
+            const trailMat = l.trail.material as THREE.MeshBasicMaterial;
+            if (p < 1) {
+              // Ida: el rayo caza la memoria.
+              if (p > 0) {
+                l.curve.getPoint(p, v3);
+                l.spark.position.copy(v3);
+                l.glow.position.copy(v3);
+                sparkMat.opacity = fade * Math.sin(p * Math.PI);
+                l.glow.material.opacity =
+                  fade * Math.sin(p * Math.PI) * 0.9 * fl;
+                l.curve.getPoint(Math.max(0, p - 0.07), v3);
+                l.trail.position.copy(v3);
+                trailMat.opacity = fade * Math.sin(p * Math.PI) * 0.55;
+              }
+            } else {
+              // Llegada: el nodo destella teñido con su color y la
+              // chispa regresa al tálamo cargando lo que encontró.
+              if (!l.fired) {
+                l.fired = true;
+                flashes.set(l.idx, { s: 1, c: l.col });
+                sparkMat.color.copy(l.col);
+                l.glow.material.color.copy(l.col);
+              }
+              const r = Math.max(0, Math.min(1, (tt - IDA) / VUELTA));
+              if (r < 1) {
+                l.curve.getPoint(1 - r, v3);
+                l.spark.position.copy(v3);
+                l.glow.position.copy(v3);
+                sparkMat.opacity = fade * Math.sin(r * Math.PI) * 0.8;
+                l.glow.material.opacity = fade * Math.sin(r * Math.PI) * 0.6;
+                l.curve.getPoint(Math.min(1, 1 - r + 0.07), v3);
+                l.trail.position.copy(v3);
+                trailMat.opacity = fade * Math.sin(r * Math.PI) * 0.4;
+              } else {
+                sparkMat.opacity = 0;
+                l.glow.material.opacity = 0;
+                trailMat.opacity = 0;
+              }
             }
           }
         }
