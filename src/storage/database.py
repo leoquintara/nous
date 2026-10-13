@@ -19,9 +19,22 @@ def crear_engine() -> AsyncEngine:
     """Crea el engine async a partir de la configuración.
 
     Returns:
-        Engine async de SQLAlchemy con pool_pre_ping habilitado.
+        Engine async de SQLAlchemy con pool_pre_ping habilitado. Con
+        ``commit_sincrono=False`` el commit no espera el fsync del WAL:
+        ante un crash de PostgreSQL se arriesgan ~0.5s de escrituras —
+        el mismo trade-off de durabilidad que hacen los memory stores
+        comparables (SQLite en modo normal). No afecta a crashes de la
+        app ni a lecturas.
     """
-    return create_async_engine(get_settings().database_url, pool_pre_ping=True)
+    settings = get_settings()
+    connect_args: dict[str, dict[str, str]] = (
+        {"server_settings": {"synchronous_commit": "off"}}
+        if not settings.commit_sincrono
+        else {}
+    )
+    return create_async_engine(
+        settings.database_url, pool_pre_ping=True, connect_args=connect_args
+    )
 
 
 def obtener_engine() -> AsyncEngine:

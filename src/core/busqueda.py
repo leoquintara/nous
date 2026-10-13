@@ -7,9 +7,9 @@ contextualización 4D (eventos adyacentes en la línea temporal) es
 el diferenciador propio de Nous.
 """
 
+import asyncio
 import math
 import time
-import uuid
 from collections.abc import Sequence
 from dataclasses import replace
 
@@ -30,7 +30,7 @@ BOOST_AMPLITUD = 0.25
 BOOST_PRIMING = 0.15
 UMBRAL_COSENO_MIN = 0.25
 SOBREMUESTREO = 4
-CANDIDATOS_RERANK = 15
+CANDIDATOS_RERANK = 10
 PESO_RERANK = 0.5
 SEGUNDOS_POR_DIA = 86_400
 
@@ -148,9 +148,11 @@ class BusquedaHibrida4D:
         )
         resultados = _deduplicar(resultados)
         if self._reordenador is not None:
-            resultados = await self._reordenar(query, resultados)
-        finales = await self._contextualizar(repo, resultados[:top_n])
-        await repo.reforzar([uuid.UUID(r.evento_id) for r in finales])
+            finales = await self._rerank_con_contexto(
+                repo, query, resultados, top_n
+            )
+        else:
+            finales = await self._contextualizar(repo, resultados[:top_n])
         self._primar(finales, ahora)
         return finales
 
@@ -189,26 +191,64 @@ class BusquedaHibrida4D:
     async def _contextualizar(
         self, repo: EventoRepository, resultados: list[ResultadoBusqueda]
     ) -> list[ResultadoBusqueda]:
-        """Adjunta los eventos adyacentes a cada resultado."""
-        contextos = []
+        """Adjunta los eventos adyacentes a cada resultado.
+
+        Una sola consulta SQL cubre todas las marcas temporales
+        (``adyacentes_lote``) en vez de dos roundtrips por resultado.
+        """
         for r in resultados:
             assert r.evento is not None
-            contextos.append(
-                await repo.adyacentes(
-                    r.evento.timestamp_unix, self._cantidad_contexto
-                )
-            )
+        mapa = await repo.adyacentes_lote(
+            [r.evento.timestamp_unix for r in resultados if r.evento],
+            self._cantidad_contexto,
+        )
         return [
             replace(
                 resultado,
-                contexto=Contexto4D(
-                    previos=tuple(_a_evento(m) for m in previos),
-                    siguientes=tuple(_a_evento(m) for m in siguientes),
+                contexto=_contexto_de(mapa.get(i, ([], []))),
+            )
+            for i, resultado in enumerate(resultados)
+        ]
+
+    async def _rerank_con_contexto(
+        self,
+        repo: EventoRepository,
+        query: str,
+        resultados: list[ResultadoBusqueda],
+        top_n: int,
+    ) -> list[ResultadoBusqueda]:
+        """Rerankea y contextualiza en paralelo — son etapas independientes.
+
+        El cross-encoder corre en un thread (CPU) mientras la consulta
+        de adyacentes viaja a PostgreSQL; el mapa de contexto se pide
+        para todos los candidatos posibles del top_n y se adjunta tras
+        el reorden.
+        """
+        elegibles = [
+            r
+            for r in resultados[: max(top_n, CANDIDATOS_RERANK)]
+            if r.evento is not None
+        ]
+        marcas = []
+        for r in elegibles:
+            assert r.evento is not None
+            marcas.append(r.evento.timestamp_unix)
+        reordenados, mapa = await asyncio.gather(
+            self._reordenar(query, resultados),
+            repo.adyacentes_lote(marcas, self._cantidad_contexto),
+        )
+        # El mapa indexa por posición en la lista pedida; tras el
+        # reorden hay que resolverlo por evento_id.
+        indice = {r.evento_id: i for i, r in enumerate(elegibles)}
+        return [
+            replace(
+                resultado,
+                contexto=_contexto_de(
+                    mapa.get(indice[resultado.evento_id], ([], []))
                 ),
             )
-            for resultado, (previos, siguientes) in zip(
-                resultados, contextos, strict=True
-            )
+            for resultado in reordenados[:top_n]
+            if resultado.evento_id in indice
         ]
 
     async def _reordenar(
@@ -342,3 +382,14 @@ def _similitud(vector_query: list[float], embedding: list[float] | None) -> floa
 def _a_evento(modelo: EventoModel) -> Evento:
     """Convierte un modelo ORM en el dataclass de dominio."""
     return Evento.desde_modelo(modelo)
+
+
+def _contexto_de(
+    par: tuple[list[EventoModel], list[EventoModel]],
+) -> Contexto4D:
+    """Construye el Contexto4D a partir de (previos, siguientes)."""
+    previos, siguientes = par
+    return Contexto4D(
+        previos=tuple(_a_evento(m) for m in previos),
+        siguientes=tuple(_a_evento(m) for m in siguientes),
+    )

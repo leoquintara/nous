@@ -29,6 +29,12 @@ async def motor(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[AsyncEngine]:
         pytest.skip("PostgreSQL de test no disponible")
 
     monkeypatch.setattr(tools, "obtener_engine", lambda: engine)
+    # El worker de indexación vive en un thread aparte y pide su
+    # propio engine vía crear_engine: apuntarlo también a nous_test.
+    monkeypatch.setattr(
+        tools, "crear_engine",
+        lambda: create_async_engine(TEST_DB_URL),
+    )
     yield engine
     async with engine.begin() as conn:
         await conn.execute(
@@ -50,6 +56,8 @@ async def test_recordar_evento_persiste_con_dimension_explicita(
         amplitud=0.8,
     )
     assert respuesta["dimension"] == "cognitiva"
+    assert respuesta["indexado"] is False
+    await tools._drenar_fondo()
     async with motor.connect() as conn:
         fila = (
             await conn.execute(
@@ -87,6 +95,7 @@ async def test_consultar_memoria_retorna_contexto_4d(
         ("dormí profundamente toda la noche", "somatica"),
     ]:
         await tools.recordar_evento(texto, dimension=dim, fuente=FUENTE_TEST)
+    await tools._drenar_fondo()
 
     resultados = await tools.consultar_memoria("futuro del proyecto", top_n=3)
 

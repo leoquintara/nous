@@ -24,8 +24,10 @@ class Settings(BaseSettings):
     )
 
     database_url: str = "postgresql+asyncpg://nous:nous@localhost:5432/nous"
+    commit_sincrono: bool = False
     embedding_provider: Literal["local", "external"] = "local"
     embedding_model: str = "sentence-transformers/all-MiniLM-L12-v2"
+    embeddings_backend: Literal["auto", "onnx", "torch"] = "auto"
     hf_offline: bool = True
     precalentar_modelos: bool = True
     reranker_habilitado: bool = True

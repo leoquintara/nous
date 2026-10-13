@@ -84,6 +84,40 @@ async def test_adyacentes_retorna_previos_y_siguientes(
     assert [e.contenido for e in siguientes] == ["futuro cercano"]
 
 
+async def test_adyacentes_lote_equivale_a_adyacentes_individual(
+    session: AsyncSession,
+) -> None:
+    """La consulta en lote devuelve lo mismo que adyacentes por marca."""
+    repo = EventoRepository(session)
+    await repo.crear(_evento(1_600_000_000, "lote previo uno"))
+    await repo.crear(_evento(1_600_000_050, "lote previo dos"))
+    await repo.crear(_evento(1_600_000_100, "lote centro"))
+    await repo.crear(_evento(1_600_000_200, "lote posterior"))
+
+    marcas = [1_600_000_100, 1_600_000_200]
+    mapa = await repo.adyacentes_lote(marcas, cantidad=3)
+
+    for i, ts in enumerate(marcas):
+        previos_esperados, siguientes_esperados = await repo.adyacentes(
+            ts, cantidad=3
+        )
+        previos, siguientes = mapa[i]
+        assert [e.contenido for e in previos] == [
+            e.contenido for e in previos_esperados
+        ]
+        assert [e.contenido for e in siguientes] == [
+            e.contenido for e in siguientes_esperados
+        ]
+
+
+async def test_adyacentes_lote_vacio_retorna_mapa_vacio(
+    session: AsyncSession,
+) -> None:
+    """Sin marcas no se ejecuta consulta y el mapa sale vacío."""
+    repo = EventoRepository(session)
+    assert await repo.adyacentes_lote([]) == {}
+
+
 async def test_registrar_y_listar_benchmark(session: AsyncSession) -> None:
     """Verifica el roundtrip de una corrida de benchmark persistida."""
     repo = BenchmarkRepository(session)

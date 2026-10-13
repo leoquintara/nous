@@ -1,4 +1,9 @@
-"""Tests de separación de patrones (Ronda 3 — dedup semántico)."""
+"""Tests de separación de patrones (Ronda 3 — dedup semántico).
+
+Con indexación write-behind, ambos eventos se insertan de inmediato y
+la deduplicación ocurre en segundo plano: la huella nueva se fusiona
+en la existente (refuerzo + amplitud máxima) dentro de la ventana.
+"""
 
 import time
 from collections.abc import AsyncIterator
@@ -25,7 +30,18 @@ async def motor(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[AsyncEngine]:
         await engine.dispose()
         pytest.skip("PostgreSQL de test no disponible")
 
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("DELETE FROM eventos WHERE fuente = :fuente"),
+            {"fuente": FUENTE_TEST},
+        )
     monkeypatch.setattr(tools, "obtener_engine", lambda: engine)
+    # El worker de indexación vive en un thread aparte y pide su
+    # propio engine vía crear_engine: apuntarlo también a nous_test.
+    monkeypatch.setattr(
+        tools, "crear_engine",
+        lambda: create_async_engine(TEST_DB_URL),
+    )
     yield engine
     async with engine.begin() as conn:
         await conn.execute(
@@ -35,20 +51,32 @@ async def motor(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[AsyncEngine]:
     await engine.dispose()
 
 
+async def _existe(motor: AsyncEngine, evento_id: str) -> bool:
+    """Indica si la fila sigue en la tabla tras el drenado."""
+    async with motor.connect() as conn:
+        return bool(
+            (
+                await conn.execute(
+                    text("SELECT 1 FROM eventos WHERE id = :id"),
+                    {"id": evento_id},
+                )
+            ).scalar_one_or_none()
+        )
+
+
 async def test_recordar_duplicado_en_ventana_consolida_el_existente(
     motor: AsyncEngine,
 ) -> None:
-    """Un segundo recordar casi idéntico no duplica: refuerza el primero."""
+    """El segundo recordar casi idéntico se fusiona: refuerza el primero."""
     contenido = "qzx anoté la idea del experimento de la terraza zq9"
     primero = await tools.recordar_evento(
         contenido, dimension="cognitiva", fuente=FUENTE_TEST
     )
+    await tools._drenar_fondo()
     segundo = await tools.recordar_evento(
         contenido, dimension="cognitiva", fuente=FUENTE_TEST
     )
-
-    assert segundo.get("deduplicado") is True
-    assert segundo["id"] == primero["id"]
+    await tools._drenar_fondo()
 
     async with motor.connect() as conn:
         refuerzos = (
@@ -57,7 +85,9 @@ async def test_recordar_duplicado_en_ventana_consolida_el_existente(
                 {"id": primero["id"]},
             )
         ).scalar_one()
-    assert refuerzos == 1
+
+    assert refuerzos >= 1
+    assert not await _existe(motor, segundo["id"])
 
 
 async def test_recordar_similar_fuera_de_ventana_crea_huella_nueva(
@@ -78,6 +108,33 @@ async def test_recordar_similar_fuera_de_ventana_crea_huella_nueva(
         fuente=FUENTE_TEST,
         timestamp_unix=ahora,
     )
+    await tools._drenar_fondo()
 
-    assert "deduplicado" not in nuevo
     assert nuevo["id"] != viejo["id"]
+    assert await _existe(motor, viejo["id"])
+    assert await _existe(motor, nuevo["id"])
+
+
+async def test_recordar_indexa_el_embedding_en_segundo_plano(
+    motor: AsyncEngine,
+) -> None:
+    """La respuesta es inmediata y el vector llega tras el drenado."""
+    respuesta = await tools.recordar_evento(
+        "qzx idea única sobre jardines verticales zq9",
+        dimension="cognitiva",
+        fuente=FUENTE_TEST,
+    )
+    assert respuesta["indexado"] is False
+
+    await tools._drenar_fondo()
+    async with motor.connect() as conn:
+        tiene_vector = (
+            await conn.execute(
+                text(
+                    "SELECT embedding IS NOT NULL FROM eventos "
+                    "WHERE id = :id"
+                ),
+                {"id": respuesta["id"]},
+            )
+        ).scalar_one()
+    assert tiene_vector is True

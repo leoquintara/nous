@@ -35,6 +35,12 @@ async def cliente(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[AsyncClient]
         pytest.skip("PostgreSQL de test no disponible")
 
     monkeypatch.setattr(tools, "obtener_engine", lambda: engine)
+    # El worker de indexación vive en un thread aparte y pide su
+    # propio engine vía crear_engine: apuntarlo también a nous_test.
+    monkeypatch.setattr(
+        tools, "crear_engine",
+        lambda: create_async_engine(TEST_DB_URL),
+    )
     monkeypatch.setattr(database, "obtener_engine", lambda: engine)
     app = crear_app_http()
     transport = ASGITransport(app=app)

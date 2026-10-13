@@ -4,8 +4,17 @@ Cada tool declara explícitamente cuándo usarla y cuándo NO, para que
 el modelo que la invoque no confunda sus responsabilidades.
 """
 
+import asyncio
+import gc
+import logging
+import queue
+import threading
 import time
+import uuid
+from dataclasses import dataclass
 from typing import Any, Literal
+
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from src.config import get_settings
 from src.core.busqueda import BusquedaHibrida4D
@@ -17,14 +26,118 @@ from src.core.modelos import Evento, ResultadoBusqueda, Trayectoria
 from src.core.reranker import ReordenadorLocal
 from src.core.temporal import detectar_trayectorias, proyectar
 from src.mcp.server import mcp_server
-from src.storage.database import get_session, obtener_engine
+from src.storage.database import crear_engine, get_session, obtener_engine
 from src.storage.models import EventoModel, ProyeccionModel
 from src.storage.repositories import EventoRepository, ProyeccionRepository
+
+logger = logging.getLogger(__name__)
 
 _embeddings: GeneradorEmbeddings | None = None
 _busqueda: BusquedaHibrida4D | None = None
 _clasificador: ClasificadorDimensiones | None = None
 _reordenador: ReordenadorLocal | None = None
+@dataclass(frozen=True, slots=True)
+class _ItemIndexacion:
+    """Trabajo de indexación write-behind para un evento insertado."""
+
+    evento_id: uuid.UUID
+    contenido: str
+    ts: int
+    amplitud: float
+
+
+@dataclass(frozen=True, slots=True)
+class _ItemConsolidacion:
+    """Trabajo de consolidación: refuerzo de huellas evocadas."""
+
+    eventos_ids: tuple[uuid.UUID, ...]
+
+
+_ItemFondo = _ItemIndexacion | _ItemConsolidacion
+_cola_fondo: queue.Queue[_ItemFondo] = queue.Queue()
+_worker_thread: threading.Thread | None = None
+
+
+def _encolar_fondo(item: _ItemFondo) -> None:
+    """Encola trabajo write-behind en el worker dedicado.
+
+    El worker vive en un thread propio con su propio event loop y su
+    propio engine: la inferencia ONNX y los commits de indexación y
+    consolidación no compiten por el loop que atiende las requests.
+    """
+    global _worker_thread
+    if _worker_thread is None or not _worker_thread.is_alive():
+        _worker_thread = threading.Thread(
+            target=_worker_indexacion,
+            args=(_cola_fondo,),
+            name="nous-fondo",
+            daemon=True,
+        )
+        _worker_thread.start()
+    _cola_fondo.put(item)
+
+
+_QUIESCENCIA_SEGUNDOS = 0.5
+_LOTE_MAX = 50
+
+
+def _worker_indexacion(cola: queue.Queue[_ItemFondo]) -> None:
+    """Procesa la cola de trabajos por lotes durante la quietud.
+
+    Espera a que el torrente de escrituras se aquiete (~0.5s sin items
+    nuevos) antes de procesar el lote acumulado: la consolidación de
+    huellas ocurre en reposo, sin competir por CPU/GIL con las
+    escrituras en curso. ``_LOTE_MAX`` acota el lote para que bajo
+    carga continua el trabajo no se difiera indefinidamente.
+    """
+    loop = asyncio.new_event_loop()
+    engine = crear_engine()
+    try:
+        while True:
+            items = [cola.get()]
+            while len(items) < _LOTE_MAX:
+                try:
+                    items.append(cola.get(timeout=_QUIESCENCIA_SEGUNDOS))
+                except queue.Empty:
+                    break
+            try:
+                loop.run_until_complete(_ejecutar_lote(engine, items))
+            finally:
+                for _ in items:
+                    cola.task_done()
+            # Recolección proactiva en la quietud: el GC rara vez se
+            # dispara dentro de una request (umbral gen0 alto en el
+            # proceso principal).
+            gc.collect()
+    finally:
+        loop.run_until_complete(engine.dispose())
+        loop.close()
+
+
+async def _ejecutar_lote(
+    engine: AsyncEngine, items: list[_ItemFondo]
+) -> None:
+    """Ejecuta un lote de trabajos: dedup por item y consolidación fusionada."""
+    for item in items:
+        if isinstance(item, _ItemIndexacion):
+            await _indexar_luego(engine, item)
+    ids = [
+        eid
+        for item in items
+        if isinstance(item, _ItemConsolidacion)
+        for eid in item.eventos_ids
+    ]
+    if ids:
+        await _consolidar_luego(engine, ids)
+
+
+async def _drenar_fondo() -> None:
+    """Espera a que terminen las tareas write-behind pendientes.
+
+    Pensado para tests y apagado ordenado; en producción las tareas
+    terminan solas unos milisegundos después de la respuesta.
+    """
+    await asyncio.to_thread(_cola_fondo.join)
 
 
 def _obtener_embeddings() -> GeneradorEmbeddings:
@@ -127,7 +240,13 @@ async def _recordar(
     frecuencia: float | None,
     timestamp_unix: int | None,
 ) -> dict[str, Any]:
-    """Persiste un evento: valida, clasifica si hace falta, embebe y guarda."""
+    """Persiste un evento con indexación write-behind.
+
+    Inserta la fila sin embedding (la columna tsvector computed la hace
+    buscable por texto al instante) y delega embedding + dedup semántico
+    a una tarea en segundo plano, de modo que la respuesta no paga la
+    inferencia del modelo (~30-50ms).
+    """
     if not 0.0 <= amplitud <= 1.0:
         raise ErrorValidacion("amplitud debe estar entre 0.0 y 1.0")
     if frecuencia is not None and frecuencia <= 0.0:
@@ -139,45 +258,75 @@ async def _recordar(
         respuesta["confianza_clasificacion"] = resultado.confianza
         respuesta["dimension_dudosa"] = resultado.dudoso
     ts = timestamp_unix if timestamp_unix is not None else int(time.time())
-    vector = await _obtener_embeddings().generar(contenido)
-    settings = get_settings()
     async with get_session(obtener_engine()) as session:
-        repo = EventoRepository(session)
-        similar = await repo.buscar_por_vector(vector, limite=1)
-        if similar:
-            existente, coseno = similar[0]
-            misma_ventana = (
-                abs(ts - existente.timestamp_unix)
-                <= settings.dedup_ventana_segundos
-            )
-            if coseno >= settings.dedup_umbral and misma_ventana:
-                existente.refuerzos += 1
-                existente.amplitud = max(existente.amplitud, amplitud)
-                await session.commit()
-                respuesta.update(
-                    {
-                        "id": str(existente.id),
-                        "timestamp_unix": existente.timestamp_unix,
-                        "dimension": existente.dimension,
-                        "deduplicado": True,
-                    }
-                )
-                return respuesta
         evento = EventoModel(
             timestamp_unix=ts,
             dimension=dimension,
             fuente=fuente,
             contenido=contenido,
-            embedding=vector,
+            embedding=None,
             amplitud=amplitud,
             frecuencia=frecuencia,
         )
-        await repo.crear(evento)
+        await EventoRepository(session).crear(evento)
         await session.commit()
+    _encolar_fondo(_ItemIndexacion(evento.id, contenido, ts, amplitud))
     respuesta.update(
-        {"id": str(evento.id), "timestamp_unix": ts, "dimension": dimension}
+        {
+            "id": str(evento.id),
+            "timestamp_unix": ts,
+            "dimension": dimension,
+            "indexado": False,
+        }
     )
     return respuesta
+
+
+async def _indexar_luego(engine: AsyncEngine, item: _ItemIndexacion) -> None:
+    """Embebe y deduplica un evento recién insertado (write-behind).
+
+    Si encuentra una huella semánticamente idéntica dentro de la
+    ventana de dedup, la nueva se fusiona en la existente (refuerzo +
+    amplitud máxima) en vez de quedar duplicada.
+    """
+    try:
+        vector = await _obtener_embeddings().generar(item.contenido)
+        settings = get_settings()
+        async with get_session(engine) as session:
+            repo = EventoRepository(session)
+            similar = await repo.buscar_por_vector(vector, limite=1)
+            duplicado = (
+                similar
+                and similar[0][0].id != item.evento_id
+                and similar[0][1] >= settings.dedup_umbral
+                and abs(item.ts - similar[0][0].timestamp_unix)
+                <= settings.dedup_ventana_segundos
+            )
+            if duplicado:
+                existente = similar[0][0]
+                existente.refuerzos += 1
+                existente.amplitud = max(existente.amplitud, item.amplitud)
+                if not await repo.eliminar_debil(item.evento_id):
+                    await repo.actualizar_embedding(item.evento_id, vector)
+            else:
+                await repo.actualizar_embedding(item.evento_id, vector)
+            await session.commit()
+    except Exception:  # noqa: BLE001 — el fallo no debe propagarse al loop
+        logger.exception(
+            "indexacion en segundo plano fallo para %s", item.evento_id
+        )
+
+
+async def _consolidar_luego(
+    engine: AsyncEngine, eventos_ids: list[uuid.UUID]
+) -> None:
+    """Persiste los refuerzos de evocación fuera del camino caliente."""
+    try:
+        async with get_session(engine) as session:
+            await EventoRepository(session).reforzar(eventos_ids)
+            await session.commit()
+    except Exception:  # noqa: BLE001 — el fallo no debe propagarse al loop
+        logger.exception("no se pudieron consolidar refuerzos")
 
 
 async def _consultar(consulta: str, top_n: int) -> list[dict[str, Any]]:
@@ -186,7 +335,11 @@ async def _consultar(consulta: str, top_n: int) -> list[dict[str, Any]]:
         resultados = await _obtener_busqueda().buscar(
             session, consulta, top_n=max(1, min(top_n, 50))
         )
-        await session.commit()  # persiste los refuerzos de consolidación
+    _encolar_fondo(
+        _ItemConsolidacion(
+            tuple(uuid.UUID(r.evento_id) for r in resultados)
+        )
+    )
     return [_resultado_a_dict(r) for r in resultados]
 
 
@@ -254,13 +407,15 @@ async def recordar_evento(
     NO usar para buscar memorias existentes: eso es consultar_memoria.
     NO usar para listar un rango de fechas: obtener_linea_de_universo.
 
-    El contenido se vectoriza localmente (nada sale de la máquina) y
-    queda indexado para búsqueda semántica y textual. Si no indicas
-    dimension, se clasifica automáticamente por semejanza semántica.
+    El contenido se vectoriza localmente en segundo plano (nada sale
+    de la máquina): la respuesta es inmediata ("indexado": false) y la
+    búsqueda semántica lo encuentra milisegundos después. La búsqueda
+    por texto lo ve al instante. Si no indicas dimension, se clasifica
+    automáticamente por semejanza semántica.
     Separación de patrones: un evento casi idéntico registrado dentro
-    de la última hora no se duplica — consolida el existente
-    ("deduplicado": true en la respuesta). Eventos recurrentes en
-    momentos distintos sí crean huellas separadas.
+    de la última hora no se duplica — al indexarse se fusiona con el
+    existente (refuerzo). Eventos recurrentes en momentos distintos sí
+    crean huellas separadas.
 
     Args:
         contenido: Texto del evento (p. ej. "decidí usar PostgreSQL").
@@ -276,8 +431,10 @@ async def recordar_evento(
         timestamp_unix: Unix epoch en SEGUNDOS. Default: ahora.
 
     Returns:
-        Dict con "id", "timestamp_unix", "dimension" usada y
-        "confianza_clasificacion" si se clasificó automáticamente.
+        Dict con "id", "timestamp_unix", "dimension" usada,
+        "indexado" (false mientras el embedding se genera en segundo
+        plano) y "confianza_clasificacion" si se clasificó
+        automáticamente.
     """
     return await _recordar(
         contenido, dimension, fuente, amplitud, frecuencia, timestamp_unix

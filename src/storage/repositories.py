@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Sequence
 from typing import cast
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, literal, select, union_all, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,10 +38,12 @@ class EventoRepository:
 
         Returns:
             El evento persistido con id y campos server-default poblados.
+            El flush emite INSERT ... RETURNING, que ya trae de vuelta
+            las columnas con server_default; un refresh extra sería un
+            roundtrip redundante.
         """
         self._session.add(evento)
         await self._session.flush()
-        await self._session.refresh(evento)
         return evento
 
     async def obtener(self, evento_id: uuid.UUID) -> EventoModel | None:
@@ -226,6 +228,103 @@ class EventoRepository:
         previos = (await self._session.execute(stmt_previos)).scalars().all()
         siguientes = (await self._session.execute(stmt_siguientes)).scalars().all()
         return previos, siguientes
+
+    async def adyacentes_lote(
+        self, marcas: list[int], cantidad: int = 3
+    ) -> dict[int, tuple[list[EventoModel], list[EventoModel]]]:
+        """Trae los adyacentes de todas las marcas en una sola consulta.
+
+        Equivalente a llamar ``adyacentes`` por cada marca, pero en un
+        único roundtrip: un UNION ALL de subconsultas acotadas con
+        ``LIMIT`` por lado (índice ix_eventos_timestamp).
+
+        Args:
+            marcas: Timestamps Unix de referencia (uno por resultado).
+            cantidad: Máximo de eventos por lado y por marca.
+
+        Returns:
+            Mapa posición_en_marcas → (previos, siguientes), cada lista
+            ordenada desde el más cercano a la marca.
+        """
+        if not marcas:
+            return {}
+        brazos = []
+        for i, ts in enumerate(marcas):
+            brazos.append(
+                select(
+                    EventoModel,
+                    literal(i).label("ancla"),
+                    literal(0).label("lado"),
+                )
+                .where(EventoModel.timestamp_unix < ts)
+                .order_by(EventoModel.timestamp_unix.desc())
+                .limit(cantidad)
+            )
+            brazos.append(
+                select(
+                    EventoModel,
+                    literal(i).label("ancla"),
+                    literal(1).label("lado"),
+                )
+                .where(EventoModel.timestamp_unix > ts)
+                .order_by(EventoModel.timestamp_unix)
+                .limit(cantidad)
+            )
+        union = union_all(*brazos).subquery()
+        filas = (
+            await self._session.execute(select(union))
+        ).mappings().all()
+        salida: dict[int, tuple[list[EventoModel], list[EventoModel]]] = {
+            i: ([], []) for i in range(len(marcas))
+        }
+        for fila in filas:
+            modelo = EventoModel(
+                **{
+                    k: v
+                    for k, v in fila.items()
+                    if k not in ("ancla", "lado")
+                }
+            )
+            lado = salida[fila["ancla"]][0 if fila["lado"] == 0 else 1]
+            lado.append(modelo)
+        return salida
+
+    async def actualizar_embedding(
+        self, evento_id: uuid.UUID, vector: list[float]
+    ) -> None:
+        """Asigna el embedding a un evento insertado sin él (write-behind).
+
+        Args:
+            evento_id: UUID del evento a indexar.
+            vector: Embedding generado en segundo plano.
+        """
+        stmt = (
+            update(EventoModel)
+            .where(EventoModel.id == evento_id)
+            .values(embedding=vector)
+        )
+        await self._session.execute(stmt)
+
+    async def eliminar_debil(self, evento_id: uuid.UUID) -> bool:
+        """Elimina un evento solo si nadie lo ha consolidado todavía.
+
+        Usado por la indexación write-behind para fusionar duplicados:
+        si la huella nueva ya ganó refuerzos no se borra.
+
+        Args:
+            evento_id: UUID del evento candidato a eliminar.
+
+        Returns:
+            True si la fila fue eliminada.
+        """
+        stmt = delete(EventoModel).where(
+            EventoModel.id == evento_id,
+            EventoModel.refuerzos == 0,
+        )
+        resultado = cast(
+            CursorResult[EventoModel], await self._session.execute(stmt)
+        )
+        return resultado.rowcount > 0
 
 
 class BenchmarkRepository:

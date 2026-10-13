@@ -103,6 +103,12 @@ async def test_obtener_episodios_agrupa_por_huecos(
             await repo.crear(_modelo(ts, 0.5, 0))
         await otra.commit()
     monkeypatch.setattr(tools, "obtener_engine", lambda: engine)
+    # El worker de indexación vive en un thread aparte y pide su
+    # propio engine vía crear_engine: apuntarlo también a nous_test.
+    monkeypatch.setattr(
+        tools, "crear_engine",
+        lambda: create_async_engine(TEST_DB_URL),
+    )
 
     episodios = await tools._episodios(0, 100_000, gap_max_segundos=14_400)
 

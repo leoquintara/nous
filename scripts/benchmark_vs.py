@@ -14,6 +14,7 @@ Uso:
 
 import asyncio
 import contextlib
+import gc
 import io
 import os
 import statistics
@@ -32,6 +33,21 @@ HECHOS_PRUEBA = [
     "la búsqueda híbrida fusiona BM25 y vectores con RRF",
     "memlord y gbrain son sistemas de memoria MCP alternativos",
     "el dashboard de Nous usará Next.js con estilo liquid glass",
+    "la línea de universo registra trayectorias y episodios 4D",
+    "el reranker cross-encoder reordena los mejores candidatos",
+    "los embeddings corren 100% en local con ONNX Runtime",
+    "la consolidación por refuerzos frena el olvido de huellas",
+    "el dedup semántico separa patrones como el giro dentado",
+    "el priming activa vecinos temporales por activación difusa",
+    "los episodios segmentan la línea por boundaries de Zacks",
+    "la poda sináptica elimina huellas débiles como en el sueño",
+    "ONNX Runtime acelera embeddings y reranking en CPU",
+    "el worker de fondo indexa sin competir con el foreground",
+    "json_response reduce el overhead del transporte MCP",
+    "la membrana 3D del dashboard pulsa como corteza viva",
+    "el umbral de coseno evita respuestas sin señal suficiente",
+    "los refuerzos actúan como reconsolidación de Nader",
+    "la amplitud modula la saliencia emocional de cada huella",
 ]
 
 CONSULTAS = [
@@ -109,6 +125,13 @@ async def _benchmark_sistema(
     res: dict[str, Any] = {"nombre": nombre}
     try:
         async with _sesion(url, token) as s:
+            # Warm-up por sesión (3 escrituras + 1 consulta sin medir):
+            # el transporte MCP/anyio de cada servidor tiene una fase de
+            # rampa en sus primeras llamadas; medir estado estable es la
+            # comparación honesta. Se aplica igual a los tres sistemas.
+            for i in range(3):
+                await escribir(s, f"warmup-{i}", i)
+            await consultar(s, "warmup")
             escrituras = []
             for i, hecho in enumerate(HECHOS_PRUEBA):
                 escrituras.append(await _medir(escribir(s, hecho, i)))
@@ -176,6 +199,11 @@ async def main() -> None:
         encoding="utf-8", errors="replace"
     )
     puerto_nous = 8790
+    # Congela el GC del cliente: una colección dentro de una medición
+    # contaría como latencia del servidor. Aplica igual a los tres.
+    gc.collect()
+    gc.freeze()
+    gc.set_threshold(50_000, 50, 50)
     token = _leer_var("NOUS_API_TOKEN")
     token_gbrain = _leer_var("GBRAIN_TOKEN")
     token_memlord = _leer_var("MEMLORD_TOKEN")
@@ -186,8 +214,11 @@ async def main() -> None:
         raise SystemExit("Nous HTTP no arrancó")
 
     try:
-        resultados = await asyncio.gather(
-            _benchmark_sistema(
+        # Medición secuencial: cada sistema corre aislado. En paralelo,
+        # la fase de consulta de gbrain (ollama, ~6s/query) saturaba la
+        # CPU y contaminaba las escrituras/consultas de los demás.
+        resultados = [
+            await _benchmark_sistema(
                 "nous",
                 f"http://127.0.0.1:{puerto_nous}/mcp/",
                 escribir=lambda s, h, i: s.call_tool(
@@ -203,7 +234,7 @@ async def main() -> None:
                 ),
                 token=token,
             ),
-            _benchmark_sistema(
+            await _benchmark_sistema(
                 "gbrain",
                 "http://127.0.0.1:3131/mcp",
                 escribir=lambda s, h, i: s.call_tool(
@@ -218,7 +249,7 @@ async def main() -> None:
                 consultar=lambda s, q: s.call_tool("recall", {"query": q}),
                 token=token_gbrain,
             ),
-            _benchmark_sistema(
+            await _benchmark_sistema(
                 "memlord",
                 "http://127.0.0.1:8477/mcp",
                 escribir=lambda s, h, i: s.call_tool(
@@ -235,7 +266,7 @@ async def main() -> None:
                 ),
                 token=token_memlord,
             ),
-        )
+        ]
 
         # Capacidades exclusivas de Nous: proyección sobre datos reales
         async with _sesion(
@@ -262,6 +293,7 @@ async def main() -> None:
             continue
         esc = r["escritura_ms"]
         con = r["consulta_ms"]
+        print(f"  {r['nombre']:8s} esc={sorted(round(x) for x in esc)}")
         filas_escritura.append(
             [
                 r["nombre"],
@@ -279,7 +311,7 @@ async def main() -> None:
             ]
         )
 
-    print("📝 A. Escritura (5 hechos reales c/u)")
+    print(f"📝 A. Escritura ({len(HECHOS_PRUEBA)} hechos reales c/u)")
     print(_tabla(["Sistema", "p50", "p95", "max"], filas_escritura))
     print("\n🔍 B. Consulta (8 queries × 5 iteraciones = 40 medidas c/u)")
     print(_tabla(["Sistema", "p50", "p95", "promedio"], filas_consulta))

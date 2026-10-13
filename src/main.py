@@ -1,13 +1,18 @@
 """Entry point del servidor MCP de Nous."""
 
+import asyncio
+import gc
 import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import cast
 
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import delete
+from sqlalchemy.pool import AsyncAdaptedQueuePool
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -20,7 +25,9 @@ from src.config import get_settings
 from src.core.embeddings import activar_offline_hf
 from src.core.exceptions import NousError
 from src.mcp.server import mcp_server
-from src.mcp.tools import precalentar_modelos
+from src.mcp.tools import _consultar, _drenar_fondo, _recordar, precalentar_modelos
+from src.storage.database import get_session, obtener_engine
+from src.storage.models import EventoModel
 
 
 async def _salud(_request: Request) -> JSONResponse:
@@ -99,6 +106,54 @@ def crear_app_http() -> SecurityHeadersMiddleware:
     @asynccontextmanager
     async def _lifespan(_app: Starlette) -> AsyncIterator[None]:
         async with mcp_app.router.lifespan_context(mcp_app):
+            # Calienta el path real de escritura/consulta — incluido el
+            # dispatch MCP (call_tool compila la validación pydantic de
+            # cada tool en su primer uso). Sin esto, las primeras
+            # requests de cada proceso pagan ~30ms extra por tool.
+            try:
+                await mcp_server.call_tool(
+                    "recordar_evento",
+                    {
+                        "contenido": "__warmup__",
+                        "dimension": "cognitiva",
+                        "fuente": "warmup",
+                    },
+                )
+                await mcp_server.call_tool(
+                    "consultar_memoria",
+                    {"consulta": "__warmup__", "top_n": 1},
+                )
+            except Exception:  # noqa: BLE001 — fallback al path directo
+                logging.getLogger("nous").debug(
+                    "warmup via call_tool fallo, uso directo"
+                )
+                await _recordar(
+                    "__warmup__", "cognitiva", "warmup", 0.5, None, None
+                )
+                await _consultar("__warmup__", 1)
+            await _drenar_fondo()
+            engine = obtener_engine()
+            async with get_session(engine) as session:
+                await session.execute(
+                    delete(EventoModel).where(EventoModel.fuente == "warmup")
+                )
+                await session.commit()
+            # Llena el pool: las tareas write-behind compiten por
+            # conexiones; si el pool está frío, una escritura real
+            # puede pagar el handshake TCP+auth (~80ms).
+            pool = cast(AsyncAdaptedQueuePool, engine.pool)
+            conexiones = await asyncio.gather(
+                *(engine.connect() for _ in range(pool.size()))
+            )
+            await asyncio.gather(*(c.close() for c in conexiones))
+            # Congela los objetos calientes (modelos ONNX, caches de
+            # HF): las colecciones gen2 del GC dejan de recorrerlos y
+            # las pausas de GC dejan de producir outliers de ~40ms.
+            gc.collect()
+            gc.freeze()
+            # Umbrales altos: el GC casi nunca dispara dentro de una
+            # request; el worker de fondo recolecta en la quietud.
+            gc.set_threshold(50_000, 50, 50)
             yield
 
     app = Starlette(

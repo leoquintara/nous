@@ -5,7 +5,12 @@ Soporta transporte stdio y streamable-http según configuración.
 
 from mcp.server.fastmcp import FastMCP
 
-mcp_server = FastMCP("nous")
+mcp_server = FastMCP(
+    "nous",
+    # Respuestas JSON directas en vez de frames SSE: menos trabajo de
+    # serialización por llamada en el transporte streamable-http.
+    json_response=True,
+)
 
 
 @mcp_server.tool()
