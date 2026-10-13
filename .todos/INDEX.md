@@ -15,6 +15,7 @@
 | 11 | Upgrade de versiones estilo gbrain | ✅ commit 3f81b20 — check-update/upgrade con detección fuente/paquete + alembic post-upgrade |
 | 12 | Tests CLI + upgrade (Python) | ✅ 37 tests nuevos (unit + integración vs nous_test) — 116 total |
 | 13 | Tests dashboard (vitest) | ✅ commit e62a891 — 28 tests adaptador API + cerebro (tipos/física/geometría) |
+| 14 | Auditoría OWASP + tests | ✅ commit 2a7aee5 — 50 tests (1/regla) + fixes: rate limit login, headers, bounds schema, validación JSONL, sin short-circuit |
 
 ## Notas de entorno
 
