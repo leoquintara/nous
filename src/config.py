@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     precalentar_modelos: bool = True
     reranker_habilitado: bool = True
     reranker_modelo: str = "cross-encoder/ms-marco-MiniLM-L12-v2"
+    cache_embeddings_max: int = 256
+    dedup_umbral: float = 0.95
+    priming_segundos: int = 300
     recencia_vida_media_dias: float = 30.0
     mcp_transport: Literal["stdio", "http"] = "stdio"
     api_token: str | None = None

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+from collections import OrderedDict
 from typing import TYPE_CHECKING
 
 from src.config import get_settings
@@ -42,16 +43,33 @@ class GeneradorEmbeddings:
     el costo de importar torch al arrancar el proceso.
     """
 
-    def __init__(self, modelo: str | None = None) -> None:
+    def __init__(
+        self, modelo: str | None = None, *, cache_max: int | None = None
+    ) -> None:
         """Inicializa el generador sin cargar el modelo todavía.
 
         Args:
             modelo: Nombre del modelo de sentence-transformers.
                 Por defecto ``settings.embedding_model``.
+            cache_max: Entradas del cache LRU de embeddings por texto
+                (None = ``settings.cache_embeddings_max``, 0 = apagado).
         """
         self._nombre_modelo = modelo or get_settings().embedding_model
+        self._cache_max = (
+            get_settings().cache_embeddings_max
+            if cache_max is None
+            else cache_max
+        )
+        self._cache: OrderedDict[str, list[float]] = OrderedDict()
+        self._hits = 0
+        self._misses = 0
         self._modelo: SentenceTransformer | None = None
         self._lock = threading.Lock()
+
+    @property
+    def estadisticas_cache(self) -> dict[str, int]:
+        """Contadores de aciertos y fallos del cache (para benchmarks)."""
+        return {"hits": self._hits, "misses": self._misses}
 
     @property
     def dimension(self) -> int:
@@ -83,7 +101,19 @@ class GeneradorEmbeddings:
         """
         if not textos:
             return []
-        return await asyncio.to_thread(self._encode, textos)
+        if self._cache_max <= 0:
+            return await asyncio.to_thread(self._encode, textos)
+        vectores: list[list[float] | None] = [
+            self._cache_get(t) for t in textos
+        ]
+        pendientes = [t for t, v in zip(textos, vectores, strict=True) if v is None]
+        if pendientes:
+            nuevos = await asyncio.to_thread(self._encode, pendientes)
+            for texto, vector in zip(pendientes, nuevos, strict=True):
+                self._cache_put(texto, vector)
+            it = iter(nuevos)
+            vectores = [v if v is not None else next(it) for v in vectores]
+        return [v for v in vectores if v is not None]
 
     def _encode(self, textos: list[str]) -> list[list[float]]:
         """Codifica textos con el modelo (bloqueante, corre en thread)."""
@@ -92,6 +122,25 @@ class GeneradorEmbeddings:
             textos, normalize_embeddings=True, convert_to_numpy=True
         )
         return resultado.tolist()  # type: ignore[no-any-return]
+
+    def _cache_get(self, texto: str) -> list[float] | None:
+        """Busca el embedding cacheado por clave normalizada del texto."""
+        clave = " ".join(texto.lower().split())
+        vector = self._cache.get(clave)
+        if vector is None:
+            self._misses += 1
+            return None
+        self._cache.move_to_end(clave)
+        self._hits += 1
+        return vector
+
+    def _cache_put(self, texto: str, vector: list[float]) -> None:
+        """Inserta un embedding en el cache LRU desalojando el más viejo."""
+        clave = " ".join(texto.lower().split())
+        self._cache[clave] = vector
+        self._cache.move_to_end(clave)
+        while len(self._cache) > self._cache_max:
+            self._cache.popitem(last=False)
 
     def precalentar(self) -> None:
         """Carga el modelo en memoria si aún no está cargado.
