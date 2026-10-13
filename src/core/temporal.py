@@ -14,6 +14,7 @@ from src.core.modelos import Dimension, Evento, Proyeccion, Trayectoria
 
 MIN_RACHA = 3
 BOOST_RACHA_ACTIVA = 1.4
+VIDA_MEDIA_DIAS = 7.0
 SEGUNDOS_POR_DIA = 86_400
 EVENTOS_BASE_PROYECCION = 10
 
@@ -54,7 +55,7 @@ def proyectar(
     eventos: Sequence[Evento],
     horizonte_dias: int = 7,
     ahora: int | None = None,
-    vida_media_dias: float = 7.0,
+    vida_media_dias: float = VIDA_MEDIA_DIAS,
 ) -> Proyeccion:
     """Proyecta la dimensión dominante probable en el horizonte dado.
 

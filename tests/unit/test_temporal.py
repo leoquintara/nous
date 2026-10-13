@@ -97,3 +97,17 @@ def test_proyectar_sin_eventos_lanza_value_error() -> None:
     """Verifica que no se proyecta sin historial."""
     with pytest.raises(ValueError):
         proyectar([], ahora=AHORA)
+
+
+def test_prediccion_reexporta_superficie_de_temporal() -> None:
+    """Verifica que prediccion.py expone la API de proyección."""
+    from src.core import prediccion
+
+    assert prediccion.proyectar is proyectar
+    assert prediccion.VIDA_MEDIA_DIAS > 0
+    assert prediccion.BOOST_RACHA_ACTIVA > 1.0
+    assert sorted(prediccion.__all__) == [
+        "BOOST_RACHA_ACTIVA",
+        "VIDA_MEDIA_DIAS",
+        "proyectar",
+    ]
