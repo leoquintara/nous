@@ -7,7 +7,8 @@ contextualización 4D (eventos adyacentes en la línea temporal) es
 el diferenciador propio de Nous.
 """
 
-import asyncio
+import math
+import time
 from collections.abc import Sequence
 from dataclasses import replace
 
@@ -15,14 +16,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.embeddings import GeneradorEmbeddings
 from src.core.modelos import Contexto4D, Dimension, Evento, ResultadoBusqueda
+from src.core.reranker import ReordenadorLocal
 from src.storage.models import EventoModel
 from src.storage.repositories import EventoRepository
 
 K_RRF_DEFAULT = 60
-PESO_RRF = 0.7
+PESO_RRF = 0.6
 PESO_COSENO = 0.3
+PESO_RECENCIA = 0.1
 BOOST_AMPLITUD = 0.25
 SOBREMUESTREO = 4
+CANDIDATOS_RERANK = 15
+PESO_RERANK = 0.5
+SEGUNDOS_POR_DIA = 86_400
 
 
 def fusion_rrf(
@@ -75,16 +81,25 @@ class BusquedaHibrida4D:
     """Orquesta la búsqueda híbrida con contextualización temporal 4D."""
 
     def __init__(
-        self, embeddings: GeneradorEmbeddings, cantidad_contexto: int = 3
+        self,
+        embeddings: GeneradorEmbeddings,
+        reordenador: ReordenadorLocal | None = None,
+        cantidad_contexto: int = 3,
+        vida_media_dias: float = 30.0,
     ) -> None:
         """Inicializa el orquestador de búsqueda.
 
         Args:
             embeddings: Generador de embeddings para vectorizar el query.
+            reordenador: Cross-encoder local opcional para la etapa de
+                reranking. Sin él, el ranking termina en el re-score.
             cantidad_contexto: Eventos adyacentes por lado a adjuntar.
+            vida_media_dias: Vida media del decaimiento por recencia.
         """
         self._embeddings = embeddings
+        self._reordenador = reordenador
         self._cantidad_contexto = cantidad_contexto
+        self._vida_media_dias = vida_media_dias
 
     async def buscar(
         self, session: AsyncSession, query: str, top_n: int = 10
@@ -101,31 +116,34 @@ class BusquedaHibrida4D:
         """
         vector_query = await self._embeddings.generar(query)
         repo = EventoRepository(session)
-        hits_texto, hits_vector = await asyncio.gather(
-            repo.buscar_por_texto(query),
-            repo.buscar_por_vector(vector_query),
-        )
+        hits_texto = await repo.buscar_por_texto(query)
+        hits_vector = await repo.buscar_por_vector(vector_query)
 
         modelos = _indice_modelos(hits_texto, hits_vector)
         fusionados = _fusionar(hits_texto, hits_vector, top_n)
         if not fusionados:
             return []
 
-        resultados = _re_scored(fusionados, modelos, vector_query)
-        resultados = _deduplicar(resultados)[:top_n]
-        return await self._contextualizar(repo, resultados)
+        resultados = _re_scored(
+            fusionados, modelos, vector_query, int(time.time()), self._vida_media_dias
+        )
+        resultados = _deduplicar(resultados)
+        if self._reordenador is not None:
+            resultados = await self._reordenar(query, resultados)
+        return await self._contextualizar(repo, resultados[:top_n])
 
     async def _contextualizar(
         self, repo: EventoRepository, resultados: list[ResultadoBusqueda]
     ) -> list[ResultadoBusqueda]:
-        """Adjunta los eventos adyacentes a cada resultado (en paralelo)."""
-        tareas = []
+        """Adjunta los eventos adyacentes a cada resultado."""
+        contextos = []
         for r in resultados:
             assert r.evento is not None
-            tareas.append(
-                repo.adyacentes(r.evento.timestamp_unix, self._cantidad_contexto)
+            contextos.append(
+                await repo.adyacentes(
+                    r.evento.timestamp_unix, self._cantidad_contexto
+                )
             )
-        contextos = await asyncio.gather(*tareas)
         return [
             replace(
                 resultado,
@@ -138,6 +156,28 @@ class BusquedaHibrida4D:
                 resultados, contextos, strict=True
             )
         ]
+
+    async def _reordenar(
+        self, query: str, resultados: list[ResultadoBusqueda]
+    ) -> list[ResultadoBusqueda]:
+        """Reordena los mejores candidatos con el cross-encoder local."""
+        assert self._reordenador is not None
+        candidatos = resultados[:CANDIDATOS_RERANK]
+        textos = [r.evento.contenido if r.evento else "" for r in candidatos]
+        logits = await self._reordenador.puntuar(query, textos)
+        score_max = candidatos[0].score_final
+        reordenados = [
+            replace(
+                r,
+                score_final=(
+                    (1.0 - PESO_RERANK) * (r.score_final / score_max)
+                    + PESO_RERANK * _sigmoide(logit)
+                ),
+            )
+            for r, logit in zip(candidatos, logits, strict=True)
+        ]
+        reordenados.sort(key=lambda r: r.score_final, reverse=True)
+        return reordenados + resultados[CANDIDATOS_RERANK:]
 
 
 def _indice_modelos(
@@ -172,14 +212,23 @@ def _re_scored(
     fusionados: list[ResultadoBusqueda],
     modelos: dict[str, EventoModel],
     vector_query: list[float],
+    ahora: int,
+    vida_media_dias: float,
 ) -> list[ResultadoBusqueda]:
-    """Mezcla RRF con coseno real y aplica boost por amplitud."""
+    """Mezcla RRF con coseno y recencia; aplica boost por amplitud."""
     rrf_max = max(r.score_rrf for r in fusionados)
     resultados = []
     for r in fusionados:
         modelo = modelos[r.evento_id]
         coseno = _similitud(vector_query, modelo.embedding)
-        blend = PESO_RRF * (r.score_rrf / rrf_max) + PESO_COSENO * coseno
+        recencia = _decaimiento(
+            ahora - modelo.timestamp_unix, vida_media_dias
+        )
+        blend = (
+            PESO_RRF * (r.score_rrf / rrf_max)
+            + PESO_COSENO * coseno
+            + PESO_RECENCIA * recencia
+        )
         score_final = blend * (1.0 + BOOST_AMPLITUD * modelo.amplitud)
         resultados.append(
             replace(
@@ -204,6 +253,18 @@ def _deduplicar(
             vistos.add(clave)
             unicos.append(r)
     return unicos
+
+
+def _decaimiento(edad_segundos: int, vida_media_dias: float) -> float:
+    """Factor de recencia en [0,1]: se reduce a la mitad cada vida media."""
+    if vida_media_dias <= 0 or edad_segundos <= 0:
+        return 1.0
+    return math.pow(0.5, edad_segundos / (vida_media_dias * SEGUNDOS_POR_DIA))
+
+
+def _sigmoide(x: float) -> float:
+    """Normaliza un logit del cross-encoder a (0, 1)."""
+    return 1.0 / (1.0 + math.exp(-x))
 
 
 def _similitud(vector_query: list[float], embedding: list[float] | None) -> float:
