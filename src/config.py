@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://nous:nous@localhost:5432/nous"
     embedding_provider: Literal["local", "external"] = "local"
     embedding_model: str = "sentence-transformers/all-MiniLM-L12-v2"
+    hf_offline: bool = True
+    precalentar_modelos: bool = True
     reranker_habilitado: bool = True
     reranker_modelo: str = "cross-encoder/ms-marco-MiniLM-L12-v2"
     recencia_vida_media_dias: float = 30.0

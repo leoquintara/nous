@@ -23,6 +23,7 @@ from src.storage.repositories import EventoRepository, ProyeccionRepository
 _embeddings: GeneradorEmbeddings | None = None
 _busqueda: BusquedaHibrida4D | None = None
 _clasificador: ClasificadorDimensiones | None = None
+_reordenador: ReordenadorLocal | None = None
 
 
 def _obtener_embeddings() -> GeneradorEmbeddings:
@@ -43,18 +44,34 @@ def _obtener_clasificador() -> ClasificadorDimensiones:
 
 def _obtener_busqueda() -> BusquedaHibrida4D:
     """Retorna el orquestador de búsqueda compartido del proceso."""
-    global _busqueda
+    global _busqueda, _reordenador
     if _busqueda is None:
         settings = get_settings()
-        reordenador = (
+        _reordenador = (
             ReordenadorLocal() if settings.reranker_habilitado else None
         )
         _busqueda = BusquedaHibrida4D(
             _obtener_embeddings(),
-            reordenador=reordenador,
+            reordenador=_reordenador,
             vida_media_dias=settings.recencia_vida_media_dias,
         )
     return _busqueda
+
+
+def precalentar_modelos() -> None:
+    """Carga en segundo plano los modelos locales del proceso.
+
+    Sin warm-up, la primera consulta paga ~10-30s de carga de
+    sentence-transformers; con él, el servidor responde al protocolo
+    inmediatamente mientras los modelos se cargan en un hilo aparte.
+    Las cargas están protegidas por lock: una consulta que llegue
+    durante el warm-up espera a que termine en vez de duplicar la
+    carga.
+    """
+    _obtener_busqueda()
+    _obtener_embeddings().precalentar()
+    if _reordenador is not None:
+        _reordenador.precalentar()
 
 
 def _modelo_a_dict(modelo: EventoModel) -> dict[str, Any]:

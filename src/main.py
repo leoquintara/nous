@@ -1,6 +1,7 @@
 """Entry point del servidor MCP de Nous."""
 
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -15,8 +16,10 @@ from starlette.routing import Mount, Route
 from src.api.auth import BearerTokenMiddleware
 from src.api.routes import router
 from src.config import get_settings
+from src.core.embeddings import activar_offline_hf
 from src.core.exceptions import NousError
 from src.mcp.server import mcp_server
+from src.mcp.tools import precalentar_modelos
 
 
 async def _salud(_request: Request) -> JSONResponse:
@@ -70,11 +73,45 @@ def crear_app_http() -> BearerTokenMiddleware:
     return BearerTokenMiddleware(app)
 
 
+def _precalentar() -> None:
+    """Ejecuta el warm-up de modelos tolerando cualquier fallo.
+
+    Debe correr en el hilo principal: los imports nativos de
+    torch/scipy/transformers (LoadLibrary + DllMain) pueden hacer
+    deadlock con el loader lock de Windows si se ejecutan en un
+    hilo secundario. Verificado: un warm-up en daemon thread dejaba
+    bloqueada la primera consulta indefinidamente.
+
+    El warm-up es una optimización: si falla (modelo no cacheado,
+    disco lento, etc.) el servidor sigue operativo y la carga se
+    hará perezosamente en la primera consulta.
+    """
+    logger = logging.getLogger("nous")
+    try:
+        precalentar_modelos()
+    except Exception:  # noqa: BLE001 — el warm-up nunca debe tumbar el arranque
+        logger.warning(
+            "Warm-up de modelos falló; se cargarán en la primera consulta",
+            exc_info=True,
+        )
+    else:
+        logger.info("Modelos locales precalentados")
+
+
 def main() -> None:
     """Arranca el servidor MCP con el transporte configurado."""
     settings = get_settings()
     logging.basicConfig(level=settings.log_level)
     logger = logging.getLogger("nous")
+    activar_offline_hf()
+    if os.environ.get("NOUS_FAULTHANDLER_SEGS"):
+        import faulthandler
+
+        faulthandler.dump_traceback_later(
+            float(os.environ["NOUS_FAULTHANDLER_SEGS"]), repeat=True
+        )
+    if settings.precalentar_modelos:
+        _precalentar()
     if settings.mcp_transport == "stdio":
         logger.info("Arrancando Nous (transporte=stdio)")
         mcp_server.run(transport="stdio")

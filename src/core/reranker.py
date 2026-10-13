@@ -8,9 +8,12 @@ reordena con un modelo que corre 100% en la máquina del usuario:
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import TYPE_CHECKING
 
 from src.config import get_settings
+from src.core.embeddings import activar_offline_hf
+from src.core.exceptions import ProveedorNoDisponibleError
 
 if TYPE_CHECKING:
     from sentence_transformers import CrossEncoder
@@ -32,6 +35,7 @@ class ReordenadorLocal:
         """
         self._nombre_modelo = modelo or get_settings().reranker_modelo
         self._modelo: CrossEncoder | None = None
+        self._lock = threading.Lock()
 
     async def puntuar(self, query: str, textos: list[str]) -> list[float]:
         """Puntúa la relevancia de cada texto respecto al query.
@@ -55,10 +59,36 @@ class ReordenadorLocal:
         resultado = modelo.predict(pares, convert_to_numpy=True)
         return resultado.tolist()  # type: ignore[no-any-return]
 
-    def _cargar_modelo(self) -> CrossEncoder:
-        """Carga perezosa del modelo; import pesado solo al primer uso."""
-        if self._modelo is None:
-            from sentence_transformers import CrossEncoder
+    def precalentar(self) -> None:
+        """Carga el modelo en memoria si aún no está cargado.
 
-            self._modelo = CrossEncoder(self._nombre_modelo, device="cpu")
+        Pensado para el warm-up en segundo plano al arrancar el
+        servidor; es seguro llamarlo concurrentemente.
+        """
+        self._cargar_modelo()
+
+    def _cargar_modelo(self) -> CrossEncoder:
+        """Carga perezosa del modelo; import pesado solo al primer uso.
+
+        Raises:
+            ProveedorNoDisponibleError: el modelo no está en caché y
+                el modo offline de HF está activo.
+        """
+        if self._modelo is None:
+            with self._lock:
+                if self._modelo is not None:
+                    return self._modelo
+                activar_offline_hf()
+                from sentence_transformers import CrossEncoder
+
+                try:
+                    self._modelo = CrossEncoder(
+                        self._nombre_modelo, device="cpu"
+                    )
+                except OSError as exc:
+                    raise ProveedorNoDisponibleError(
+                        f"Modelo '{self._nombre_modelo}' no está en la "
+                        "caché local y NOUS_HF_OFFLINE=true. Descárgalo "
+                        "una vez con NOUS_HF_OFFLINE=false."
+                    ) from exc
         return self._modelo
