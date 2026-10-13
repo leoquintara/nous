@@ -3,13 +3,14 @@
 /**
  * Visor de detalle del nodo seleccionado — port del NodeViewer del
  * plugin DSH Memory. Muestra el contenido completo del evento
- * renderizado como markdown junto a su metadata de procedencia.
+ * renderizado como markdown, badges de dimensión/estado, sus tags y
+ * las memorias conectadas más relevantes como acordeón navegable.
  */
 
-import { Xmark } from "iconoir-react";
-import type { ReactNode } from "react";
+import { NavArrowDown, Xmark } from "iconoir-react";
+import { useState, type ReactNode } from "react";
 
-import type { Nodo } from "./tipos";
+import { COLORES_DIMENSION, COLORES_ESTADO, type Nodo } from "./tipos";
 
 const NOMBRE_ESTADO: Record<Nodo["estado"], string> = {
   fresh: "Recién codificada",
@@ -17,6 +18,11 @@ const NOMBRE_ESTADO: Record<Nodo["estado"], string> = {
   consolidated: "Consolidada (LTM)",
   decayed: "Traza que decae",
   dead: "Sinapsis muerta",
+};
+
+const NOMBRE_TIPO_VINCULO: Record<string, string> = {
+  explicita: "declarado",
+  semantica: "afinidad",
 };
 
 /** Renderiza markdown básico a nodos React (sin dependencias). */
@@ -125,13 +131,48 @@ function renderMarkdown(texto: string): ReactNode[] {
   return salida;
 }
 
+/** Memoria conectada al nodo activo (fila del acordeón). */
+export interface MemoriaConectada {
+  /** Índice del nodo vecino en el grafo. */
+  idx: number;
+  etiqueta: string;
+  estado: Nodo["estado"];
+  /** Tipo de vínculo si viene de `relaciones`; null = lazo estructural. */
+  tipo: string | null;
+  peso: number;
+}
+
 interface Props {
   nodo: Nodo;
+  conectadas: MemoriaConectada[];
   alCerrar: () => void;
+  /** Salta la selección al nodo vecino pulsado en el acordeón. */
+  alSaltar: (idx: number) => void;
+}
+
+/** Chip semántico con el color del modo que representa. */
+function Badge({ texto, color }: { texto: string; color: string }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[0.65rem] font-medium"
+      style={{
+        background: `color-mix(in srgb, ${color} 18%, transparent)`,
+        color,
+        border: `1px solid color-mix(in srgb, ${color} 40%, transparent)`,
+      }}
+    >
+      <span
+        className="h-1.5 w-1.5 rounded-full"
+        style={{ background: color }}
+      />
+      {texto}
+    </span>
+  );
 }
 
 /** Tarjeta flotante con el detalle completo del evento seleccionado. */
-export function VisorNodo({ nodo, alCerrar }: Props) {
+export function VisorNodo({ nodo, conectadas, alCerrar, alSaltar }: Props) {
+  const [abierto, setAbierto] = useState<number | null>(0);
   return (
     <aside
       className="vidrio-fuerte pointer-events-auto absolute top-3 right-3 bottom-3 z-20 flex w-80 max-w-[85%] flex-col overflow-hidden"
@@ -143,6 +184,16 @@ export function VisorNodo({ nodo, alCerrar }: Props) {
           <p className="texto-suave mt-0.5 text-[0.7rem]">
             {new Date(nodo.timestamp_unix * 1000).toLocaleString("es")}
           </p>
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            <Badge
+              texto={nodo.dimension}
+              color={COLORES_DIMENSION[nodo.dimension]}
+            />
+            <Badge
+              texto={NOMBRE_ESTADO[nodo.estado]}
+              color={COLORES_ESTADO[nodo.estado]}
+            />
+          </div>
         </div>
         <button
           type="button"
@@ -154,24 +205,85 @@ export function VisorNodo({ nodo, alCerrar }: Props) {
         </button>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-4 text-sm">
+      <div className="sin-scrollbar min-h-0 flex-1 overflow-y-auto p-4 text-sm">
         {renderMarkdown(nodo.contenido)}
+
+        {nodo.tags.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {nodo.tags.map((tag) => (
+              <span
+                key={tag}
+                className="vidrio rounded-full px-2 py-0.5 text-[0.65rem] font-medium"
+                style={{ color: "var(--primary)" }}
+              >
+                #{tag}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {conectadas.length > 0 && (
+          <div className="mt-4 border-t pt-2" style={{ borderColor: "var(--linea-vidrio)" }}>
+            <p className="texto-suave mb-1.5 text-[0.65rem] font-semibold tracking-wide uppercase">
+              Memorias conectadas
+            </p>
+            <div className="flex flex-col gap-1">
+              {conectadas.map((c, i) => {
+                const abierta = abierto === i;
+                return (
+                  <div key={c.idx} className="vidrio rounded-xl">
+                    <button
+                      type="button"
+                      onClick={() => setAbierto(abierta ? null : i)}
+                      aria-expanded={abierta}
+                      className="flex w-full items-center gap-2 px-2.5 py-2 text-left"
+                    >
+                      <span
+                        className="h-2 w-2 shrink-0 rounded-full"
+                        style={{ background: COLORES_ESTADO[c.estado] }}
+                      />
+                      <span className="min-w-0 flex-1 truncate text-[0.7rem] font-medium">
+                        {c.etiqueta}
+                      </span>
+                      {c.tipo && (
+                        <span className="texto-suave shrink-0 text-[0.6rem]">
+                          {NOMBRE_TIPO_VINCULO[c.tipo] ?? c.tipo}
+                        </span>
+                      )}
+                      <NavArrowDown
+                        width={12}
+                        height={12}
+                        className={`texto-suave shrink-0 transition-transform ${abierta ? "rotate-180" : ""}`}
+                      />
+                    </button>
+                    {abierta && (
+                      <div className="px-2.5 pb-2">
+                        <button
+                          type="button"
+                          onClick={() => alSaltar(c.idx)}
+                          className="text-[0.65rem] font-medium"
+                          style={{ color: "var(--primary)" }}
+                        >
+                          Ir a la neurona →
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       <footer
         className="texto-suave grid grid-cols-2 gap-x-3 gap-y-1.5 border-t p-4 text-[0.7rem]"
         style={{ borderColor: "var(--linea-vidrio)" }}
       >
-        <span>Dimensión</span>
-        <span className="text-right font-medium" style={{ color: "var(--ink)" }}>
-          {nodo.dimension}
-        </span>
         <span>Fuente</span>
         <span className="truncate text-right font-medium" style={{ color: "var(--ink)" }}>
           {nodo.fuente}
         </span>
-        <span>Estado</span>
-        <span className="text-right">{NOMBRE_ESTADO[nodo.estado]}</span>
         <span>Amplitud</span>
         <span className="text-right">{nodo.amplitud.toFixed(2)}</span>
         <span>Refuerzos</span>

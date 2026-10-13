@@ -33,6 +33,7 @@ function nodo(parcial: Partial<Nodo> = {}): Nodo {
     timestamp_unix: 0,
     pinned: false,
     deg: 0,
+    tags: parcial.tags ?? [],
     rank: 0,
     ...parcial,
   };
@@ -113,10 +114,12 @@ describe("integración con eventosAGrafo", () => {
       {
         id: "a", timestamp_unix: 1, dimension: "cognitiva", fuente: "t",
         contenido: "x", amplitud: 0.5, frecuencia: null, refuerzos: 0,
+        tags: [], rama: "main",
       },
       {
         id: "b", timestamp_unix: 2, dimension: "somatica", fuente: "t",
         contenido: "y", amplitud: 0.5, frecuencia: null, refuerzos: 0,
+        tags: [], rama: "main",
       },
     ]);
     const vel = g.pts.map(() => ({ x: 0, y: 0, z: 0 }));

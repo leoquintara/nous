@@ -18,6 +18,29 @@ export interface Evento {
   frecuencia: number | null;
   /** Veces que la memoria fue evocada (consolidación por recuerdo). */
   refuerzos: number;
+  /** Etiquetas que enlazan contenido (explícitas + #hashtags). */
+  tags: string[];
+  /** Línea de universo a la que pertenece el evento. */
+  rama: string;
+}
+
+/** Tag agregado con su frecuencia de uso. */
+export interface TagConteo {
+  tag: string;
+  eventos: number;
+}
+
+/** Fuente de datos administrable registrada en el backend. */
+export interface FuenteInfo {
+  nombre: string;
+  tipo: string;
+  estado: "activa" | "archivada";
+  /** Sub-agrupación dentro de la fuente (p. ej. "obsidian/vault-x"). */
+  namespace: string;
+  /** Rama de la línea de universo donde nació la fuente. */
+  rama_origen: string;
+  metadata: Record<string, unknown>;
+  eventos: number;
 }
 
 /** Contexto temporal adyacente a un resultado de búsqueda. */

@@ -25,6 +25,7 @@ function nodo(parcial: Partial<Nodo> = {}): Nodo {
     pinned: false,
     deg: 0,
     rank: 0,
+    tags: [],
     ...parcial,
   };
 }

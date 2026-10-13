@@ -31,7 +31,10 @@ import {
   type PosicionPin,
 } from "@/ui/brain/tipos";
 import { usePrefsCerebro } from "@/ui/brain/usar-prefs-cerebro";
-import { VisorNodo } from "@/ui/brain/visor-nodo";
+import {
+  VisorNodo,
+  type MemoriaConectada,
+} from "@/ui/brain/visor-nodo";
 
 const CerebroCanvas = dynamic(
   () =>
@@ -62,12 +65,17 @@ export default function PaginaCerebro() {
   });
 
   /** Recarga los eventos y reconstruye el grafo respetando los pins. */
-  const recargar = useCallback(() => {
-    if (!memoria) return;
+  const recargar = useCallback((): Promise<void> => {
+    if (!memoria) return Promise.resolve();
     const ahora = Math.floor(Date.now() / 1000);
     setCargando(true);
-    Promise.all([
-      memoria.listarEventos(ahora - 90 * DIA, ahora, prefs.srcCap),
+    return Promise.all([
+      memoria.listarEventos(
+        ahora - 90 * DIA,
+        ahora,
+        prefs.srcCap,
+        prefs.rama ?? undefined,
+      ),
       memoria.listarRelaciones(),
     ])
       .then(([eventos, relaciones]) => {
@@ -78,7 +86,7 @@ export default function PaginaCerebro() {
       })
       .catch((e: Error) => setError(e.message))
       .finally(() => setCargando(false));
-  }, [memoria, prefs.srcCap]);
+  }, [memoria, prefs.srcCap, prefs.rama]);
 
   useEffect(() => {
     const id = setTimeout(recargar, 0);
@@ -161,6 +169,8 @@ export default function PaginaCerebro() {
       if (nuevos.length === 0) return;
       ultimoTs = Math.max(...nuevos.map((e) => e.ts));
       setHistorial((h) => [...nuevos.reverse(), ...h].slice(0, 40));
+      // Los ids que aún no están en el grafo (store reciente) quedan
+      // encolados en el canvas y se animan cuando el recargado llega.
       for (const ev of nuevos) {
         pensarRef.current?.pensar({ ...ev });
       }
@@ -194,8 +204,50 @@ export default function PaginaCerebro() {
     [sel, datos],
   );
 
+  /**
+   * Las 5 memorias conectadas más relevantes: primero los vínculos
+   * persistidos (explícitos > semánticos por peso), luego vecinos
+   * estructurales del grafo.
+   */
+  const conectadas = useMemo<MemoriaConectada[]>(() => {
+    if (!sel || !datos) return [];
+    const vinculos = datos.vinculos.get(sel.index) ?? [];
+    const porPeso = [...vinculos].sort((a, b) => {
+      const t = (x: string) => (x === "explicita" ? 1 : 0);
+      return t(b.tipo) - t(a.tipo) || b.peso - a.peso;
+    });
+    const base = porPeso.map((v) => ({ ...v, estructural: false }));
+    if (base.length < 5) {
+      const ya = new Set(base.map((v) => v.idx));
+      for (const vecino of datos.nbrs.get(sel.index) ?? []) {
+        if (!ya.has(vecino)) {
+          base.push({ idx: vecino, tipo: "", peso: 0, estructural: true });
+        }
+      }
+    }
+    return base.slice(0, 5).map((v) => ({
+      idx: v.idx,
+      etiqueta: datos.nodes[v.idx].etiqueta,
+      estado: datos.nodes[v.idx].estado,
+      tipo: v.estructural ? null : v.tipo,
+      peso: v.peso,
+    }));
+  }, [sel, datos]);
+
+  /** Un solo panel activo: abrir ajustes cierra el visor y viceversa. */
+  const alternarPanel = () => {
+    const abrir = !panelAbierto;
+    setPanelAbierto(abrir);
+    if (abrir) setSel(null);
+  };
+  /** Seleccionar un nodo abre su visor y cierra los ajustes. */
+  const seleccionar = useCallback((s: { index: number } | null) => {
+    setSel(s);
+    if (s) setPanelAbierto(false);
+  }, []);
+
   return (
-    <Shell>
+    <Shell fluid>
       <section
         className="vidrio relative h-[calc(100dvh-7rem)] overflow-hidden rounded-3xl"
         aria-label="Cerebro de memoria 3D"
@@ -216,7 +268,7 @@ export default function PaginaCerebro() {
           <CerebroCanvas
             datos={datos}
             seleccion={sel}
-            alSeleccionar={setSel}
+            alSeleccionar={seleccionar}
             prefs={prefs}
             modoColor={prefs.modoColor}
             ocultas={ocultas}
@@ -248,7 +300,7 @@ export default function PaginaCerebro() {
           <div className="vidrio-fuerte pointer-events-auto flex flex-col">
             <button
               type="button"
-              onClick={() => setPanelAbierto((p) => !p)}
+              onClick={alternarPanel}
               aria-label="Ajustes del grafo"
               aria-expanded={panelAbierto}
               className="texto-suave self-end rounded-lg p-2 hover:text-(--ink)"
@@ -262,6 +314,7 @@ export default function PaginaCerebro() {
                 coincidencias={coincidencias}
                 modoColor={prefs.modoColor}
                 fuentes={datos?.fuentes ?? []}
+                ramas={datos?.ramas ?? []}
               />
             )}
           </div>
@@ -277,7 +330,12 @@ export default function PaginaCerebro() {
         </div>
 
         {nodoSel && (
-          <VisorNodo nodo={nodoSel} alCerrar={() => setSel(null)} />
+          <VisorNodo
+            nodo={nodoSel}
+            conectadas={conectadas}
+            alCerrar={() => setSel(null)}
+            alSaltar={(idx) => setSel({ index: idx })}
+          />
         )}
       </section>
     </Shell>

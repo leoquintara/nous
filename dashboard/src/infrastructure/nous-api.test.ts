@@ -47,6 +47,98 @@ describe("crearClienteNous", () => {
     expect(url).toContain("limite=99");
   });
 
+  it("listarEventos añade rama codificada solo cuando se indica", async () => {
+    const espia = vi
+      .fn()
+      .mockImplementation(() => Promise.resolve(respuestaJson([])));
+    vi.stubGlobal("fetch", espia);
+    const cliente = crearClienteNous("t");
+
+    await cliente.listarEventos(0, 100, 50);
+    let [url] = espia.mock.calls[0] as [string];
+    expect(url).not.toContain("rama=");
+
+    await cliente.listarEventos(0, 100, 50, "línea espejo");
+    [url] = espia.mock.calls[1] as [string];
+    expect(url).toContain(`rama=${encodeURIComponent("línea espejo")}`);
+  });
+
+  it("listarTags consulta /api/tags con el límite", async () => {
+    const espia = vi
+      .fn()
+      .mockResolvedValue(respuestaJson([{ tag: "trabajo", eventos: 3 }]));
+    vi.stubGlobal("fetch", espia);
+
+    const tags = await crearClienteNous("t").listarTags(50);
+
+    const [url] = espia.mock.calls[0] as [string];
+    expect(url).toContain("/api/tags?limite=50");
+    expect(tags[0].tag).toBe("trabajo");
+  });
+
+  it("crearFuente hace POST JSON a /api/fuentes", async () => {
+    const espia = vi
+      .fn()
+      .mockResolvedValue(respuestaJson({ nombre: "obsidian" }));
+    vi.stubGlobal("fetch", espia);
+
+    await crearClienteNous("t").crearFuente({
+      nombre: "obsidian",
+      tipo: "import",
+      namespace: "vault",
+      rama_origen: "main",
+      metadata: {},
+    });
+
+    const [url, init] = espia.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/api/fuentes");
+    expect(init.method).toBe("POST");
+    const cuerpo = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(cuerpo.nombre).toBe("obsidian");
+    expect(cuerpo.namespace).toBe("vault");
+  });
+
+  it("estadoFuente hace PATCH con el nuevo estado", async () => {
+    const espia = vi
+      .fn()
+      .mockResolvedValue(respuestaJson({ nombre: "cli", estado: "archivada" }));
+    vi.stubGlobal("fetch", espia);
+
+    await crearClienteNous("t").estadoFuente("cli", "archivada");
+
+    const [url, init] = espia.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/api/fuentes/cli");
+    expect(init.method).toBe("PATCH");
+    expect(init.body as string).toContain("archivada");
+  });
+
+  it("eliminarFuente hace DELETE sobre el nombre codificado", async () => {
+    const espia = vi
+      .fn()
+      .mockResolvedValue(respuestaJson({ nombre: "cli" }));
+    vi.stubGlobal("fetch", espia);
+
+    await crearClienteNous("t").eliminarFuente("mi fuente");
+
+    const [url, init] = espia.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain(encodeURIComponent("mi fuente"));
+    expect(init.method).toBe("DELETE");
+  });
+
+  it("ramificarFuente hace POST a /fuentes/{n}/ramificar", async () => {
+    const espia = vi
+      .fn()
+      .mockResolvedValue(respuestaJson({ nombre: "cli:rama-x" }));
+    vi.stubGlobal("fetch", espia);
+
+    await crearClienteNous("t").ramificarFuente("cli", "rama-x");
+
+    const [url, init] = espia.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/api/fuentes/cli/ramificar");
+    expect(init.method).toBe("POST");
+    expect(init.body as string).toContain("rama-x");
+  });
+
   it("buscar codifica la consulta con caracteres especiales", async () => {
     const espia = vi.fn().mockResolvedValue(respuestaJson([]));
     vi.stubGlobal("fetch", espia);

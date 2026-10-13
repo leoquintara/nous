@@ -8,10 +8,12 @@ import type {
   Dimension,
   Evento,
   EventoActividad,
+  FuenteInfo,
   Preferencias,
   Proyeccion,
   Relacion,
   ResultadoBusqueda,
+  TagConteo,
 } from "@/domain/modelos";
 
 /** Petición de creación de evento. */
@@ -21,14 +23,37 @@ export interface NuevoEvento {
   fuente?: string;
   amplitud?: number;
   frecuencia?: number | null;
+  tags?: string[];
+  rama?: string;
+}
+
+/** Petición de creación de fuente administrable. */
+export interface NuevaFuente {
+  nombre: string;
+  tipo?: string;
+  namespace?: string;
+  rama_origen?: string;
+  metadata?: Record<string, unknown>;
 }
 
 /** Puerto de acceso a la memoria Nous. */
 export interface PuertoMemoria {
   /** Lista eventos del rango temporal en orden cronológico. */
-  listarEventos(desdeUnix: number, hastaUnix: number, limite?: number): Promise<Evento[]>;
+  listarEventos(desdeUnix: number, hastaUnix: number, limite?: number, rama?: string): Promise<Evento[]>;
   /** Lista los vínculos entre eventos (explícitos y semánticos). */
   listarRelaciones(limite?: number): Promise<Relacion[]>;
+  /** Lista los tags con su frecuencia de uso. */
+  listarTags(limite?: number): Promise<TagConteo[]>;
+  /** Lista las fuentes registradas con su conteo de eventos. */
+  listarFuentes(): Promise<FuenteInfo[]>;
+  /** Registra una fuente nueva (idempotente por nombre). */
+  crearFuente(fuente: NuevaFuente): Promise<FuenteInfo>;
+  /** Activa o archiva una fuente (los eventos no se tocan). */
+  estadoFuente(nombre: string, estado: "activa" | "archivada"): Promise<void>;
+  /** Elimina el registro de una fuente; sus eventos permanecen. */
+  eliminarFuente(nombre: string): Promise<void>;
+  /** Crea una rama de línea de universo derivada de la fuente. */
+  ramificarFuente(nombre: string, rama: string, namespace?: string): Promise<FuenteInfo>;
   /** Ejecuta la búsqueda híbrida 4D con contexto temporal. */
   buscar(consulta: string, topN?: number): Promise<ResultadoBusqueda[]>;
   /** Persiste un evento nuevo. */

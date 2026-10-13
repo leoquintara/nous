@@ -94,6 +94,12 @@ export function CerebroCanvas({
   const modoRef = useRef(modoColor);
   const ocultasRef = useRef(ocultas);
   const pinRef = useRef(alCambiarPin);
+  /**
+   * Pensamientos cuyos ids aún no existen en el grafo (un store llega
+   * antes que el recargado). Viven fuera del efecto: cada nueva
+   * `datos` recrea la escena y drena los que ya resuelven.
+   */
+  const pendientesRef = useRef<{ ev: EventoPensamiento; hasta: number }[]>([]);
   useEffect(() => {
     livePrefs.current = { ...PREFS_DEFAULT, ...prefs };
     selRef.current = seleccion;
@@ -386,6 +392,50 @@ export function CerebroCanvas({
       ambPuntos.frustumCulled = false;
       scene.add(ambPuntos);
 
+      // Contaminación cerebral: las huellas muertas/decaidas destilan
+      // motas oscuras que emigran a la membrana — basura mnémica que
+      // mancha el tejido. Pref `contaminacion` lo conmuta.
+      const focos = nodes
+        .map((n, i) => i)
+        .filter((i) => nodes[i].estado === "dead" || nodes[i].estado === "decayed");
+      const NC = Math.min(focos.length * 5, 400);
+      const mPos = new Float32Array(NC * 3);
+      const mDesde = new Float32Array(NC * 3);
+      const mHacia = new Float32Array(NC * 3);
+      const mT = new Float32Array(NC);
+      const mVel = new Float32Array(NC);
+      for (let m = 0; m < NC; m++) {
+        const f = focos[m % focos.length];
+        const p = pts[f];
+        mDesde[m * 3] = p.x;
+        mDesde[m * 3 + 1] = p.y;
+        mDesde[m * 3 + 2] = p.z;
+        // Punto de llegada: la superficie delipsoidal en la dirección
+        // del nodo — la mota se acumula en la membrana que lo encierra.
+        const len = Math.max(1e-3, Math.hypot(p.x / mem.x, p.y / mem.y, p.z / mem.z));
+        mHacia[m * 3] = (p.x / len) * 0.97;
+        mHacia[m * 3 + 1] = (p.y / len) * 0.97;
+        mHacia[m * 3 + 2] = (p.z / len) * 0.97;
+        mT[m] = Math.random();
+        mVel[m] = 0.00016 + Math.random() * 0.0003;
+      }
+      const mGeo = new THREE.BufferGeometry();
+      mGeo.setAttribute("position", new THREE.BufferAttribute(mPos, 3).setUsage(THREE.DynamicDrawUsage));
+      const motas = new THREE.Points(
+        mGeo,
+        new THREE.PointsMaterial({
+          color: 0x3d2b38,
+          size: 3.4,
+          transparent: true,
+          opacity: 0.55,
+          depthWrite: false,
+          sizeAttenuation: true,
+        }),
+      );
+      motas.frustumCulled = false;
+      motas.visible = focos.length > 0;
+      scene.add(motas);
+
       // Cascadas de impulso al seleccionar un nodo.
       const NCASC = 64;
       const cascadas: { a: number; b: number; t0: number; dur: number }[] = [];
@@ -524,8 +574,8 @@ export function CerebroCanvas({
         (th.seed.material as THREE.Material).dispose();
         th.lab.parentNode?.removeChild(th.lab);
       };
-      /** Crea un pensamiento: semilla + arcos hacia los nodos evocados. */
-      const pensar = (ev: EventoPensamiento) => {
+      /** Spawnea la geometría de un pensamiento ya resuelto. */
+      const spawnPensamiento = (ev: EventoPensamiento) => {
         if (pensamientos.length >= 4) matarPensamiento(pensamientos.shift()!);
         const group = new THREE.Group();
         const col = COLORES_KIND[ev.kind] ?? 0xa8c7ff;
@@ -634,6 +684,38 @@ export function CerebroCanvas({
         scene.add(group);
         pensamientos.push({ group, seed, lines, lab, t0: performance.now() });
       };
+      /**
+       * Drena los pensamientos pendientes: los ids que ya existen se
+       * animan ahora; los que no esperan a la próxima recarga.
+       */
+      const drenarPendientes = () => {
+        const tNow = performance.now();
+        const resto: typeof pendientesRef.current = [];
+        for (const p of pendientesRef.current) {
+          const ok = p.ev.ids.filter((id) => datos.idToIdx.has(id));
+          if (ok.length) spawnPensamiento({ ...p.ev, ids: ok });
+          const falta = p.ev.ids.filter((id) => !datos.idToIdx.has(id));
+          if (falta.length && tNow < p.hasta) {
+            resto.push({ ev: { ...p.ev, ids: falta }, hasta: p.hasta });
+          }
+        }
+        pendientesRef.current = resto;
+      };
+      /** Crea un pensamiento: lo que resuelve se anima, el resto espera. */
+      const pensar = (ev: EventoPensamiento) => {
+        const ok = ev.ids.filter((id) => datos.idToIdx.has(id));
+        const falta = ev.ids.filter((id) => !datos.idToIdx.has(id));
+        if (ok.length || ev.ids.length === 0) {
+          spawnPensamiento({ ...ev, ids: ok });
+        }
+        if (falta.length) {
+          pendientesRef.current.push({
+            ev: { ...ev, ids: falta },
+            hasta: performance.now() + 2600,
+          });
+        }
+      };
+      drenarPendientes();
       if (onPensarRef) onPensarRef.current = { pensar };
 
       // Picking, arrastre y fijado de nodos.
@@ -983,6 +1065,23 @@ export function CerebroCanvas({
 
         for (const m of materiales) m.uniforms.uTime.value = tNow * 0.001;
         memGrupo.visible = P.membrane;
+        // Motas de contaminación: destilan del foco a la membrana y
+        // vuelven — hollín mnémico en bucle lento.
+        motas.visible = P.contaminacion && focos.length > 0;
+        if (motas.visible) {
+          for (let m = 0; m < NC; m++) {
+            mT[m] += mVel[m];
+            if (mT[m] > 1) mT[m] = 0;
+            const t = mT[m];
+            const suav = t * t * (3 - 2 * t);
+            mPos[m * 3] = mDesde[m * 3] + (mHacia[m * 3] - mDesde[m * 3]) * suav;
+            mPos[m * 3 + 1] =
+              mDesde[m * 3 + 1] + (mHacia[m * 3 + 1] - mDesde[m * 3 + 1]) * suav;
+            mPos[m * 3 + 2] =
+              mDesde[m * 3 + 2] + (mHacia[m * 3 + 2] - mDesde[m * 3 + 2]) * suav;
+          }
+          mGeo.attributes.position.needsUpdate = true;
+        }
         memGrupo.scale.setScalar(1 + 0.015 * Math.sin(tNow * 0.0009));
         // Marcapaso talámico: latido agudo que mantiene viva la escena.
         const latido = Math.pow(Math.max(0, Math.sin(tNow * 0.0052)), 6);

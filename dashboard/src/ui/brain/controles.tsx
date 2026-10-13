@@ -7,8 +7,10 @@
  */
 
 import {
+  Archive,
   Eye,
   EyeClosed,
+  GitFork,
   NavArrowDown,
   NavArrowUp,
   Palette,
@@ -16,7 +18,10 @@ import {
   Refresh,
   Trash,
 } from "iconoir-react";
-import { useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+
+import { usarApp } from "@/ui/proveedor-app";
+import type { FuenteInfo } from "@/domain/modelos";
 
 import { REGLAS_DEFAULT, type CampoRegla, type OpRegla, type Regla } from "./reglas";
 import {
@@ -293,6 +298,7 @@ interface PanelControlProps {
   coincidencias: number | null;
   modoColor: ModoColor;
   fuentes: Fuente[];
+  ramas: string[];
 }
 
 /** Panel ⚙ con todos los ajustes del grafo. */
@@ -302,6 +308,7 @@ export function PanelControl({
   coincidencias,
   modoColor,
   fuentes,
+  ramas,
 }: PanelControlProps) {
   const clavesColor: [string, string][] =
     modoColor === "dimension"
@@ -312,7 +319,7 @@ export function PanelControl({
           ? fuentes.map((f) => [`fuente:${f.id}`, colorFuente(f.id, fuentes)])
           : [["fallback", prefs.ruleFallback]];
   return (
-    <div className="pointer-events-auto flex max-h-[calc(100%-6rem)] w-72 flex-col gap-3 overflow-y-auto p-4">
+    <div className="sin-scrollbar pointer-events-auto flex max-h-[calc(100dvh-13rem)] w-72 flex-col gap-3 overflow-y-auto p-4">
       <Fila etiqueta="Buscar en el grafo">
         <input
           type="search"
@@ -360,8 +367,27 @@ export function PanelControl({
       <Fila etiqueta="Nivel de detalle">
         <Interruptor activo={prefs.lod} alCambiar={(v) => setPref("lod", v)} />
       </Fila>
+      {ramas.length > 1 && (
+        <Fila etiqueta="Línea de universo">
+          <select
+            value={prefs.rama ?? ""}
+            onChange={(e) => setPref("rama", e.target.value || null)}
+            className="vidrio rounded-lg px-1.5 py-1 text-xs"
+          >
+            <option value="">todas</option>
+            {ramas.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+        </Fila>
+      )}
       <Fila etiqueta="Membrana">
         <Interruptor activo={prefs.membrane} alCambiar={(v) => setPref("membrane", v)} />
+      </Fila>
+      <Fila etiqueta="Contaminación">
+        <Interruptor activo={prefs.contaminacion} alCambiar={(v) => setPref("contaminacion", v)} />
       </Fila>
       {prefs.membrane && (
         <Fila etiqueta="Opacidad membrana">
@@ -507,6 +533,211 @@ export function PanelFuentes({
         />
         <span className="w-8 text-right tabular-nums">{cap}</span>
       </label>
+      <GestionFuentes />
+    </div>
+  );
+}
+
+/** Administración de fuentes: crear, archivar y ramificar. */
+function GestionFuentes() {
+  const { memoria } = usarApp();
+  const [abierto, setAbierto] = useState(false);
+  const [fuentes, setFuentes] = useState<FuenteInfo[] | null>(null);
+  const [ramaDe, setRamaDe] = useState<string | null>(null);
+  const [nuevaRama, setNuevaRama] = useState("");
+  const [nueva, setNueva] = useState({ nombre: "", tipo: "manual" });
+  const [creando, setCreando] = useState(false);
+
+  const cargar = useCallback(() => {
+    if (!memoria) return;
+    memoria
+      .listarFuentes()
+      .then(setFuentes)
+      .catch(() => setFuentes([]));
+  }, [memoria]);
+
+  useEffect(() => {
+    if (abierto && fuentes === null) {
+      const t = setTimeout(cargar, 0);
+      return () => clearTimeout(t);
+    }
+  }, [abierto, fuentes, cargar]);
+
+  if (!abierto) {
+    return (
+      <button
+        type="button"
+        onClick={() => setAbierto(true)}
+        className="texto-suave border-t pt-2 text-left text-[0.65rem] hover:text-(--ink)"
+        style={{ borderColor: "var(--linea-vidrio)" }}
+      >
+        Gestionar fuentes…
+      </button>
+    );
+  }
+  return (
+    <div
+      className="flex flex-col gap-1.5 border-t pt-2"
+      style={{ borderColor: "var(--linea-vidrio)" }}
+    >
+      <div className="flex items-center justify-between">
+        <p className="texto-suave text-[0.65rem] font-semibold tracking-wide uppercase">
+          Fuentes registradas
+        </p>
+        <button
+          type="button"
+          onClick={() => setAbierto(false)}
+          className="texto-suave text-[0.65rem] hover:text-(--ink)"
+        >
+          cerrar
+        </button>
+      </div>
+      <div className="sin-scrollbar flex max-h-44 flex-col gap-1 overflow-y-auto">
+        {(fuentes ?? []).map((f) => (
+          <div key={f.nombre} className="vidrio rounded-xl px-2 py-1.5">
+            <div className="flex items-center gap-1.5">
+              <span className="min-w-0 flex-1 truncate text-[0.7rem] font-medium">
+                {f.nombre}
+              </span>
+              <span className="texto-suave text-[0.6rem]">
+                {f.tipo} · {f.eventos}
+              </span>
+              <button
+                type="button"
+                title={f.estado === "activa" ? "Archivar" : "Reactivar"}
+                aria-label={`${f.estado === "activa" ? "Archivar" : "Reactivar"} ${f.nombre}`}
+                onClick={() =>
+                  memoria
+                    ?.estadoFuente(
+                      f.nombre,
+                      f.estado === "activa" ? "archivada" : "activa",
+                    )
+                    .then(cargar)
+                }
+                className={`texto-suave hover:text-(--ink) ${f.estado === "archivada" ? "opacity-40" : ""}`}
+              >
+                <Archive width={12} height={12} />
+              </button>
+              <button
+                type="button"
+                title="Ramificar en línea de universo paralela"
+                aria-label={`Ramificar ${f.nombre}`}
+                onClick={() => setRamaDe(ramaDe === f.nombre ? null : f.nombre)}
+                className="texto-suave hover:text-(--ink)"
+              >
+                <GitFork width={12} height={12} />
+              </button>
+              <button
+                type="button"
+                title="Eliminar registro (los eventos permanecen)"
+                aria-label={`Eliminar ${f.nombre}`}
+                onClick={() => memoria?.eliminarFuente(f.nombre).then(cargar)}
+                className="texto-suave hover:text-(--danger)"
+              >
+                <Trash width={12} height={12} />
+              </button>
+            </div>
+            {f.estado === "archivada" && (
+              <p className="texto-suave text-[0.6rem] italic">archivada</p>
+            )}
+            {f.rama_origen !== "main" && (
+              <p className="texto-suave text-[0.6rem]">
+                rama: {f.rama_origen}
+              </p>
+            )}
+            {ramaDe === f.nombre && (
+              <form
+                className="mt-1 flex gap-1"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!nuevaRama.trim()) return;
+                  memoria
+                    ?.ramificarFuente(f.nombre, nuevaRama.trim())
+                    .then(() => {
+                      setRamaDe(null);
+                      setNuevaRama("");
+                      cargar();
+                    });
+                }}
+              >
+                <input
+                  value={nuevaRama}
+                  onChange={(e) => setNuevaRama(e.target.value)}
+                  placeholder="rama…"
+                  className="vidrio min-w-0 flex-1 rounded-lg px-1.5 py-0.5 text-[0.65rem]"
+                  aria-label="Nombre de la rama"
+                />
+                <button
+                  type="submit"
+                  className="vidrio rounded-lg px-2 text-[0.65rem] hover:brightness-110"
+                >
+                  crear
+                </button>
+              </form>
+            )}
+          </div>
+        ))}
+        {fuentes?.length === 0 && (
+          <p className="texto-suave px-1 text-[0.65rem]">
+            Sin fuentes registradas.
+          </p>
+        )}
+      </div>
+      {creando ? (
+        <form
+          className="flex gap-1"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!nueva.nombre.trim()) return;
+            memoria
+              ?.crearFuente({
+                nombre: nueva.nombre.trim(),
+                tipo: nueva.tipo,
+              })
+              .then(() => {
+                setCreando(false);
+                setNueva({ nombre: "", tipo: "manual" });
+                cargar();
+              });
+          }}
+        >
+          <input
+            value={nueva.nombre}
+            onChange={(e) => setNueva({ ...nueva, nombre: e.target.value })}
+            placeholder="nombre"
+            className="vidrio min-w-0 flex-1 rounded-lg px-1.5 py-0.5 text-[0.65rem]"
+            aria-label="Nombre de la fuente"
+          />
+          <select
+            value={nueva.tipo}
+            onChange={(e) => setNueva({ ...nueva, tipo: e.target.value })}
+            className="vidrio rounded-lg px-1 py-0.5 text-[0.65rem]"
+            aria-label="Tipo de fuente"
+          >
+            {["manual", "obsidian", "gbrain", "memlord", "agente", "import"].map(
+              (t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ),
+            )}
+          </select>
+          <button
+            type="submit"
+            className="vidrio rounded-lg px-2 text-[0.65rem] hover:brightness-110"
+          >
+            ok
+          </button>
+        </form>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setCreando(true)}
+          className="texto-suave flex items-center gap-1 self-start text-[0.65rem] hover:text-(--ink)"
+        >
+          <Plus width={11} height={11} /> fuente
+        </button>
+      )}
     </div>
   );
 }

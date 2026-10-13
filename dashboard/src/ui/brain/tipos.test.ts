@@ -26,6 +26,8 @@ function evento(parcial: Partial<Evento> = {}): Evento {
     amplitud: parcial.amplitud ?? 0.5,
     frecuencia: null,
     refuerzos: parcial.refuerzos ?? 0,
+    tags: parcial.tags ?? [],
+    rama: parcial.rama ?? "main",
   };
 }
 
@@ -285,5 +287,65 @@ describe("eventosAGrafo", () => {
       { origen_id: "x", destino_id: "fantasma", tipo: "semantica", peso: 0.8 },
     ]);
     expect(g.edges.length).toBe(0);
+  });
+
+  it("dos eventos con tag compartido quedan unidos por arista tag", () => {
+    const g = eventosAGrafo(
+      [
+        evento({ id: "t1", dimension: "cognitiva", tags: ["trabajo"], timestamp_unix: AHORA - 3 * DIA }),
+        evento({ id: "t2", dimension: "somatica", timestamp_unix: AHORA - 2 * DIA }),
+        evento({ id: "t3", dimension: "somatica", tags: ["trabajo"], timestamp_unix: AHORA - 1 * DIA }),
+      ],
+      AHORA,
+    );
+    // t1 y t3 no comparten dimensión ni son consecutivos en cadena
+    // tag; sin el vínculo por etiqueta no habría arista (0,2).
+    const par02 = g.edges.some(
+      (e) => (e.a === 0 && e.b === 2) || (e.a === 2 && e.b === 0),
+    );
+    expect(par02).toBe(true);
+  });
+
+  it("eventos sin tags comunes no crean arista extra", () => {
+    const g = eventosAGrafo(
+      [
+        evento({ dimension: "cognitiva", tags: ["a"], timestamp_unix: AHORA - 3 * DIA }),
+        evento({ dimension: "somatica", tags: ["b"], timestamp_unix: AHORA - 2 * DIA }),
+        evento({ dimension: "conductual", tags: ["c"], timestamp_unix: AHORA - 1 * DIA }),
+      ],
+      AHORA,
+    );
+    // Solo la cadena temporal: 2 aristas link, 0 tag.
+    expect(g.edges.filter((e) => e.kind === "tag")).toHaveLength(0);
+  });
+
+  it("vinculos registra el vecino, tipo y peso de cada relación", () => {
+    const g = eventosAGrafo(
+      [
+        evento({ id: "v1", timestamp_unix: AHORA - 2 * DIA }),
+        evento({ id: "v2", timestamp_unix: AHORA - 1 * DIA }),
+      ],
+      AHORA,
+      undefined,
+      [{ origen_id: "v1", destino_id: "v2", tipo: "explicita", peso: 1 }],
+    );
+    expect(g.vinculos.get(0)?.[0]).toMatchObject({
+      idx: 1,
+      tipo: "explicita",
+      peso: 1,
+    });
+    expect(g.vinculos.get(1)?.[0]).toMatchObject({ idx: 0 });
+  });
+
+  it("ramas lista las líneas de universo presentes", () => {
+    const g = eventosAGrafo(
+      [
+        evento({ rama: "main", timestamp_unix: AHORA - 2 * DIA }),
+        evento({ rama: "espejo", timestamp_unix: AHORA - 1 * DIA }),
+      ],
+      AHORA,
+    );
+    expect(g.ramas).toContain("main");
+    expect(g.ramas).toContain("espejo");
   });
 });

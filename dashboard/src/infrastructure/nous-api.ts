@@ -9,15 +9,17 @@ import type {
   PuertoAuth,
   PuertoMemoria,
 } from "@/application/puertos";
-import { NuevoEvento } from "@/application/puertos";
+import { NuevaFuente, NuevoEvento } from "@/application/puertos";
 import type {
   BenchmarkRun,
   Evento,
   EventoActividad,
+  FuenteInfo,
   Preferencias,
   Proyeccion,
   Relacion,
   ResultadoBusqueda,
+  TagConteo,
 } from "@/domain/modelos";
 
 const BASE_URL = process.env.NEXT_PUBLIC_NOUS_API ?? "http://127.0.0.1:8720";
@@ -45,13 +47,42 @@ async function peticion<T>(
 /** Crea el adaptador de memoria ligado a un token concreto. */
 export function crearClienteNous(token: string): PuertoMemoria {
   return {
-    listarEventos: (desde, hasta, limite = 500) =>
+    listarEventos: (desde, hasta, limite = 500, rama) =>
       peticion<Evento[]>(
-        `/api/eventos?desde_unix=${desde}&hasta_unix=${hasta}&limite=${limite}`,
+        `/api/eventos?desde_unix=${desde}&hasta_unix=${hasta}&limite=${limite}` +
+          (rama ? `&rama=${encodeURIComponent(rama)}` : ""),
         token,
       ),
     listarRelaciones: (limite = 2000) =>
       peticion<Relacion[]>(`/api/relaciones?limite=${limite}`, token),
+    listarTags: (limite = 200) =>
+      peticion<TagConteo[]>(`/api/tags?limite=${limite}`, token),
+    listarFuentes: () => peticion<FuenteInfo[]>(`/api/fuentes`, token),
+    crearFuente: (fuente: NuevaFuente) =>
+      peticion<FuenteInfo>(`/api/fuentes`, token, {
+        method: "POST",
+        body: JSON.stringify(fuente),
+      }),
+    estadoFuente: async (nombre, estado) => {
+      await peticion<{ nombre: string }>(
+        `/api/fuentes/${encodeURIComponent(nombre)}`,
+        token,
+        { method: "PATCH", body: JSON.stringify({ estado }) },
+      );
+    },
+    eliminarFuente: async (nombre) => {
+      await peticion<{ nombre: string }>(
+        `/api/fuentes/${encodeURIComponent(nombre)}`,
+        token,
+        { method: "DELETE" },
+      );
+    },
+    ramificarFuente: (nombre, rama, namespace = "") =>
+      peticion<FuenteInfo>(
+        `/api/fuentes/${encodeURIComponent(nombre)}/ramificar`,
+        token,
+        { method: "POST", body: JSON.stringify({ rama, namespace }) },
+      ),
     buscar: (consulta, topN = 10) =>
       peticion<ResultadoBusqueda[]>(
         `/api/buscar?q=${encodeURIComponent(consulta)}&top_n=${topN}`,

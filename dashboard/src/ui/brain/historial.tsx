@@ -63,7 +63,7 @@ export function HistorialActividad({ eventos, alReproducir }: Props) {
         )}
       </button>
       {abierto && (
-        <ul className="flex max-h-56 flex-col gap-1 overflow-y-auto">
+        <ul className="sin-scrollbar flex max-h-56 flex-col gap-1 overflow-y-auto">
           {eventos.length === 0 && (
             <li className="texto-suave px-1 text-[0.7rem]">
               Sin actividad reciente.

@@ -102,6 +102,35 @@ body {
   color: #fff;
 }
 
+/* Todo elemento interactivo declara su affordance. */
+button,
+[role="button"],
+a[href],
+select,
+summary,
+input[type="checkbox"],
+input[type="radio"],
+input[type="range"],
+input[type="color"],
+label:has(input[type="checkbox"]),
+label:has(input[type="radio"]) {
+  cursor: pointer;
+}
+
+button:disabled,
+[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
+/* Scroll funcional pero invisible — paneles glass sin barra. */
+.sin-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.sin-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* Foco visible accesible en ambos temas. */
 :focus-visible {
   outline: 2px solid var(--primary);

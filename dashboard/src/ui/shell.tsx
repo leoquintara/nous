@@ -28,7 +28,14 @@ const ENLACES = [
 ] as const;
 
 /** Estructura autenticada con navegación liquid glass. */
-export function Shell({ children }: { children: React.ReactNode }) {
+export function Shell({
+  children,
+  fluid = false,
+}: {
+  children: React.ReactNode;
+  /** Sin contenedor max-w: el contenido ocupa todo el ancho. */
+  fluid?: boolean;
+}) {
   const { tema, alternarTema, token, cerrarSesion } = usarApp();
   const pathname = usePathname();
   const router = useRouter();
@@ -91,7 +98,13 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <LogOut width={16} height={16} />
         </button>
       </header>
-      <div className="mx-auto w-full max-w-7xl flex-1 p-4">{children}</div>
+      <div
+        className={
+          fluid ? "w-full flex-1 px-3 pb-3" : "mx-auto w-full max-w-7xl flex-1 p-4"
+        }
+      >
+        {children}
+      </div>
     </div>
   );
 }

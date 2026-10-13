@@ -46,6 +46,8 @@ export interface Nodo {
   deg: number;
   /** Orden de importancia para el nivel de detalle. */
   rank: number;
+  /** Etiquetas que enlazan el contenido con otras memorias. */
+  tags: string[];
 }
 
 /** Arista entre dos nodos. */
@@ -83,6 +85,13 @@ export interface DatosCerebro {
   fuentes: Fuente[];
   /** Conteo de nodos por estado de tejido (leyenda). */
   stateCounts: Record<EstadoNodo, number>;
+  /**
+   * Vínculos persistidos por nodo: índice del vecino, tipo y peso.
+   * Alimenta el "top de memorias conectadas" del visor de detalle.
+   */
+  vinculos: Map<number, { idx: number; tipo: string; peso: number }[]>;
+  /** Ramas de línea de universo presentes en los datos. */
+  ramas: string[];
 }
 
 /** Posición fijada de un nodo, persistida por el usuario. */
@@ -119,6 +128,10 @@ export interface PrefsCerebro {
   srcFilter: string[] | null;
   /** Máximo de eventos a cargar. */
   srcCap: number;
+  /** Rama de línea de universo visible (null = todas). */
+  rama: string | null;
+  /** Mancha de contaminación de nodos muertos/decaidos en la membrana. */
+  contaminacion: boolean;
   /** Posiciones fijadas por arrastre, por id de evento (tope 200). */
   pins: Record<string, PosicionPin>;
 }
@@ -148,6 +161,8 @@ export const PREFS_DEFAULT: PrefsCerebro = {
   ruleFallback: "#5b8ef4",
   srcFilter: null,
   srcCap: 500,
+  rama: null,
+  contaminacion: true,
   pins: {},
 };
 
@@ -289,6 +304,8 @@ export function eventosAGrafo(
     stateCounts: {
       fresh: 0, working: 0, consolidated: 0, decayed: 0, dead: 0,
     },
+    vinculos: new Map(),
+    ramas: [],
   };
   if (eventos.length === 0) return vacio;
 
@@ -308,6 +325,7 @@ export function eventosAGrafo(
     pinned: pins?.[e.id] !== undefined,
     deg: 0,
     rank: i,
+    tags: e.tags ?? [],
   }));
 
   // Posición inicial: hélice temporal — el tiempo sube en Y, la
@@ -361,14 +379,38 @@ export function eventosAGrafo(
       agregar(lista[i - 1], lista[i], "tag");
     }
   }
+  // Lazos por tag compartido: memorias que citan la misma etiqueta
+  // quedan encadenadas (vínculo semántico estilo Karpathy).
+  const porTag = new Map<string, number[]>();
+  ordenados.forEach((e, i) => {
+    for (const t of e.tags ?? []) {
+      const l = porTag.get(t) ?? [];
+      l.push(i);
+      porTag.set(t, l);
+    }
+  });
+  for (const lista of porTag.values()) {
+    for (let i = 1; i < lista.length; i++) {
+      agregar(lista[i - 1], lista[i], "tag");
+    }
+  }
   // Vínculos reales persistidos: explícitos (declarados al registrar)
   // y semánticos (inferidos por similitud al indexarse).
+  const vinculos = new Map<number, { idx: number; tipo: string; peso: number }[]>();
   if (relaciones) {
     const idx = new Map(nodes.map((n, i) => [n.id, i]));
     for (const r of relaciones) {
       const a = idx.get(r.origen_id);
       const b = idx.get(r.destino_id);
-      if (a !== undefined && b !== undefined) agregar(a, b, "link");
+      if (a !== undefined && b !== undefined) {
+        agregar(a, b, "link");
+        (vinculos.get(a) ?? vinculos.set(a, []).get(a)!).push({
+          idx: b, tipo: r.tipo, peso: r.peso,
+        });
+        (vinculos.get(b) ?? vinculos.set(b, []).get(b)!).push({
+          idx: a, tipo: r.tipo, peso: r.peso,
+        });
+      }
     }
   }
   for (const e of edges) {
@@ -394,6 +436,7 @@ export function eventosAGrafo(
   const fuentes = [...conteoFuentes.entries()]
     .map(([id, count]) => ({ id, count }))
     .sort((a, b) => b.count - a.count);
+  const ramas = [...new Set(ordenados.map((e) => e.rama ?? "main"))];
 
   return {
     status: "ready",
@@ -404,5 +447,7 @@ export function eventosAGrafo(
     nbrs,
     fuentes,
     stateCounts,
+    vinculos,
+    ramas,
   };
 }
