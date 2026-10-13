@@ -84,6 +84,7 @@ def _modelo_a_dict(modelo: EventoModel) -> dict[str, Any]:
         "contenido": modelo.contenido,
         "amplitud": modelo.amplitud,
         "frecuencia": modelo.frecuencia,
+        "refuerzos": modelo.refuerzos,
     }
 
 
@@ -95,6 +96,7 @@ def _evento_a_dict(evento: Evento) -> dict[str, Any]:
         "dimension": str(evento.dimension),
         "contenido": evento.contenido,
         "amplitud": evento.amplitud,
+        "refuerzos": evento.refuerzos,
     }
 
 
@@ -161,6 +163,7 @@ async def _consultar(consulta: str, top_n: int) -> list[dict[str, Any]]:
         resultados = await _obtener_busqueda().buscar(
             session, consulta, top_n=max(1, min(top_n, 50))
         )
+        await session.commit()  # persiste los refuerzos de consolidación
     return [_resultado_a_dict(r) for r in resultados]
 
 

@@ -6,8 +6,10 @@ vive en src/core/, nunca aquí.
 
 import uuid
 from collections.abc import Sequence
+from typing import cast
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.storage.models import (
@@ -128,6 +130,30 @@ class EventoRepository:
             (fila["EventoModel"], 1.0 - float(fila["distancia"]))
             for fila in resultado.mappings().all()
         ]
+
+    async def reforzar(self, eventos_ids: list[uuid.UUID]) -> int:
+        """Incrementa el contador de consolidación de los eventos evocados.
+
+        Cada evocación fortalece la huella (reconsolidación): los
+        eventos más consultados decaen más lento en el ranking.
+
+        Args:
+            eventos_ids: UUIDs de los eventos devueltos al agente.
+
+        Returns:
+            Número de filas actualizadas.
+        """
+        if not eventos_ids:
+            return 0
+        stmt = (
+            update(EventoModel)
+            .where(EventoModel.id.in_(eventos_ids))
+            .values(refuerzos=EventoModel.refuerzos + 1)
+        )
+        resultado = cast(
+            CursorResult[EventoModel], await self._session.execute(stmt)
+        )
+        return resultado.rowcount
 
     async def adyacentes(
         self, timestamp_unix: int, cantidad: int = 3

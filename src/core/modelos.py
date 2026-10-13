@@ -35,6 +35,7 @@ class Evento:
     dimension: Dimension
     contenido: str
     amplitud: float = 0.5
+    refuerzos: int = 0
 
     @classmethod
     def desde_modelo(cls, modelo: EventoModel) -> Evento:
@@ -45,6 +46,7 @@ class Evento:
             dimension=Dimension(modelo.dimension),
             contenido=modelo.contenido,
             amplitud=modelo.amplitud,
+            refuerzos=modelo.refuerzos,
         )
 
 

@@ -45,6 +45,9 @@ class EventoModel(Base):
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIM))
     amplitud: Mapped[float] = mapped_column(Float, server_default="0.5")
     frecuencia: Mapped[float | None] = mapped_column(Float)
+    refuerzos: Mapped[int] = mapped_column(
+        Integer, server_default="0", nullable=False
+    )
     contexto: Mapped[dict[str, Any]] = mapped_column(
         JSONB, server_default=text("'{}'::jsonb")
     )

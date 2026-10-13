@@ -9,6 +9,7 @@ el diferenciador propio de Nous.
 
 import math
 import time
+import uuid
 from collections.abc import Sequence
 from dataclasses import replace
 
@@ -130,7 +131,9 @@ class BusquedaHibrida4D:
         resultados = _deduplicar(resultados)
         if self._reordenador is not None:
             resultados = await self._reordenar(query, resultados)
-        return await self._contextualizar(repo, resultados[:top_n])
+        finales = await self._contextualizar(repo, resultados[:top_n])
+        await repo.reforzar([uuid.UUID(r.evento_id) for r in finales])
+        return finales
 
     async def _contextualizar(
         self, repo: EventoRepository, resultados: list[ResultadoBusqueda]
@@ -221,8 +224,9 @@ def _re_scored(
     for r in fusionados:
         modelo = modelos[r.evento_id]
         coseno = _similitud(vector_query, modelo.embedding)
+        vida_efectiva = vida_media_dias * (1.0 + math.log1p(modelo.refuerzos))
         recencia = _decaimiento(
-            ahora - modelo.timestamp_unix, vida_media_dias
+            ahora - modelo.timestamp_unix, vida_efectiva
         )
         blend = (
             PESO_RRF * (r.score_rrf / rrf_max)
