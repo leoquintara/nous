@@ -2,11 +2,20 @@
 
 | # | Tarea | Estado |
 |---|-------|--------|
-| 1 | E2E Playwright/Chrome DevTools MCP | ✅ E2E MCP nativo superado; chrome-devtools configurado |
-| 2 | Diagnosticar/arreglar memlord | ✅ vivo en :8477 (MCP OK) |
-| 3 | Benchmark Nous vs gbrain/memlord | 🔄 en progreso |
-| 4 | Nous como MCP en Devin | ✅ añadido a mcp_config.json (efecto al reiniciar) |
-| 5 | .todos, .agents/skills, .agents/agents, .agents/directives | 🔄 .todos creado |
-| 6 | Dashboard Next 16 + TS hexagonal + liquid glass | ⏳ bloqueado por tests |
-| 7 | Migrar DSH Memory (cerebro 3D) a TS + Iconoir | ⏳ |
-| 8 | Signal por feature a 5615625539 | ⏳ al final |
+| 1 | E2E navegador | ✅ Chrome instalado está roto (SxS); E2E real con Playwright-core + Edge headless: login→home→4 páginas→tema, 0 errores consola (`scripts/e2e_browser.js`) |
+| 2 | Diagnosticar/arreglar memlord | ✅ vivo en :8477, MCP responde |
+| 3 | Benchmark Nous vs gbrain/memlord | ✅ `scripts/benchmark_vs.py` — Nous gana en capacidades 4D; memlord en p95 de query; gbrain en writes |
+| 4 | Nous como MCP en Devin | ✅ stdio en mcp_config.json — activo en sesión |
+| 5 | .todos, .agents/{skills,agents,directives} | ✅ completo |
+| 6 | Dashboard Next 16 + TS hexagonal + liquid glass | ✅ build OK, E2E visual OK |
+| 7 | Migrar DSH Memory (cerebro 3D) a TS + Iconoir | ✅ tipos/geometria/fisica/CerebroCanvas + iconoir |
+| 8 | Fix consultar_memoria colgada en stdio | ✅ commit 636a630 (HF offline + warm-up main thread) |
+| 9 | Signal por feature a 5615625539 | ⏳ al final |
+
+## Notas de entorno
+
+- DB `postgres18` es contenedor Docker en **Debian WSL** (distro no-default):
+  la VM se apaga sin procesos → mantener viva con `wsl -d Debian -- sleep infinity`.
+  `NOUS_DATABASE_URL` usa la IP WSL `172.20.236.171` (localhost forwarding es inestable).
+- `chrome.exe` del sistema no arranca (error SxS) → usar `channel: 'msedge'` o
+  el Chromium bundled de Playwright.

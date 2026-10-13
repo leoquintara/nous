@@ -34,3 +34,7 @@ htmlcov/
 Thumbs.db
 .DS_Store
 .env.bench
+
+# logs de desarrollo locales
+*.log
+nul

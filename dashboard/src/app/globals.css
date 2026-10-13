@@ -1,0 +1,109 @@
+@import "tailwindcss";
+
+/*
+ * Tema Nous — liquid glass + glassmorphism.
+ * Paleta Quintara AI: primary #198BF8, secondary #00D6D4, ink #101050.
+ * Todos los colores viven en custom properties; los componentes
+ * nunca hardcodean hex.
+ */
+
+:root {
+  --primary: #198bf8;
+  --secondary: #00d6d4;
+  --ink: #101050;
+  --ink-suave: #45457a;
+  --surface: #f6f6f6;
+  --surface-vidrio: rgba(255, 255, 255, 0.55);
+  --surface-vidrio-fuerte: rgba(255, 255, 255, 0.72);
+  --linea: #e7e7f2;
+  --linea-vidrio: rgba(231, 231, 242, 0.65);
+  --danger: #c51533;
+  --success: #00c850;
+  --warning: #ffae00;
+  --dim-cognitiva: #198bf8;
+  --dim-somatica: #c5157a;
+  --dim-conductual: #00a896;
+  --fondo-1: #eef1fb;
+  --fondo-2: #f8f9ff;
+  --halo: rgba(25, 139, 248, 0.16);
+}
+
+[data-theme="dark"] {
+  --primary: #4aa4fa;
+  --secondary: #2de3e1;
+  --ink: #e8e8ff;
+  --ink-suave: #a8a8d8;
+  --surface: #14142b;
+  --surface-vidrio: rgba(30, 30, 60, 0.45);
+  --surface-vidrio-fuerte: rgba(30, 30, 60, 0.65);
+  --linea: rgba(231, 231, 242, 0.12);
+  --linea-vidrio: rgba(231, 231, 242, 0.14);
+  --danger: #ff5570;
+  --success: #2edb72;
+  --warning: #ffc24d;
+  --fondo-1: #0b0b1e;
+  --fondo-2: #12122a;
+  --halo: rgba(74, 164, 250, 0.22);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  color: var(--ink);
+  background:
+    radial-gradient(60rem 40rem at 85% -10%, var(--halo), transparent 60%),
+    radial-gradient(50rem 35rem at -10% 110%, rgba(0, 214, 212, 0.10), transparent 60%),
+    linear-gradient(160deg, var(--fondo-1), var(--fondo-2));
+  background-attachment: fixed;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Primitiva liquid glass: blur + saturación + borde translúcido. */
+.vidrio {
+  background: var(--surface-vidrio);
+  backdrop-filter: blur(22px) saturate(1.5);
+  -webkit-backdrop-filter: blur(22px) saturate(1.5);
+  border: 1px solid var(--linea-vidrio);
+  border-radius: 20px;
+  box-shadow:
+    0 8px 32px rgba(16, 16, 80, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.vidrio-fuerte {
+  background: var(--surface-vidrio-fuerte);
+  backdrop-filter: blur(28px) saturate(1.8);
+  -webkit-backdrop-filter: blur(28px) saturate(1.8);
+  border: 1px solid var(--linea-vidrio);
+  border-radius: 24px;
+}
+
+[data-theme="dark"] .vidrio,
+[data-theme="dark"] .vidrio-fuerte {
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.texto-suave {
+  color: var(--ink-suave);
+}
+
+.borde-linea {
+  border-color: var(--linea);
+}
+
+::selection {
+  background: var(--primary);
+  color: #fff;
+}
+
+/* Foco visible accesible en ambos temas. */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}

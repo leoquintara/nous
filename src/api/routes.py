@@ -156,6 +156,7 @@ async def proyeccion_actual() -> dict[str, Any]:
         "dimension_probable": ultima.rama_decision,
         "probabilidad": ultima.probabilidad,
         "distribucion": ultima.vector_proyectado,
+        "eventos_analizados": len(ultima.basada_en_eventos),
         "creado_en": ultima.creado_en.isoformat(),
     }
 
