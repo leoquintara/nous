@@ -37,23 +37,32 @@ function mezclar(parcial: Partial<PrefsCerebro>): PrefsCerebro {
  * local instantánea) y guarda con debounce en cada cambio.
  */
 export function usePrefsCerebro(memoria: PuertoMemoria | null) {
-  const [prefs, setPrefs] = useState<PrefsCerebro>(() =>
-    typeof window === "undefined" ? PREFS_DEFAULT : mezclar(leerCache()),
-  );
+  // Estado inicial siempre PREFS_DEFAULT: el SSR y el cliente deben
+  // renderizar lo mismo (hidratación). La caché local se aplica tras
+  // montar y el documento remoto la sobrescribe cuando llega.
+  const [prefs, setPrefs] = useState<PrefsCerebro>(PREFS_DEFAULT);
   const [cargadas, setCargadas] = useState(false);
   const temporizador = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tocado = useRef(false);
   const memoriaRef = useRef(memoria);
   useEffect(() => {
     memoriaRef.current = memoria;
   });
 
   useEffect(() => {
-    if (!memoria) return;
     let vivo = true;
+    queueMicrotask(() => {
+      if (vivo) setPrefs((p) => mezclar({ ...p, ...leerCache() }));
+    });
+    if (!memoria) return;
     memoria
       .leerPreferencias(CLAVE)
       .then((doc) => {
-        if (!vivo) return;
+        // Si el usuario ya ajustó algo, su estado gana al remoto.
+        if (!vivo || tocado.current) {
+          setCargadas(true);
+          return;
+        }
         setPrefs((p) => {
           const fusion = mezclar({ ...p, ...(doc as Partial<PrefsCerebro>) });
           try {
@@ -74,6 +83,7 @@ export function usePrefsCerebro(memoria: PuertoMemoria | null) {
   /** Actualiza una preferencia y programa su persistencia. */
   const setPref = useCallback(
     <K extends keyof PrefsCerebro>(clave: K, valor: PrefsCerebro[K]) => {
+      tocado.current = true;
       setPrefs((prev) => {
         const siguiente = { ...prev, [clave]: valor };
         try {
