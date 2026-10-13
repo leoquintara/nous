@@ -15,6 +15,7 @@ from src.api.schemas import (
     HealthResponse,
     LoginRequest,
     LoginResponse,
+    RelacionResponse,
 )
 from src.config import get_settings
 from src.mcp import tools as tools_impl
@@ -121,7 +122,25 @@ async def crear_evento(peticion: EventoRequest) -> dict[str, Any]:
         peticion.amplitud,
         peticion.frecuencia,
         peticion.timestamp_unix,
+        peticion.relaciona_ids,
     )
+
+
+@router.get("/relaciones", dependencies=[Depends(verificar_token)])
+async def listar_relaciones(limite: int = 2000) -> list[RelacionResponse]:
+    """Lista los vínculos entre eventos (explícitos y semánticos).
+
+    Args:
+        limite: Máximo de vínculos (1-5000).
+
+    Returns:
+        Relaciones más recientes primero: origen_id, destino_id,
+        tipo (explicita|semantica) y peso.
+    """
+    return [
+        RelacionResponse(**r)
+        for r in await tools_impl._relaciones(limite)
+    ]
 
 
 @router.get("/buscar", dependencies=[Depends(verificar_token)])

@@ -210,3 +210,55 @@ async def test_actividad_registra_store_y_recall(
     kinds = {e["kind"] for e in eventos}
     assert "store" in kinds
     assert all({"kind", "q", "ids", "ts"} <= e.keys() for e in eventos)
+
+
+@pytest.mark.asyncio
+async def test_relaciones_endpoint_devuelve_vinculos(
+    cliente: AsyncClient,
+) -> None:
+    """POST /eventos con relaciona_ids deja el vínculo en GET /relaciones."""
+    ra = await cliente.post(
+        "/api/eventos",
+        json={
+            "contenido": "qzx relaciones base zq9",
+            "dimension": "cognitiva",
+            "fuente": FUENTE_TEST,
+        },
+    )
+    assert ra.status_code == 200
+    rb = await cliente.post(
+        "/api/eventos",
+        json={
+            "contenido": "qzx relaciones derivada zq9",
+            "dimension": "cognitiva",
+            "fuente": FUENTE_TEST,
+            "relaciona_ids": [ra.json()["id"]],
+        },
+    )
+    assert rb.status_code == 200
+    assert rb.json()["vinculos_creados"] == 1
+    assert rb.json()["contexto"]["completo"] is True
+
+    r = await cliente.get("/api/relaciones")
+    assert r.status_code == 200
+    pares = {(f["origen_id"], f["destino_id"]) for f in r.json()}
+    ids = {ra.json()["id"], rb.json()["id"]}
+    assert any(set(p) == ids for p in pares)
+
+
+@pytest.mark.asyncio
+async def test_eventos_avisa_entidad_sin_antecedente(
+    cliente: AsyncClient,
+) -> None:
+    """POST /eventos con nombre propio nuevo → contexto.completo=false."""
+    r = await cliente.post(
+        "/api/eventos",
+        json={
+            "contenido": "qzx Zabdiel me agobia muchísimo zq9",
+            "fuente": FUENTE_TEST,
+        },
+    )
+    assert r.status_code == 200
+    contexto = r.json()["contexto"]
+    assert contexto["completo"] is False
+    assert "Zabdiel" in contexto["entidades_nuevas"]

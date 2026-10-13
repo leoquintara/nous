@@ -11,10 +11,12 @@ from sqlalchemy import (
     Computed,
     DateTime,
     Float,
+    ForeignKey,
     Index,
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -77,6 +79,54 @@ class EventoModel(Base):
             postgresql_using="hnsw",
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
+    )
+
+
+class RelacionModel(Base):
+    """Vínculo entre dos eventos de la línea de universo.
+
+    ``explicita``: el agente/usuario declaró la relación al registrarla
+    (p. ej. "esto va de la mano con aquello").
+    ``semantica``: inferida al indexarse — el embedding del evento
+    quedó por encima del umbral de similitud con otro evento previo.
+
+    El par se guarda en orden canónico (``origen_id < destino_id``):
+    la relación es no dirigida.
+    """
+
+    __tablename__ = "relaciones"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    origen_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("eventos.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    destino_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("eventos.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    tipo: Mapped[str] = mapped_column(String(20), nullable=False)
+    peso: Mapped[float] = mapped_column(Float, server_default="1.0")
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint("origen_id < destino_id", name="ck_relaciones_orden"),
+        CheckConstraint(
+            "tipo IN ('explicita', 'semantica')", name="ck_relaciones_tipo"
+        ),
+        UniqueConstraint(
+            "origen_id", "destino_id", "tipo", name="uq_relaciones_par_tipo"
+        ),
+        Index("ix_relaciones_origen", "origen_id"),
+        Index("ix_relaciones_destino", "destino_id"),
     )
 
 

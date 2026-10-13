@@ -18,6 +18,7 @@ from src.storage.models import (
     ConfiguracionModel,
     EventoModel,
     ProyeccionModel,
+    RelacionModel,
 )
 
 
@@ -129,6 +130,31 @@ class EventoRepository:
             (fila["EventoModel"], 1.0 - float(fila["distancia"]))
             for fila in resultado.mappings().all()
         ]
+
+    async def existe_mencion(
+        self, termino: str, excluir_id: uuid.UUID | None = None
+    ) -> bool:
+        """Indica si algún evento previo menciona el término dado.
+
+        Usa el tsvector en español para detectar antecedentes de una
+        entidad (p. ej. un nombre propio) antes de registrarla.
+
+        Args:
+            termino: Término a buscar (plainto_tsquery).
+            excluir_id: Evento a excluir de la búsqueda (el recién
+                creado), o None.
+
+        Returns:
+            True si existe al menos un antecedente.
+        """
+        tsquery = func.plainto_tsquery("spanish", termino)
+        stmt = select(EventoModel.id).where(
+            EventoModel.contenido_tsv.op("@@")(tsquery)
+        )
+        if excluir_id is not None:
+            stmt = stmt.where(EventoModel.id != excluir_id)
+        resultado = await self._session.execute(stmt.limit(1))
+        return resultado.scalar_one_or_none() is not None
 
     async def reforzar(self, eventos_ids: list[uuid.UUID]) -> int:
         """Incrementa el contador de consolidación de los eventos evocados.
@@ -298,6 +324,74 @@ class EventoRepository:
         )
         resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
         return resultado.rowcount > 0
+
+
+class RelacionRepository:
+    """Acceso a datos de los vínculos entre eventos."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Inicializa el repositorio con una sesión async.
+
+        Args:
+            session: Sesión async de SQLAlchemy.
+        """
+        self._session = session
+
+    async def vincular(
+        self,
+        a_id: uuid.UUID,
+        b_id: uuid.UUID,
+        tipo: str,
+        peso: float = 1.0,
+    ) -> bool:
+        """Crea el vínculo entre dos eventos si no existe ya.
+
+        El par se normaliza en orden canónico (menor UUID primero) —
+        la relación es no dirigida. Duplicados (mismo par y tipo) se
+        ignoran silenciosamente.
+
+        Args:
+            a_id: UUID de un extremo.
+            b_id: UUID del otro extremo.
+            tipo: ``explicita`` (declarada) o ``semantica`` (inferida).
+            peso: Fuerza del vínculo (0-1; en semánticas, el coseno).
+
+        Returns:
+            True si el vínculo se creó, False si ya existía o el par
+            era degenerado (mismo evento en ambos extremos).
+        """
+        if a_id == b_id:
+            return False
+        origen, destino = (a_id, b_id) if a_id < b_id else (b_id, a_id)
+        stmt = (
+            pg_insert(RelacionModel)
+            .values(
+                origen_id=origen,
+                destino_id=destino,
+                tipo=tipo,
+                peso=peso,
+            )
+            .on_conflict_do_nothing(constraint="uq_relaciones_par_tipo")
+        )
+        resultado = await self._session.execute(stmt)
+        return cast(CursorResult[RelacionModel], resultado).rowcount > 0
+
+    async def listar(self, limite: int = 2000) -> Sequence[RelacionModel]:
+        """Lista los vínculos registrados, más recientes primero.
+
+        Args:
+            limite: Máximo de vínculos a retornar.
+
+        Returns:
+            Relaciones ordenadas por fecha de creación descendente.
+        """
+        stmt = (
+            select(RelacionModel)
+            .order_by(RelacionModel.creado_en.desc())
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
 
 
 class BenchmarkRepository:

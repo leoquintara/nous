@@ -1,0 +1,79 @@
+"""Detección de contexto incompleto al registrar eventos.
+
+Cuando un evento menciona entidades (nombres propios, términos en
+mayúscula) sin antecedentes en la memoria, el panorama es incompleto:
+el sistema no puede vincularlo ni razonar sobre él con contexto. La
+respuesta de ``recordar_evento`` incluye entonces un aviso para que
+el agente pueda preguntar al usuario por la pieza faltante.
+"""
+
+import re
+import uuid
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.storage.repositories import EventoRepository
+
+# Nombres propios / términos capitalizados de ≥4 letras. La primera
+# palabra de la frase también cuenta: "Franz me estresa" — Franz es
+# justamente la entidad que interesa detectar.
+_PATRON_ENTIDAD = re.compile(r"\b[A-ZÁÉÍÓÚÑÜ][a-záéíóúñü]{3,}\b")
+
+_MAX_ENTIDADES = 5
+
+
+def extraer_entidades(contenido: str) -> list[str]:
+    """Extrae nombres propios mencionados en el contenido.
+
+    Args:
+        contenido: Texto del evento.
+
+    Returns:
+        Entidades únicas en orden de aparición (máx. 5).
+    """
+    vistas: dict[str, None] = {}
+    for m in _PATRON_ENTIDAD.finditer(contenido):
+        vistas.setdefault(m.group(0))
+        if len(vistas) >= _MAX_ENTIDADES:
+            break
+    return list(vistas)
+
+
+async def analizar_contexto(
+    session: AsyncSession,
+    contenido: str,
+    excluir_id: uuid.UUID | None = None,
+) -> dict[str, object]:
+    """Evalúa si el evento menciona entidades sin antecedente.
+
+    Para cada entidad capitalizada del contenido consulta el índice
+    full-text: si ningún evento previo la menciona, se reporta como
+    nueva y el panorama queda marcado como incompleto.
+
+    Args:
+        session: Sesión async activa.
+        contenido: Texto del evento recién registrado.
+        excluir_id: UUID del evento a excluir del chequeo (el propio).
+
+    Returns:
+        ``{"completo": True}`` si no hay entidades nuevas, o
+        ``{"completo": False, "entidades_nuevas": [...],
+        "sugerencia": "..."}`` si las hay.
+    """
+    repo = EventoRepository(session)
+    nuevas: list[str] = []
+    for entidad in extraer_entidades(contenido):
+        if not await repo.existe_mencion(entidad, excluir_id):
+            nuevas.append(entidad)
+    if not nuevas:
+        return {"completo": True}
+    lista = ", ".join(f"'{e}'" for e in nuevas)
+    return {
+        "completo": False,
+        "entidades_nuevas": nuevas,
+        "sugerencia": (
+            f"El evento menciona {lista} sin antecedentes en la memoria. "
+            "Pregunta al usuario por contexto (quién/qué es, por qué "
+            "importa) para que futuras consultas tengan panorama completo."
+        ),
+    }

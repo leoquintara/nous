@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     cache_embeddings_max: int = 256
     dedup_umbral: float = 0.95
     dedup_ventana_segundos: int = 3600
+    relacion_umbral: float = 0.55
+    relacion_max: int = 3
     priming_segundos: int = 300
     recencia_vida_media_dias: float = 30.0
     mcp_transport: Literal["stdio", "http"] = "stdio"

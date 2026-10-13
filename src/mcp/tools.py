@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from src.config import get_settings
 from src.core.busqueda import BusquedaHibrida4D
 from src.core.clasificador import ClasificadorDimensiones
+from src.core.contexto import analizar_contexto
 from src.core.embeddings import GeneradorEmbeddings
 from src.core.episodios import GAP_MAX_DEFECTO_SEGUNDOS, segmentar
 from src.core.exceptions import ErrorValidacion
@@ -33,6 +34,7 @@ from src.storage.repositories import (
     ConfiguracionRepository,
     EventoRepository,
     ProyeccionRepository,
+    RelacionRepository,
 )
 
 logger = logging.getLogger(__name__)
@@ -285,13 +287,15 @@ async def _recordar(
     amplitud: float,
     frecuencia: float | None,
     timestamp_unix: int | None,
+    relaciona_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Persiste un evento con indexación write-behind.
 
     Inserta la fila sin embedding (la columna tsvector computed la hace
     buscable por texto al instante) y delega embedding + dedup semántico
     a una tarea en segundo plano, de modo que la respuesta no paga la
-    inferencia del modelo (~30-50ms).
+    inferencia del modelo (~30-50ms). Si ``relaciona_ids`` trae UUIDs de
+    eventos existentes, se registran vínculos explícitos con ellos.
     """
     if not 0.0 <= amplitud <= 1.0:
         raise ErrorValidacion("amplitud debe estar entre 0.0 y 1.0")
@@ -305,6 +309,7 @@ async def _recordar(
         respuesta["dimension_dudosa"] = resultado.dudoso
     ts = timestamp_unix if timestamp_unix is not None else int(time.time())
     async with get_session(obtener_engine()) as session:
+        repo = EventoRepository(session)
         evento = EventoModel(
             timestamp_unix=ts,
             dimension=dimension,
@@ -314,7 +319,24 @@ async def _recordar(
             amplitud=amplitud,
             frecuencia=frecuencia,
         )
-        await EventoRepository(session).crear(evento)
+        await repo.crear(evento)
+        respuesta["contexto"] = await analizar_contexto(
+            session, contenido, excluir_id=evento.id
+        )
+        vinculos = 0
+        if relaciona_ids:
+            relaciones = RelacionRepository(session)
+            for texto_id in relaciona_ids[:20]:
+                try:
+                    otro_id = uuid.UUID(str(texto_id))
+                except (ValueError, AttributeError):
+                    continue
+                if await repo.obtener(otro_id) is None:
+                    continue
+                if await relaciones.vincular(evento.id, otro_id, "explicita"):
+                    vinculos += 1
+        if vinculos:
+            respuesta["vinculos_creados"] = vinculos
         await session.commit()
     _encolar_fondo(_ItemIndexacion(evento.id, contenido, ts, amplitud))
     _registrar_actividad("store", contenido, [str(evento.id)])
@@ -341,7 +363,9 @@ async def _indexar_luego(engine: AsyncEngine, item: _ItemIndexacion) -> None:
         settings = get_settings()
         async with get_session(engine) as session:
             repo = EventoRepository(session)
-            similar = await repo.buscar_por_vector(vector, limite=1)
+            similar = await repo.buscar_por_vector(
+                vector, limite=settings.relacion_max + 2
+            )
             duplicado = (
                 similar
                 and similar[0][0].id != item.evento_id
@@ -356,6 +380,24 @@ async def _indexar_luego(engine: AsyncEngine, item: _ItemIndexacion) -> None:
                     await repo.actualizar_embedding(item.evento_id, vector)
             else:
                 await repo.actualizar_embedding(item.evento_id, vector)
+                # Vínculos semánticos: el nuevo evento se ata a las
+                # huellas previas por encima del umbral (debajo del de
+                # dedup — esas son "el mismo" evento, no un vínculo).
+                relaciones = RelacionRepository(session)
+                creados = 0
+                for vecino, sim in similar:
+                    if creados >= settings.relacion_max:
+                        break
+                    if (
+                        vecino.id != item.evento_id
+                        and settings.relacion_umbral
+                        <= sim
+                        < settings.dedup_umbral
+                    ):
+                        if await relaciones.vincular(
+                            item.evento_id, vecino.id, "semantica", sim
+                        ):
+                            creados += 1
             await session.commit()
     except Exception:  # noqa: BLE001 — el fallo no debe propagarse al loop
         logger.exception("indexacion en segundo plano fallo para %s", item.evento_id)
@@ -381,6 +423,23 @@ async def _consultar(consulta: str, top_n: int) -> list[dict[str, Any]]:
     if resultados:
         _registrar_actividad("recall", consulta, [r.evento_id for r in resultados])
     return [_resultado_a_dict(r) for r in resultados]
+
+
+async def _relaciones(limite: int) -> list[dict[str, Any]]:
+    """Lista los vínculos entre eventos (explícitos y semánticos)."""
+    async with get_session(obtener_engine()) as session:
+        filas = await RelacionRepository(session).listar(
+            min(max(limite, 1), 5000)
+        )
+    return [
+        {
+            "origen_id": str(r.origen_id),
+            "destino_id": str(r.destino_id),
+            "tipo": r.tipo,
+            "peso": r.peso,
+        }
+        for r in filas
+    ]
 
 
 async def _linea(desde_unix: int, hasta_unix: int, limite: int) -> list[dict[str, Any]]:
@@ -437,6 +496,7 @@ async def recordar_evento(
     amplitud: float = 0.5,
     frecuencia: float | None = None,
     timestamp_unix: int | None = None,
+    relaciona_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Guarda un evento nuevo en la memoria persistente 4D del usuario.
 
@@ -467,14 +527,30 @@ async def recordar_evento(
             Gamma >30). Omitir si no hay dato biométrico; Nous no la
             estima por sí solo.
         timestamp_unix: Unix epoch en SEGUNDOS. Default: ahora.
+        relaciona_ids: UUIDs de eventos existentes a vincular
+            explícitamente con este (p. ej. cuando el usuario declara
+            que dos hechos van juntos). Los ids inválidos o inexistentes
+            se ignoran.
 
     Returns:
         Dict con "id", "timestamp_unix", "dimension" usada,
         "indexado" (false mientras el embedding se genera en segundo
-        plano) y "confianza_clasificacion" si se clasificó
-        automáticamente.
+        plano), "confianza_clasificacion" si se clasificó
+        automáticamente, "vinculos_creados" si se pidieron vínculos y
+        "contexto": {"completo": bool, ...} — si el evento menciona
+        entidades sin antecedentes en la memoria, completo=false y la
+        sugerencia indica qué preguntar al usuario para completar el
+        panorama. RESPONDE preguntando por esa pieza cuando aparezca.
     """
-    return await _recordar(contenido, dimension, fuente, amplitud, frecuencia, timestamp_unix)
+    return await _recordar(
+        contenido,
+        dimension,
+        fuente,
+        amplitud,
+        frecuencia,
+        timestamp_unix,
+        relaciona_ids,
+    )
 
 
 @mcp_server.tool()

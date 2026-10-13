@@ -46,6 +46,16 @@ class EventoRequest(BaseModel):
     amplitud: float = Field(default=0.5, ge=0.0, le=1.0)
     frecuencia: float | None = Field(default=None, gt=0.0)
     timestamp_unix: int | None = Field(default=None, ge=0)
+    relaciona_ids: list[str] | None = Field(default=None, max_length=20)
+
+
+class RelacionResponse(BaseModel):
+    """Vínculo entre dos eventos de la línea de universo."""
+
+    origen_id: str
+    destino_id: str
+    tipo: str
+    peso: float
 
 
 class EventoResponse(BaseModel):

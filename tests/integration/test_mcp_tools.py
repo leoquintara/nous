@@ -151,3 +151,121 @@ async def test_obtener_linea_rango_invertido_lanza_error(
     """Verifica que desde > hasta lanza ValueError."""
     with pytest.raises(ValueError, match="desde_unix"):
         await tools.obtener_linea_de_universo(2000, 1000)
+
+
+async def test_recordar_evento_crea_vinculos_explicitos(
+    motor: AsyncEngine,
+) -> None:
+    """Verifica que relaciona_ids persiste vínculos entre eventos."""
+    a = await tools.recordar_evento(
+        "día de carga laboral intensa", dimension="conductual", fuente=FUENTE_TEST
+    )
+    b = await tools.recordar_evento(
+        "el estrés viene con la carga",
+        dimension="somatica",
+        fuente=FUENTE_TEST,
+        relaciona_ids=[a["id"]],
+    )
+    assert b["vinculos_creados"] == 1
+    async with motor.connect() as conn:
+        fila = (
+            await conn.execute(
+                text(
+                    "SELECT tipo, peso FROM relaciones "
+                    "WHERE (origen_id = :a AND destino_id = :b) "
+                    "OR (origen_id = :b AND destino_id = :a)"
+                ),
+                {"a": a["id"], "b": b["id"]},
+            )
+        ).one()
+    assert fila[0] == "explicita"
+    assert fila[1] == pytest.approx(1.0)
+
+
+async def test_recordar_evento_ignora_ids_invalidos(
+    motor: AsyncEngine,
+) -> None:
+    """Verifica que ids inexistentes o malformados no rompen el insert."""
+    respuesta = await tools.recordar_evento(
+        "evento con vínculos malos",
+        fuente=FUENTE_TEST,
+        relaciona_ids=["no-es-uuid", "00000000-0000-0000-0000-000000000000"],
+    )
+    assert "vinculos_creados" not in respuesta
+
+
+async def test_recordar_evento_reporta_entidad_sin_antecedente(
+    motor: AsyncEngine,
+) -> None:
+    """Verifica el aviso de contexto incompleto con nombre propio nuevo."""
+    respuesta = await tools.recordar_evento(
+        "Xiomara me genera mucha presión",
+        fuente=FUENTE_TEST,
+    )
+    contexto = respuesta["contexto"]
+    assert contexto["completo"] is False
+    assert "Xiomara" in contexto["entidades_nuevas"]
+    assert "sugerencia" in contexto
+
+
+async def test_recordar_evento_contexto_completo_con_antecedente(
+    motor: AsyncEngine,
+) -> None:
+    """Verifica completo=true cuando la entidad ya tiene precedente."""
+    await tools.recordar_evento(
+        "Bernarda es mi gata", fuente=FUENTE_TEST
+    )
+    respuesta = await tools.recordar_evento(
+        "Bernarda dormía junto al teclado", fuente=FUENTE_TEST
+    )
+    assert respuesta["contexto"]["completo"] is True
+
+
+async def test_indexacion_crea_vinculo_semantico(motor: AsyncEngine) -> None:
+    """Verifica que el worker ata huellas muy similares al indexar."""
+    await tools.recordar_evento(
+        "el ajedrez del domingo me concentró muchísimo",
+        fuente=FUENTE_TEST,
+    )
+    b = await tools.recordar_evento(
+        "el ajedrez del domingo me concentró bastante",
+        fuente=FUENTE_TEST,
+    )
+    await tools._drenar_fondo()
+    async with motor.connect() as conn:
+        n = (
+            await conn.execute(
+                text(
+                    "SELECT count(*) FROM relaciones "
+                    "WHERE tipo = 'semantica' AND "
+                    "(origen_id = :b OR destino_id = :b)"
+                ),
+                {"b": b["id"]},
+            )
+        ).scalar_one()
+    # Si la dedup los fusionó, no hay segundo evento ni vínculo;
+    # si quedaron separados, la similitud alta debió crear el vínculo.
+    if n == 0:
+        async with motor.connect() as conn:
+            existe_b = (
+                await conn.execute(
+                    text("SELECT count(*) FROM eventos WHERE id = :b"),
+                    {"b": b["id"]},
+                )
+            ).scalar_one()
+        assert existe_b == 0  # fusionado por dedup
+
+
+async def test_relaciones_lista_vinculos(motor: AsyncEngine) -> None:
+    """Verifica que _relaciones devuelve los vínculos persistidos."""
+    a = await tools.recordar_evento("pieza uno", fuente=FUENTE_TEST)
+    await tools.recordar_evento(
+        "pieza dos", fuente=FUENTE_TEST, relaciona_ids=[a["id"]]
+    )
+    filas = await tools._relaciones(50)
+    par = {str(a["id"])}
+    assert any(
+        {r["origen_id"], r["destino_id"]} == par
+        or a["id"] in (r["origen_id"], r["destino_id"])
+        for r in filas
+    )
