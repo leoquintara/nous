@@ -19,7 +19,53 @@ from src.storage.repositories import EventoRepository
 # justamente la entidad que interesa detectar.
 _PATRON_ENTIDAD = re.compile(r"\b[A-ZÁÉÍÓÚÑÜ][a-záéíóúñü]{3,}\b")
 
+# #hashtag estilo Karpathy/Obsidian: vínculo implícito entre memorias
+# que comparten etiqueta. Minúsculas, Unicode, sin espacios.
+_PATRON_HASHTAG = re.compile(r"#([0-9A-Za-zÁÉÍÓÚÑÜáéíóúñü_\-]{2,64})")
+
 _MAX_ENTIDADES = 5
+_MAX_TAGS = 12
+
+
+def extraer_hashtags(contenido: str) -> list[str]:
+    """Extrae #hashtags del contenido, normalizados a minúsculas.
+
+    Args:
+        contenido: Texto del evento.
+
+    Returns:
+        Tags únicos en orden de aparición (máx. 12), sin el '#'.
+    """
+    vistos: dict[str, None] = {}
+    for m in _PATRON_HASHTAG.finditer(contenido):
+        tag = m.group(1).lower().lstrip("_").strip("_")
+        # Los numéricos puros (#123) no son etiquetas semánticas.
+        if not tag or tag.isdigit():
+            continue
+        vistos.setdefault(tag)
+        if len(vistos) >= _MAX_TAGS:
+            break
+    return [t for t in vistos if t]
+
+
+def fusionar_tags(explicitos: list[str] | None, contenido: str) -> list[str]:
+    """Une los tags declarados con los #hashtags del contenido.
+
+    Args:
+        explicitos: Tags pasados por el agente (se normalizan).
+        contenido: Texto del evento del que extraer #hashtags.
+
+    Returns:
+        Tags únicos en minúsculas (máx. 12).
+    """
+    fusion: dict[str, None] = {}
+    for tag in explicitos or []:
+        limpio = tag.strip().lower().lstrip("#").strip("_")
+        if 2 <= len(limpio) <= 64:
+            fusion.setdefault(limpio)
+    for tag in extraer_hashtags(contenido):
+        fusion.setdefault(tag)
+    return list(fusion)[:_MAX_TAGS]
 
 
 def extraer_entidades(contenido: str) -> list[str]:

@@ -20,7 +20,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 EMBEDDING_DIM = 384
@@ -53,6 +53,10 @@ class EventoModel(Base):
     contexto: Mapped[dict[str, Any]] = mapped_column(
         JSONB, server_default=text("'{}'::jsonb")
     )
+    tags: Mapped[list[str]] = mapped_column(
+        ARRAY(String(64)), server_default=text("'{}'::varchar(64)[]")
+    )
+    rama: Mapped[str] = mapped_column(String(64), server_default="main")
     contenido_tsv: Mapped[str | None] = mapped_column(
         TSVECTOR,
         Computed("to_tsvector('spanish', contenido)", persisted=True),
@@ -127,6 +131,30 @@ class RelacionModel(Base):
         ),
         Index("ix_relaciones_origen", "origen_id"),
         Index("ix_relaciones_destino", "destino_id"),
+    )
+
+
+class FuenteModel(Base):
+    """Origen de datos administrable de la memoria unificada.
+
+    Todas las fuentes comparten la misma base — ``eventos.fuente`` las
+    distingue. ``estado`` permite archivar sin borrar; ``namespace``
+    agrupa sub-fuentes (p. ej. ``obsidian/proyecto-x``); ``rama_origen``
+    indica la línea de universo donde nació la fuente.
+    """
+
+    __tablename__ = "fuentes"
+
+    nombre: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tipo: Mapped[str] = mapped_column(String(20), server_default="manual")
+    estado: Mapped[str] = mapped_column(String(20), server_default="activa")
+    namespace: Mapped[str] = mapped_column(String(128), server_default="")
+    rama_origen: Mapped[str] = mapped_column(String(64), server_default="main")
+    extra: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, server_default=text("'{}'::jsonb")
+    )
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
     )
 
 

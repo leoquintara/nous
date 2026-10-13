@@ -15,12 +15,13 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from src.config import get_settings
 from src.core.busqueda import BusquedaHibrida4D
 from src.core.clasificador import ClasificadorDimensiones
-from src.core.contexto import analizar_contexto
+from src.core.contexto import analizar_contexto, fusionar_tags
 from src.core.embeddings import GeneradorEmbeddings
 from src.core.episodios import GAP_MAX_DEFECTO_SEGUNDOS, segmentar
 from src.core.exceptions import ErrorValidacion
@@ -33,6 +34,7 @@ from src.storage.models import EventoModel, ProyeccionModel
 from src.storage.repositories import (
     ConfiguracionRepository,
     EventoRepository,
+    FuenteRepository,
     ProyeccionRepository,
     RelacionRepository,
 )
@@ -247,6 +249,8 @@ def _modelo_a_dict(modelo: EventoModel) -> dict[str, Any]:
         "amplitud": modelo.amplitud,
         "frecuencia": modelo.frecuencia,
         "refuerzos": modelo.refuerzos,
+        "tags": list(modelo.tags or []),
+        "rama": modelo.rama,
     }
 
 
@@ -288,6 +292,8 @@ async def _recordar(
     frecuencia: float | None,
     timestamp_unix: int | None,
     relaciona_ids: list[str] | None = None,
+    tags: list[str] | None = None,
+    rama: str = "main",
 ) -> dict[str, Any]:
     """Persiste un evento con indexación write-behind.
 
@@ -308,6 +314,7 @@ async def _recordar(
         respuesta["confianza_clasificacion"] = resultado.confianza
         respuesta["dimension_dudosa"] = resultado.dudoso
     ts = timestamp_unix if timestamp_unix is not None else int(time.time())
+    tags_final = fusionar_tags(tags, contenido)
     async with get_session(obtener_engine()) as session:
         repo = EventoRepository(session)
         evento = EventoModel(
@@ -318,8 +325,11 @@ async def _recordar(
             embedding=None,
             amplitud=amplitud,
             frecuencia=frecuencia,
+            tags=tags_final,
+            rama=rama,
         )
         await repo.crear(evento)
+        await FuenteRepository(session).crear(fuente, tipo="agente")
         respuesta["contexto"] = await analizar_contexto(
             session, contenido, excluir_id=evento.id
         )
@@ -348,6 +358,8 @@ async def _recordar(
             "indexado": False,
         }
     )
+    if tags_final:
+        respuesta["tags"] = tags_final
     return respuesta
 
 
@@ -425,6 +437,121 @@ async def _consultar(consulta: str, top_n: int) -> list[dict[str, Any]]:
     return [_resultado_a_dict(r) for r in resultados]
 
 
+async def _tags(limite: int) -> list[dict[str, Any]]:
+    """Lista los tags agregados con su frecuencia de uso."""
+    async with get_session(obtener_engine()) as session:
+        pares = await EventoRepository(session).listar_tags(limite)
+    return [{"tag": tag, "eventos": n} for tag, n in pares]
+
+
+async def _fuentes() -> list[dict[str, Any]]:
+    """Lista las fuentes registradas con su conteo de eventos."""
+    async with get_session(obtener_engine()) as session:
+        filas = await FuenteRepository(session).listar()
+        # Fuentes usadas pero nunca registradas (datos antiguos).
+        registradas = {f.nombre for f, _ in filas}
+        resultado = [
+            {
+                "nombre": f.nombre,
+                "tipo": f.tipo,
+                "estado": f.estado,
+                "namespace": f.namespace,
+                "rama_origen": f.rama_origen,
+                "metadata": f.extra,
+                "eventos": n,
+            }
+            for f, n in filas
+        ]
+        crudo = await session.execute(
+            select(EventoModel.fuente, func.count())
+            .group_by(EventoModel.fuente)
+        )
+        for nombre, n in crudo.all():
+            if nombre not in registradas:
+                resultado.append(
+                    {
+                        "nombre": nombre,
+                        "tipo": "manual",
+                        "estado": "activa",
+                        "namespace": "",
+                        "rama_origen": "main",
+                        "metadata": {},
+                        "eventos": int(n),
+                    }
+                )
+    return resultado
+
+
+async def _crear_fuente(
+    nombre: str,
+    tipo: str,
+    namespace: str,
+    rama_origen: str,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Registra una fuente de datos (idempotente por nombre)."""
+    async with get_session(obtener_engine()) as session:
+        fuente = await FuenteRepository(session).crear(
+            nombre, tipo=tipo, namespace=namespace,
+            rama_origen=rama_origen, extra=metadata,
+        )
+        await session.commit()
+    return {
+        "nombre": fuente.nombre,
+        "tipo": fuente.tipo,
+        "estado": fuente.estado,
+        "namespace": fuente.namespace,
+        "rama_origen": fuente.rama_origen,
+    }
+
+
+async def _estado_fuente(nombre: str, estado: str) -> bool:
+    """Activa o archiva una fuente registrada."""
+    async with get_session(obtener_engine()) as session:
+        ok = await FuenteRepository(session).cambiar_estado(nombre, estado)
+        await session.commit()
+    return ok
+
+
+async def _eliminar_fuente(nombre: str) -> bool:
+    """Borra el registro de una fuente (sus eventos quedan intactos)."""
+    async with get_session(obtener_engine()) as session:
+        ok = await FuenteRepository(session).eliminar(nombre)
+        await session.commit()
+    return ok
+
+
+async def _ramificar_fuente(
+    nombre: str, rama: str, namespace: str
+) -> dict[str, Any] | None:
+    """Crea una línea de universo alterna derivada de una fuente.
+
+    La rama nace como sub-fuente ``{nombre}:{rama}``: los eventos que
+    se registren en ella viven en la línea paralela ``rama`` sin tocar
+    la principal (comparten todo el pasado).
+    """
+    async with get_session(obtener_engine()) as session:
+        repo = FuenteRepository(session)
+        origen = await repo.obtener(nombre)
+        if origen is None:
+            return None
+        derivada = await repo.crear(
+            f"{nombre}:{rama}",
+            tipo=origen.tipo,
+            namespace=namespace or origen.namespace,
+            rama_origen=rama,
+            extra={"derivada_de": nombre},
+        )
+        await session.commit()
+    return {
+        "nombre": derivada.nombre,
+        "tipo": derivada.tipo,
+        "estado": derivada.estado,
+        "namespace": derivada.namespace,
+        "rama_origen": derivada.rama_origen,
+    }
+
+
 async def _relaciones(limite: int) -> list[dict[str, Any]]:
     """Lista los vínculos entre eventos (explícitos y semánticos)."""
     async with get_session(obtener_engine()) as session:
@@ -442,13 +569,18 @@ async def _relaciones(limite: int) -> list[dict[str, Any]]:
     ]
 
 
-async def _linea(desde_unix: int, hasta_unix: int, limite: int) -> list[dict[str, Any]]:
+async def _linea(
+    desde_unix: int,
+    hasta_unix: int,
+    limite: int,
+    rama: str | None = None,
+) -> list[dict[str, Any]]:
     """Devuelve los eventos del rango temporal en orden cronológico."""
     if desde_unix > hasta_unix:
         raise ErrorValidacion("desde_unix debe ser <= hasta_unix")
     async with get_session(obtener_engine()) as session:
         eventos = await EventoRepository(session).listar_por_rango(
-            desde_unix, hasta_unix, min(max(limite, 1), 500)
+            desde_unix, hasta_unix, min(max(limite, 1), 500), rama
         )
     return [_modelo_a_dict(e) for e in eventos]
 
@@ -497,6 +629,8 @@ async def recordar_evento(
     frecuencia: float | None = None,
     timestamp_unix: int | None = None,
     relaciona_ids: list[str] | None = None,
+    tags: list[str] | None = None,
+    rama: str = "main",
 ) -> dict[str, Any]:
     """Guarda un evento nuevo en la memoria persistente 4D del usuario.
 
@@ -531,6 +665,12 @@ async def recordar_evento(
             explícitamente con este (p. ej. cuando el usuario declara
             que dos hechos van juntos). Los ids inválidos o inexistentes
             se ignoran.
+        tags: Etiquetas que relacionan el contenido con otras memorias
+            (p. ej. ["trabajo", "franz"]). Los #hashtags escritos en el
+            propio contenido se extraen y fusionan automáticamente.
+        rama: Línea de universo donde registrar el evento
+            ("main" por defecto). Las ramas son líneas paralelas que
+            divergen de la principal, útiles para escenarios.
 
     Returns:
         Dict con "id", "timestamp_unix", "dimension" usada,
@@ -550,6 +690,8 @@ async def recordar_evento(
         frecuencia,
         timestamp_unix,
         relaciona_ids,
+        tags,
+        rama,
     )
 
 
@@ -585,6 +727,7 @@ async def obtener_linea_de_universo(
     desde_unix: int,
     hasta_unix: int,
     limite: int = 100,
+    rama: str = "main",
 ) -> list[dict[str, Any]]:
     """Devuelve los eventos de la línea temporal en un rango de fechas.
 
@@ -599,12 +742,16 @@ async def obtener_linea_de_universo(
         desde_unix: Inicio del rango, Unix epoch en segundos (inclusive).
         hasta_unix: Fin del rango, Unix epoch en segundos (inclusive).
         limite: Máximo de eventos a devolver (1-500). Default 100.
+        rama: Línea de universo a recorrer ("main" por defecto;
+            "*" para todas las ramas).
 
     Returns:
         Eventos {"id","timestamp_unix","dimension","fuente","contenido",
         "amplitud","frecuencia"} ordenados cronológicamente.
     """
-    return await _linea(desde_unix, hasta_unix, limite)
+    return await _linea(
+        desde_unix, hasta_unix, limite, None if rama == "*" else rama
+    )
 
 
 async def _episodios(

@@ -12,10 +12,15 @@ from src.api.schemas import (
     BenchmarkResponse,
     EventoRequest,
     EventoResponse,
+    FuentePatch,
+    FuenteRequest,
+    FuenteResponse,
     HealthResponse,
     LoginRequest,
     LoginResponse,
+    RamificarRequest,
     RelacionResponse,
+    TagResponse,
 )
 from src.config import get_settings
 from src.mcp import tools as tools_impl
@@ -91,6 +96,7 @@ async def listar_eventos(
     desde_unix: int = 0,
     hasta_unix: int = 4_102_444_800,
     limite: int = 500,
+    rama: str = "main",
 ) -> list[EventoResponse]:
     """Lista eventos de la línea de universo en un rango temporal.
 
@@ -98,11 +104,18 @@ async def listar_eventos(
         desde_unix: Inicio del rango, Unix epoch en segundos.
         hasta_unix: Fin del rango, Unix epoch en segundos.
         limite: Máximo de eventos (1-500).
+        rama: Línea de universo a listar ("main" por defecto,
+            "*" para todas las ramas).
 
     Returns:
         Eventos en orden cronológico.
     """
-    return [EventoResponse(**e) for e in await tools_impl._linea(desde_unix, hasta_unix, limite)]
+    return [
+        EventoResponse(**e)
+        for e in await tools_impl._linea(
+            desde_unix, hasta_unix, limite, None if rama == "*" else rama
+        )
+    ]
 
 
 @router.post("/eventos", dependencies=[Depends(verificar_token)])
@@ -123,7 +136,76 @@ async def crear_evento(peticion: EventoRequest) -> dict[str, Any]:
         peticion.frecuencia,
         peticion.timestamp_unix,
         peticion.relaciona_ids,
+        peticion.tags,
+        peticion.rama,
     )
+
+
+@router.get("/tags", dependencies=[Depends(verificar_token)])
+async def listar_tags(limite: int = 200) -> list[TagResponse]:
+    """Lista los tags de la memoria con su frecuencia.
+
+    Args:
+        limite: Máximo de tags (1-500).
+
+    Returns:
+        Tags ordenados por número de eventos descendente.
+    """
+    return [TagResponse(**t) for t in await tools_impl._tags(limite)]
+
+
+@router.get("/fuentes", dependencies=[Depends(verificar_token)])
+async def listar_fuentes() -> list[FuenteResponse]:
+    """Lista las fuentes de datos registradas con su conteo real."""
+    return [FuenteResponse(**f) for f in await tools_impl._fuentes()]
+
+
+@router.post("/fuentes", dependencies=[Depends(verificar_token)])
+async def crear_fuente(peticion: FuenteRequest) -> dict[str, Any]:
+    """Registra una fuente nueva (idempotente por nombre)."""
+    return await tools_impl._crear_fuente(
+        peticion.nombre,
+        peticion.tipo,
+        peticion.namespace,
+        peticion.rama_origen,
+        peticion.metadata,
+    )
+
+
+@router.patch("/fuentes/{nombre}", dependencies=[Depends(verificar_token)])
+async def estado_fuente(nombre: str, peticion: FuentePatch) -> dict[str, Any]:
+    """Activa o archiva una fuente (los eventos no se tocan)."""
+    ok = await tools_impl._estado_fuente(nombre, peticion.estado)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Fuente no encontrada")
+    return {"nombre": nombre, "estado": peticion.estado}
+
+
+@router.delete("/fuentes/{nombre}", dependencies=[Depends(verificar_token)])
+async def eliminar_fuente(nombre: str) -> dict[str, Any]:
+    """Elimina el registro de la fuente; sus eventos permanecen."""
+    ok = await tools_impl._eliminar_fuente(nombre)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Fuente no encontrada")
+    return {"nombre": nombre, "eliminada": True}
+
+
+@router.post("/fuentes/{nombre}/ramificar", dependencies=[Depends(verificar_token)])
+async def ramificar_fuente(
+    nombre: str, peticion: RamificarRequest
+) -> dict[str, Any]:
+    """Crea una línea de universo paralela derivada de la fuente.
+
+    La rama se materializa como sub-fuente ``{nombre}:{rama}``: los
+    eventos escritos ahí pertenecen a la línea ``rama``, que comparte
+    todo el pasado con la principal.
+    """
+    resultado = await tools_impl._ramificar_fuente(
+        nombre, peticion.rama, peticion.namespace
+    )
+    if resultado is None:
+        raise HTTPException(status_code=404, detail="Fuente no encontrada")
+    return resultado
 
 
 @router.get("/relaciones", dependencies=[Depends(verificar_token)])

@@ -127,7 +127,9 @@ async def test_importar_roundtrip_dedup_y_errores(
         encoding="utf-8",
     )
     resumen = await transferencia.importar(motor, archivo)
-    assert resumen == {"importados": 1, "omitidos": 1, "errores": 1}
+    assert resumen == {
+        "importados": 1, "omitidos": 1, "errores": 1, "vinculos": 0,
+    }
     async with motor.connect() as conn:
         fila = (
             await conn.execute(

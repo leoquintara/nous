@@ -1,6 +1,10 @@
 """Tests unitarios de extracción de entidades para el hint de contexto."""
 
-from src.core.contexto import extraer_entidades
+from src.core.contexto import (
+    extraer_entidades,
+    extraer_hashtags,
+    fusionar_tags,
+)
 
 
 def test_extraer_entidades_detecta_nombre_propio() -> None:
@@ -29,3 +33,22 @@ def test_extraer_entidades_dedup_y_orden() -> None:
 def test_extraer_entidades_ignora_siglas_y_cortas() -> None:
     """Palabras de menos de 4 letras capitalizadas no cuentan."""
     assert extraer_entidades("El Sr. Oz vino hoy") == []
+
+
+def test_extraer_hashtags_ignora_numericos() -> None:
+    """`#123` no cuenta (no es etiqueta semántica); #trabajo sí."""
+    assert extraer_hashtags("avance #trabajo #123 x") == ["trabajo"]
+
+
+def test_extraer_hashtags_normaliza_minusculas() -> None:
+    """#IA y #ia colapsan en un solo tag."""
+    assert extraer_hashtags("metí #IA con #ia") == ["ia"]
+
+
+def test_fusionar_tags_dedup_case_insensitive() -> None:
+    """Explícitos + hashtags colapsan en minúscula sin duplicar."""
+    assert fusionar_tags(["Trabajo", "IA"], "metí #trabajo y #casa") == [
+        "trabajo",
+        "ia",
+        "casa",
+    ]

@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Sequence
 from typing import Any, cast
 
-from sqlalchemy import delete, func, literal, select, union_all, update
+from sqlalchemy import delete, func, literal, or_, select, union_all, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +17,7 @@ from src.storage.models import (
     BenchmarkRunModel,
     ConfiguracionModel,
     EventoModel,
+    FuenteModel,
     ProyeccionModel,
     RelacionModel,
 )
@@ -61,7 +62,11 @@ class EventoRepository:
         return await self._session.get(EventoModel, evento_id)
 
     async def listar_por_rango(
-        self, desde: int, hasta: int, limite: int = 100
+        self,
+        desde: int,
+        hasta: int,
+        limite: int = 100,
+        rama: str | None = None,
     ) -> Sequence[EventoModel]:
         """Lista eventos en el rango temporal [desde, hasta].
 
@@ -69,6 +74,8 @@ class EventoRepository:
             desde: Timestamp Unix de inicio (inclusive).
             hasta: Timestamp Unix de fin (inclusive).
             limite: Máximo de eventos a retornar.
+            rama: Línea de universo a listar; None = todas las ramas
+                ("main" solo si se pasa explícitamente).
 
         Returns:
             Eventos ordenados por timestamp ascendente.
@@ -79,8 +86,29 @@ class EventoRepository:
             .order_by(EventoModel.timestamp_unix)
             .limit(limite)
         )
+        if rama is not None:
+            stmt = stmt.where(EventoModel.rama == rama)
         resultado = await self._session.execute(stmt)
         return resultado.scalars().all()
+
+    async def listar_tags(self, limite: int = 200) -> Sequence[tuple[str, int]]:
+        """Agrega los tags de todos los eventos con su conteo.
+
+        Args:
+            limite: Máximo de tags a retornar.
+
+        Returns:
+            Tuplas (tag, número de eventos) ordenadas por frecuencia.
+        """
+        tag = func.unnest(EventoModel.tags).label("tag")
+        stmt = (
+            select(tag, func.count().label("n"))
+            .group_by(tag)
+            .order_by(func.count().desc())
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return [(str(fila["tag"]), int(fila["n"])) for fila in resultado.mappings().all()]
 
     async def buscar_por_texto(
         self, query: str, limite: int = 20
@@ -96,9 +124,18 @@ class EventoRepository:
         """
         tsquery = func.plainto_tsquery("spanish", query)
         rank = func.ts_rank(EventoModel.contenido_tsv, tsquery).label("score")
+        # Los tags explícitos también hacen match (no caben en el
+        # tsvector generado: array_to_string no es immutable).
         stmt = (
             select(EventoModel, rank)
-            .where(EventoModel.contenido_tsv.op("@@")(tsquery))
+            .where(
+                or_(
+                    EventoModel.contenido_tsv.op("@@")(tsquery),
+                    func.array_to_string(EventoModel.tags, " ").ilike(
+                        f"%{query}%"
+                    ),
+                )
+            )
             .order_by(rank.desc())
             .limit(limite)
         )
@@ -392,6 +429,118 @@ class RelacionRepository:
         )
         resultado = await self._session.execute(stmt)
         return resultado.scalars().all()
+
+
+class FuenteRepository:
+    """Acceso a datos de las fuentes administrables."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Inicializa el repositorio con una sesión async.
+
+        Args:
+            session: Sesión async de SQLAlchemy.
+        """
+        self._session = session
+
+    async def listar(
+        self, incluir_archivadas: bool = True
+    ) -> Sequence[tuple[FuenteModel, int]]:
+        """Lista las fuentes con su conteo de eventos real.
+
+        Args:
+            incluir_archivadas: Si False, solo fuentes activas.
+
+        Returns:
+            Tuplas (fuente, nº de eventos) ordenadas por nombre.
+        """
+        conteo = (
+            select(EventoModel.fuente, func.count().label("n"))
+            .group_by(EventoModel.fuente)
+            .subquery()
+        )
+        stmt = (
+            select(FuenteModel, func.coalesce(conteo.c.n, 0).label("n"))
+            .outerjoin(conteo, conteo.c.fuente == FuenteModel.nombre)
+            .order_by(FuenteModel.nombre)
+        )
+        if not incluir_archivadas:
+            stmt = stmt.where(FuenteModel.estado == "activa")
+        resultado = await self._session.execute(stmt)
+        return [
+            (fila["FuenteModel"], int(fila["n"]))
+            for fila in resultado.mappings().all()
+        ]
+
+    async def crear(
+        self,
+        nombre: str,
+        tipo: str = "manual",
+        namespace: str = "",
+        rama_origen: str = "main",
+        extra: dict[str, Any] | None = None,
+    ) -> FuenteModel:
+        """Registra una fuente nueva (idempotente por nombre).
+
+        Args:
+            nombre: Identificador de la fuente (``eventos.fuente``).
+            tipo: manual/obsidian/gbrain/memlord/agente/import.
+            namespace: Sub-agrupación opcional dentro de la fuente.
+            rama_origen: Rama de la línea de universo donde nace.
+            extra: Metadata libre (JSONB).
+
+        Returns:
+            La fuente persistida o la existente si ya estaba.
+        """
+        stmt = (
+            pg_insert(FuenteModel)
+            .values(
+                nombre=nombre,
+                tipo=tipo,
+                namespace=namespace,
+                rama_origen=rama_origen,
+                extra=extra or {},
+            )
+            .on_conflict_do_nothing()
+        )
+        await self._session.execute(stmt)
+        existente = await self._session.get(FuenteModel, nombre)
+        assert existente is not None
+        return existente
+
+    async def obtener(self, nombre: str) -> FuenteModel | None:
+        """Retorna la fuente por nombre o None."""
+        return await self._session.get(FuenteModel, nombre)
+
+    async def cambiar_estado(self, nombre: str, estado: str) -> bool:
+        """Activa o archiva una fuente.
+
+        Args:
+            nombre: Fuente a modificar.
+            estado: ``activa`` o ``archivada``.
+
+        Returns:
+            True si la fuente existía y quedó actualizada.
+        """
+        resultado = await self._session.execute(
+            update(FuenteModel)
+            .where(FuenteModel.nombre == nombre)
+            .values(estado=estado)
+        )
+        return cast(CursorResult[FuenteModel], resultado).rowcount > 0
+
+    async def eliminar(self, nombre: str) -> bool:
+        """Borra el registro de la fuente (no sus eventos).
+
+        Args:
+            nombre: Fuente a eliminar del registro.
+
+        Returns:
+            True si existía.
+        """
+        resultado = await self._session.execute(
+            delete(FuenteModel).where(FuenteModel.nombre == nombre)
+        )
+        return cast(CursorResult[FuenteModel], resultado).rowcount > 0
 
 
 class BenchmarkRepository:

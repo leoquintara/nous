@@ -47,6 +47,8 @@ class EventoRequest(BaseModel):
     frecuencia: float | None = Field(default=None, gt=0.0)
     timestamp_unix: int | None = Field(default=None, ge=0)
     relaciona_ids: list[str] | None = Field(default=None, max_length=20)
+    tags: list[str] | None = Field(default=None, max_length=12)
+    rama: str = Field(default="main", min_length=1, max_length=64)
 
 
 class RelacionResponse(BaseModel):
@@ -69,3 +71,49 @@ class EventoResponse(BaseModel):
     amplitud: float
     frecuencia: float | None = None
     refuerzos: int = 0
+    tags: list[str] = []
+    rama: str = "main"
+
+
+class TagResponse(BaseModel):
+    """Tag agregado con su frecuencia de uso."""
+
+    tag: str
+    eventos: int
+
+
+class FuenteRequest(BaseModel):
+    """Cuerpo para registrar una fuente de datos."""
+
+    nombre: str = Field(min_length=1, max_length=64)
+    tipo: Literal[
+        "manual", "obsidian", "gbrain", "memlord", "agente", "import"
+    ] = "manual"
+    namespace: str = Field(default="", max_length=128)
+    rama_origen: str = Field(default="main", max_length=64)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class FuentePatch(BaseModel):
+    """Cambio de estado de una fuente (activar/archivar)."""
+
+    estado: Literal["activa", "archivada"]
+
+
+class RamificarRequest(BaseModel):
+    """Crea una rama de línea de universo a partir de una fuente."""
+
+    rama: str = Field(min_length=1, max_length=64)
+    namespace: str = Field(default="", max_length=128)
+
+
+class FuenteResponse(BaseModel):
+    """Fuente registrada con su conteo real de eventos."""
+
+    nombre: str
+    tipo: str
+    estado: str
+    namespace: str
+    rama_origen: str
+    metadata: dict[str, Any]
+    eventos: int

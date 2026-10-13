@@ -262,3 +262,131 @@ async def test_eventos_avisa_entidad_sin_antecedente(
     contexto = r.json()["contexto"]
     assert contexto["completo"] is False
     assert "Zabdiel" in contexto["entidades_nuevas"]
+
+
+@pytest.mark.asyncio
+async def test_eventos_fusiona_tags_explicitos_y_hashtags(
+    cliente: AsyncClient,
+) -> None:
+    """POST /eventos mezcla tags explícitos con #hashtags del contenido."""
+    r = await cliente.post(
+        "/api/eventos",
+        json={
+            "contenido": "qzx revisé el backlog del sprint #prioridad zq9",
+            "fuente": FUENTE_TEST,
+            "tags": ["Sprint", "prioridad"],
+        },
+    )
+    assert r.status_code == 200
+    evento_id = r.json()["id"]
+    linea = await cliente.get("/api/eventos")
+    tags = next(
+        e["tags"] for e in linea.json() if e["id"] == evento_id
+    )
+    assert sorted(tags) == ["prioridad", "sprint"]
+
+
+@pytest.mark.asyncio
+async def test_tags_endpoint_lista_frecuencias(cliente: AsyncClient) -> None:
+    """GET /tags agrega frecuencias de tags persistidos."""
+    await cliente.post(
+        "/api/eventos",
+        json={
+            "contenido": "qzx nota sobre #zigurat alpha zq9",
+            "fuente": FUENTE_TEST,
+        },
+    )
+    await cliente.post(
+        "/api/eventos",
+        json={
+            "contenido": "qzx otra nota sobre #zigurat beta zq9",
+            "fuente": FUENTE_TEST,
+        },
+    )
+    r = await cliente.get("/api/tags")
+    assert r.status_code == 200
+    frecs = {t["tag"]: t["eventos"] for t in r.json()}
+    assert frecs["zigurat"] == 2
+
+
+@pytest.mark.asyncio
+async def test_eventos_rama_filtra_linea_de_universo(
+    cliente: AsyncClient,
+) -> None:
+    """Los eventos de una rama alternativa no aparecen en la principal."""
+    r = await cliente.post(
+        "/api/eventos",
+        json={
+            "contenido": "qzx evento en rama espejo zq9",
+            "fuente": FUENTE_TEST,
+            "rama": "espejo-qzx",
+        },
+    )
+    assert r.status_code == 200
+    evento_id = r.json()["id"]
+
+    principal = await cliente.get("/api/eventos")
+    assert evento_id not in {e["id"] for e in principal.json()}
+
+    espejo = await cliente.get("/api/eventos", params={"rama": "espejo-qzx"})
+    assert evento_id in {e["id"] for e in espejo.json()}
+
+
+@pytest.mark.asyncio
+async def test_fuentes_auto_registro_y_listado(cliente: AsyncClient) -> None:
+    """Una fuente nueva en POST /eventos se registra en la tabla fuentes."""
+    await cliente.post(
+        "/api/eventos",
+        json={
+            "contenido": "qzx evento con fuente nueva zq9",
+            "fuente": FUENTE_TEST,
+        },
+    )
+    r = await cliente.get("/api/fuentes")
+    assert r.status_code == 200
+    nombres = {f["nombre"] for f in r.json()}
+    assert FUENTE_TEST in nombres
+
+
+@pytest.mark.asyncio
+async def test_fuentes_crear_actualizar_archivar_borrar(
+    cliente: AsyncClient,
+) -> None:
+    """Ciclo completo de administración de una fuente."""
+    crear = await cliente.post(
+        "/api/fuentes",
+        json={"nombre": "fuente-qzx", "tipo": "import", "namespace": "lab"},
+    )
+    assert crear.status_code == 200
+    fuente = crear.json()
+    assert fuente["nombre"] == "fuente-qzx"
+
+    patch = await cliente.patch(
+        "/api/fuentes/fuente-qzx",
+        json={"estado": "archivada"},
+    )
+    assert patch.status_code == 200
+    assert patch.json()["estado"] == "archivada"
+
+    borrar = await cliente.delete("/api/fuentes/fuente-qzx")
+    assert borrar.status_code == 200
+    restantes = await cliente.get("/api/fuentes")
+    assert "fuente-qzx" not in {f["nombre"] for f in restantes.json()}
+
+
+@pytest.mark.asyncio
+async def test_fuentes_ramificar_crea_rama_hija(cliente: AsyncClient) -> None:
+    """POST /fuentes/{nombre}/ramificar materializa la sub-línea."""
+    crear = await cliente.post(
+        "/api/fuentes", json={"nombre": "origen-qzx"}
+    )
+    assert crear.status_code == 200
+    rama = await cliente.post(
+        "/api/fuentes/origen-qzx/ramificar",
+        json={"rama": "rama-qzx"},
+    )
+    assert rama.status_code == 200
+    datos = rama.json()
+    assert datos["nombre"] == "origen-qzx:rama-qzx"
+    await cliente.delete("/api/fuentes/origen-qzx:rama-qzx")
+    await cliente.delete("/api/fuentes/origen-qzx")
