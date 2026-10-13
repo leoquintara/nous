@@ -11,6 +11,7 @@ import queue
 import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -28,7 +29,11 @@ from src.core.temporal import detectar_trayectorias, proyectar
 from src.mcp.server import mcp_server
 from src.storage.database import crear_engine, get_session, obtener_engine
 from src.storage.models import EventoModel, ProyeccionModel
-from src.storage.repositories import EventoRepository, ProyeccionRepository
+from src.storage.repositories import (
+    ConfiguracionRepository,
+    EventoRepository,
+    ProyeccionRepository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +41,8 @@ _embeddings: GeneradorEmbeddings | None = None
 _busqueda: BusquedaHibrida4D | None = None
 _clasificador: ClasificadorDimensiones | None = None
 _reordenador: ReordenadorLocal | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class _ItemIndexacion:
     """Trabajo de indexación write-behind para un evento insertado."""
@@ -56,6 +63,52 @@ class _ItemConsolidacion:
 _ItemFondo = _ItemIndexacion | _ItemConsolidacion
 _cola_fondo: queue.Queue[_ItemFondo] = queue.Queue()
 _worker_thread: threading.Thread | None = None
+
+# Actividad reciente del cerebro (ring buffer efímero, en memoria):
+# cada recordar/consultar deja un evento para que el dashboard
+# visualice los "pensamientos" en vivo sobre el grafo 3D.
+_ACTIVIDAD_MAX = 100
+_actividad: deque[dict[str, Any]] = deque(maxlen=_ACTIVIDAD_MAX)
+
+
+def _registrar_actividad(kind: str, consulta: str, ids: list[str]) -> None:
+    """Registra un evento de actividad cerebral para el dashboard.
+
+    Args:
+        kind: Tipo de acceso — ``store`` (huella nueva) o ``recall``
+            (evocación que devolvió huellas).
+        consulta: Texto que originó la actividad (truncado).
+        ids: UUIDs de los eventos implicados.
+    """
+    if consulta == "__warmup__":
+        return
+    _actividad.appendleft(
+        {
+            "kind": kind,
+            "q": consulta[:80],
+            "ids": ids[:12],
+            "ts": int(time.time()),
+        }
+    )
+
+
+def actividad_reciente(limite: int = 50) -> list[dict[str, Any]]:
+    """Devuelve los eventos de actividad más recientes, nuevos primero."""
+    return list(_actividad)[: max(1, min(limite, _ACTIVIDAD_MAX))]
+
+
+async def _preferencia_leer(clave: str) -> dict[str, Any]:
+    """Lee un documento de preferencias persistido en PostgreSQL."""
+    async with get_session(obtener_engine()) as session:
+        valor = await ConfiguracionRepository(session).obtener(clave)
+    return valor if isinstance(valor, dict) else {}
+
+
+async def _preferencia_guardar(clave: str, valor: dict[str, Any]) -> None:
+    """Persiste (upsert) un documento de preferencias en PostgreSQL."""
+    async with get_session(obtener_engine()) as session:
+        await ConfiguracionRepository(session).guardar(clave, valor)
+        await session.commit()
 
 
 def _encolar_fondo(item: _ItemFondo) -> None:
@@ -114,18 +167,13 @@ def _worker_indexacion(cola: queue.Queue[_ItemFondo]) -> None:
         loop.close()
 
 
-async def _ejecutar_lote(
-    engine: AsyncEngine, items: list[_ItemFondo]
-) -> None:
+async def _ejecutar_lote(engine: AsyncEngine, items: list[_ItemFondo]) -> None:
     """Ejecuta un lote de trabajos: dedup por item y consolidación fusionada."""
     for item in items:
         if isinstance(item, _ItemIndexacion):
             await _indexar_luego(engine, item)
     ids = [
-        eid
-        for item in items
-        if isinstance(item, _ItemConsolidacion)
-        for eid in item.eventos_ids
+        eid for item in items if isinstance(item, _ItemConsolidacion) for eid in item.eventos_ids
     ]
     if ids:
         await _consolidar_luego(engine, ids)
@@ -161,9 +209,7 @@ def _obtener_busqueda() -> BusquedaHibrida4D:
     global _busqueda, _reordenador
     if _busqueda is None:
         settings = get_settings()
-        _reordenador = (
-            ReordenadorLocal() if settings.reranker_habilitado else None
-        )
+        _reordenador = ReordenadorLocal() if settings.reranker_habilitado else None
         _busqueda = BusquedaHibrida4D(
             _obtener_embeddings(),
             reordenador=_reordenador,
@@ -271,6 +317,7 @@ async def _recordar(
         await EventoRepository(session).crear(evento)
         await session.commit()
     _encolar_fondo(_ItemIndexacion(evento.id, contenido, ts, amplitud))
+    _registrar_actividad("store", contenido, [str(evento.id)])
     respuesta.update(
         {
             "id": str(evento.id),
@@ -299,8 +346,7 @@ async def _indexar_luego(engine: AsyncEngine, item: _ItemIndexacion) -> None:
                 similar
                 and similar[0][0].id != item.evento_id
                 and similar[0][1] >= settings.dedup_umbral
-                and abs(item.ts - similar[0][0].timestamp_unix)
-                <= settings.dedup_ventana_segundos
+                and abs(item.ts - similar[0][0].timestamp_unix) <= settings.dedup_ventana_segundos
             )
             if duplicado:
                 existente = similar[0][0]
@@ -312,14 +358,10 @@ async def _indexar_luego(engine: AsyncEngine, item: _ItemIndexacion) -> None:
                 await repo.actualizar_embedding(item.evento_id, vector)
             await session.commit()
     except Exception:  # noqa: BLE001 — el fallo no debe propagarse al loop
-        logger.exception(
-            "indexacion en segundo plano fallo para %s", item.evento_id
-        )
+        logger.exception("indexacion en segundo plano fallo para %s", item.evento_id)
 
 
-async def _consolidar_luego(
-    engine: AsyncEngine, eventos_ids: list[uuid.UUID]
-) -> None:
+async def _consolidar_luego(engine: AsyncEngine, eventos_ids: list[uuid.UUID]) -> None:
     """Persiste los refuerzos de evocación fuera del camino caliente."""
     try:
         async with get_session(engine) as session:
@@ -335,11 +377,9 @@ async def _consultar(consulta: str, top_n: int) -> list[dict[str, Any]]:
         resultados = await _obtener_busqueda().buscar(
             session, consulta, top_n=max(1, min(top_n, 50))
         )
-    _encolar_fondo(
-        _ItemConsolidacion(
-            tuple(uuid.UUID(r.evento_id) for r in resultados)
-        )
-    )
+    _encolar_fondo(_ItemConsolidacion(tuple(uuid.UUID(r.evento_id) for r in resultados)))
+    if resultados:
+        _registrar_actividad("recall", consulta, [r.evento_id for r in resultados])
     return [_resultado_a_dict(r) for r in resultados]
 
 
@@ -360,9 +400,7 @@ async def _proyectar(horizonte_dias: int, dias_historial: int) -> dict[str, Any]
     desde = ahora - min(max(dias_historial, 1), 365) * 86_400
     horizonte = min(max(horizonte_dias, 1), 90)
     async with get_session(obtener_engine()) as session:
-        modelos = await EventoRepository(session).listar_por_rango(
-            desde, ahora, 500
-        )
+        modelos = await EventoRepository(session).listar_por_rango(desde, ahora, 500)
         eventos = [Evento.desde_modelo(m) for m in modelos]
         proyeccion = proyectar(eventos, horizonte, ahora)
         trayectorias = detectar_trayectorias(eventos)
@@ -436,9 +474,7 @@ async def recordar_evento(
         plano) y "confianza_clasificacion" si se clasificó
         automáticamente.
     """
-    return await _recordar(
-        contenido, dimension, fuente, amplitud, frecuencia, timestamp_unix
-    )
+    return await _recordar(contenido, dimension, fuente, amplitud, frecuencia, timestamp_unix)
 
 
 @mcp_server.tool()
@@ -503,12 +539,8 @@ async def _episodios(
         raise ErrorValidacion("desde_unix debe ser <= hasta_unix")
     gap = min(max(gap_max_segundos, 60), 86_400)
     async with get_session(obtener_engine()) as session:
-        modelos = await EventoRepository(session).listar_por_rango(
-            desde_unix, hasta_unix, 500
-        )
-    episodios = segmentar(
-        [Evento.desde_modelo(m) for m in modelos], gap_max_segundos=gap
-    )
+        modelos = await EventoRepository(session).listar_por_rango(desde_unix, hasta_unix, 500)
+    episodios = segmentar([Evento.desde_modelo(m) for m in modelos], gap_max_segundos=gap)
     return [
         {
             "inicio": e.inicio,

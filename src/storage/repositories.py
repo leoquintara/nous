@@ -6,14 +6,16 @@ vive en src/core/, nunca aquí.
 
 import uuid
 from collections.abc import Sequence
-from typing import cast
+from typing import Any, cast
 
 from sqlalchemy import delete, func, literal, select, union_all, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.storage.models import (
     BenchmarkRunModel,
+    ConfiguracionModel,
     EventoModel,
     ProyeccionModel,
 )
@@ -100,10 +102,7 @@ class EventoRepository:
             .limit(limite)
         )
         resultado = await self._session.execute(stmt)
-        return [
-            (fila["EventoModel"], float(fila["score"]))
-            for fila in resultado.mappings().all()
-        ]
+        return [(fila["EventoModel"], float(fila["score"])) for fila in resultado.mappings().all()]
 
     async def buscar_por_vector(
         self, vector: list[float], limite: int = 20
@@ -118,9 +117,7 @@ class EventoRepository:
             Tuplas (evento, similitud_coseno) ordenadas por similitud
             descendente.
         """
-        distancia = EventoModel.embedding.cosine_distance(vector).label(
-            "distancia"
-        )
+        distancia = EventoModel.embedding.cosine_distance(vector).label("distancia")
         stmt = (
             select(EventoModel, distancia)
             .where(EventoModel.embedding.is_not(None))
@@ -152,14 +149,10 @@ class EventoRepository:
             .where(EventoModel.id.in_(eventos_ids))
             .values(refuerzos=EventoModel.refuerzos + 1)
         )
-        resultado = cast(
-            CursorResult[EventoModel], await self._session.execute(stmt)
-        )
+        resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
         return resultado.rowcount
 
-    async def contar_podables(
-        self, antes_de: int, amplitud_max: float, refuerzos_max: int
-    ) -> int:
+    async def contar_podables(self, antes_de: int, amplitud_max: float, refuerzos_max: int) -> int:
         """Cuenta los eventos candidatos a poda sin eliminarlos.
 
         Args:
@@ -177,9 +170,7 @@ class EventoRepository:
         )
         return int((await self._session.execute(stmt)).scalar_one())
 
-    async def podar(
-        self, antes_de: int, amplitud_max: float, refuerzos_max: int
-    ) -> int:
+    async def podar(self, antes_de: int, amplitud_max: float, refuerzos_max: int) -> int:
         """Elimina las huellas débiles y olvidadas (poda sináptica).
 
         Args:
@@ -195,9 +186,7 @@ class EventoRepository:
             EventoModel.amplitud <= amplitud_max,
             EventoModel.refuerzos <= refuerzos_max,
         )
-        resultado = cast(
-            CursorResult[EventoModel], await self._session.execute(stmt)
-        )
+        resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
         return resultado.rowcount
 
     async def adyacentes(
@@ -271,38 +260,24 @@ class EventoRepository:
                 .limit(cantidad)
             )
         union = union_all(*brazos).subquery()
-        filas = (
-            await self._session.execute(select(union))
-        ).mappings().all()
+        filas = (await self._session.execute(select(union))).mappings().all()
         salida: dict[int, tuple[list[EventoModel], list[EventoModel]]] = {
             i: ([], []) for i in range(len(marcas))
         }
         for fila in filas:
-            modelo = EventoModel(
-                **{
-                    k: v
-                    for k, v in fila.items()
-                    if k not in ("ancla", "lado")
-                }
-            )
+            modelo = EventoModel(**{k: v for k, v in fila.items() if k not in ("ancla", "lado")})
             lado = salida[fila["ancla"]][0 if fila["lado"] == 0 else 1]
             lado.append(modelo)
         return salida
 
-    async def actualizar_embedding(
-        self, evento_id: uuid.UUID, vector: list[float]
-    ) -> None:
+    async def actualizar_embedding(self, evento_id: uuid.UUID, vector: list[float]) -> None:
         """Asigna el embedding a un evento insertado sin él (write-behind).
 
         Args:
             evento_id: UUID del evento a indexar.
             vector: Embedding generado en segundo plano.
         """
-        stmt = (
-            update(EventoModel)
-            .where(EventoModel.id == evento_id)
-            .values(embedding=vector)
-        )
+        stmt = update(EventoModel).where(EventoModel.id == evento_id).values(embedding=vector)
         await self._session.execute(stmt)
 
     async def eliminar_debil(self, evento_id: uuid.UUID) -> bool:
@@ -321,9 +296,7 @@ class EventoRepository:
             EventoModel.id == evento_id,
             EventoModel.refuerzos == 0,
         )
-        resultado = cast(
-            CursorResult[EventoModel], await self._session.execute(stmt)
-        )
+        resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
         return resultado.rowcount > 0
 
 
@@ -364,15 +337,52 @@ class BenchmarkRepository:
         Returns:
             Corridas ordenadas por fecha de creación descendente.
         """
-        stmt = (
-            select(BenchmarkRunModel)
-            .order_by(BenchmarkRunModel.creado_en.desc())
-            .limit(limite)
-        )
+        stmt = select(BenchmarkRunModel).order_by(BenchmarkRunModel.creado_en.desc()).limit(limite)
         if nombre is not None:
             stmt = stmt.where(BenchmarkRunModel.nombre == nombre)
         resultado = await self._session.execute(stmt)
         return resultado.scalars().all()
+
+
+class ConfiguracionRepository:
+    """Acceso a datos del almacén clave-valor de preferencias."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Inicializa el repositorio con una sesión async.
+
+        Args:
+            session: Sesión async de SQLAlchemy.
+        """
+        self._session = session
+
+    async def obtener(self, clave: str) -> dict[str, Any] | None:
+        """Retorna el documento JSON asociado a la clave.
+
+        Args:
+            clave: Identificador de la preferencia (p. ej. ``cerebro``).
+
+        Returns:
+            El documento almacenado, o None si la clave no existe.
+        """
+        stmt = select(ConfiguracionModel.valor).where(ConfiguracionModel.clave == clave)
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def guardar(self, clave: str, valor: dict[str, Any]) -> None:
+        """Persiste (upsert) un documento JSON bajo la clave dada.
+
+        Args:
+            clave: Identificador de la preferencia.
+            valor: Documento JSON serializable.
+        """
+        stmt = (
+            pg_insert(ConfiguracionModel)
+            .values(clave=clave, valor=valor)
+            .on_conflict_do_update(
+                index_elements=[ConfiguracionModel.clave],
+                set_={"valor": valor, "actualizado_en": func.now()},
+            )
+        )
+        await self._session.execute(stmt)
 
 
 class ProyeccionRepository:
@@ -406,10 +416,6 @@ class ProyeccionRepository:
         Returns:
             La última proyección persistida, o None si no hay ninguna.
         """
-        stmt = (
-            select(ProyeccionModel)
-            .order_by(ProyeccionModel.creado_en.desc())
-            .limit(1)
-        )
+        stmt = select(ProyeccionModel).order_by(ProyeccionModel.creado_en.desc()).limit(1)
         resultado = await self._session.execute(stmt)
         return resultado.scalars().first()

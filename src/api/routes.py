@@ -1,6 +1,7 @@
 """Endpoints REST de Nous."""
 
 import hmac
+import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -18,11 +19,16 @@ from src.api.schemas import (
 from src.config import get_settings
 from src.mcp import tools as tools_impl
 from src.storage.database import get_session, obtener_engine
-from src.storage.repositories import BenchmarkRepository, ProyeccionRepository
+from src.storage.repositories import (
+    BenchmarkRepository,
+    ProyeccionRepository,
+)
 
 router = APIRouter()
 
 _limitador_login = LimitadorIntentos(max_intentos=5, ventana_segundos=60)
+
+_PATRON_CLAVE_PREF = re.compile(r"^[a-z0-9_.\-]{1,64}$")
 
 
 @router.get("/health")  # público vía raíz en main.py
@@ -69,17 +75,11 @@ async def login(credenciales: LoginRequest, request: Request) -> LoginResponse:
             detail="Login por usuario/contraseña no configurado",
         )
     if not settings.api_token:
-        raise HTTPException(
-            status_code=503, detail="Servidor sin token configurado"
-        )
+        raise HTTPException(status_code=503, detail="Servidor sin token configurado")
     # Ambas comparaciones se evalúan siempre: un cortocircuito `and`
     # revelaría por timing si el usuario existe aunque el password falle.
-    usuario_ok = hmac.compare_digest(
-        credenciales.usuario, settings.dashboard_usuario
-    )
-    password_ok = hmac.compare_digest(
-        credenciales.password, settings.dashboard_password
-    )
+    usuario_ok = hmac.compare_digest(credenciales.usuario, settings.dashboard_usuario)
+    password_ok = hmac.compare_digest(credenciales.password, settings.dashboard_password)
     if not (usuario_ok and password_ok):
         raise HTTPException(status_code=401, detail="Credenciales inválidas")
     return LoginResponse(token=settings.api_token)
@@ -101,9 +101,7 @@ async def listar_eventos(
     Returns:
         Eventos en orden cronológico.
     """
-    return [EventoResponse(**e) for e in await tools_impl._linea(
-        desde_unix, hasta_unix, limite
-    )]
+    return [EventoResponse(**e) for e in await tools_impl._linea(desde_unix, hasta_unix, limite)]
 
 
 @router.post("/eventos", dependencies=[Depends(verificar_token)])
@@ -141,9 +139,7 @@ async def buscar(q: str, top_n: int = 10) -> list[dict[str, Any]]:
 
 
 @router.post("/proyeccion", dependencies=[Depends(verificar_token)])
-async def generar_proyeccion(
-    horizonte_dias: int = 7, dias_historial: int = 30
-) -> dict[str, Any]:
+async def generar_proyeccion(horizonte_dias: int = 7, dias_historial: int = 30) -> dict[str, Any]:
     """Genera y persiste una proyección (proyectar_trayectoria).
 
     Args:
@@ -178,10 +174,72 @@ async def proyeccion_actual() -> dict[str, Any]:
     }
 
 
+def _validar_clave(clave: str) -> str:
+    """Valida el formato de la clave de preferencia (path segment seguro).
+
+    Args:
+        clave: Clave recibida en el path.
+
+    Returns:
+        La clave validada.
+
+    Raises:
+        HTTPException 422: formato inválido.
+    """
+    if not _PATRON_CLAVE_PREF.fullmatch(clave):
+        raise HTTPException(
+            status_code=422,
+            detail="clave inválida: solo [a-z0-9_.-], máx 64 caracteres",
+        )
+    return clave
+
+
+@router.get("/preferencias/{clave}", dependencies=[Depends(verificar_token)])
+async def obtener_preferencia(clave: str) -> dict[str, Any]:
+    """Lee un documento de preferencias persistido en PostgreSQL.
+
+    Args:
+        clave: Identificador de la preferencia (p. ej. ``cerebro``).
+
+    Returns:
+        Documento JSON almacenado, o ``{}`` si la clave no existe.
+    """
+    return await tools_impl._preferencia_leer(_validar_clave(clave))
+
+
+@router.put("/preferencias/{clave}", dependencies=[Depends(verificar_token)])
+async def guardar_preferencia(clave: str, valor: dict[str, Any]) -> dict[str, Any]:
+    """Persiste (upsert) un documento de preferencias en PostgreSQL.
+
+    Args:
+        clave: Identificador de la preferencia.
+        valor: Documento JSON a almacenar (máx ~1MB por la columna JSONB).
+
+    Returns:
+        Confirmación con la clave guardada.
+    """
+    await tools_impl._preferencia_guardar(_validar_clave(clave), valor)
+    return {"clave": clave, "guardado": True}
+
+
+@router.get("/actividad", dependencies=[Depends(verificar_token)])
+async def actividad(limite: int = 50) -> list[dict[str, Any]]:
+    """Actividad reciente del cerebro para la visualización en vivo.
+
+    Eventos ``store`` (huella nueva) y ``recall`` (evocación con hits),
+    ordenados del más reciente al más antiguo.
+
+    Args:
+        limite: Máximo de eventos (1-100).
+
+    Returns:
+        Lista de eventos {kind, q, ids, ts}.
+    """
+    return tools_impl.actividad_reciente(limite)
+
+
 @router.get("/benchmarks", dependencies=[Depends(verificar_token)])
-async def listar_benchmarks(
-    nombre: str | None = None, limite: int = 50
-) -> list[BenchmarkResponse]:
+async def listar_benchmarks(nombre: str | None = None, limite: int = 50) -> list[BenchmarkResponse]:
     """Lista corridas de benchmark persistidas, más recientes primero.
 
     Args:
