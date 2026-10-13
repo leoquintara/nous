@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     reranker_modelo: str = "cross-encoder/ms-marco-MiniLM-L12-v2"
     cache_embeddings_max: int = 256
     dedup_umbral: float = 0.95
+    dedup_ventana_segundos: int = 3600
     priming_segundos: int = 300
     recencia_vida_media_dias: float = 30.0
     mcp_transport: Literal["stdio", "http"] = "stdio"

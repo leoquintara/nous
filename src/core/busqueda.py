@@ -26,6 +26,7 @@ PESO_RRF = 0.6
 PESO_COSENO = 0.3
 PESO_RECENCIA = 0.1
 BOOST_AMPLITUD = 0.25
+UMBRAL_COSENO_MIN = 0.25
 SOBREMUESTREO = 4
 CANDIDATOS_RERANK = 15
 PESO_RERANK = 0.5
@@ -204,6 +205,7 @@ def _fusionar(
     lista_vector = [
         ResultadoBusqueda(evento_id=str(m.id), score_vectorial=score)
         for m, score in hits_vector
+        if score >= UMBRAL_COSENO_MIN
     ]
     listas = [lista for lista in (lista_bm25, lista_vector) if lista]
     if not listas:

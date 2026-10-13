@@ -139,17 +139,39 @@ async def _recordar(
         respuesta["dimension_dudosa"] = resultado.dudoso
     ts = timestamp_unix if timestamp_unix is not None else int(time.time())
     vector = await _obtener_embeddings().generar(contenido)
-    evento = EventoModel(
-        timestamp_unix=ts,
-        dimension=dimension,
-        fuente=fuente,
-        contenido=contenido,
-        embedding=vector,
-        amplitud=amplitud,
-        frecuencia=frecuencia,
-    )
+    settings = get_settings()
     async with get_session(obtener_engine()) as session:
-        await EventoRepository(session).crear(evento)
+        repo = EventoRepository(session)
+        similar = await repo.buscar_por_vector(vector, limite=1)
+        if similar:
+            existente, coseno = similar[0]
+            misma_ventana = (
+                abs(ts - existente.timestamp_unix)
+                <= settings.dedup_ventana_segundos
+            )
+            if coseno >= settings.dedup_umbral and misma_ventana:
+                existente.refuerzos += 1
+                existente.amplitud = max(existente.amplitud, amplitud)
+                await session.commit()
+                respuesta.update(
+                    {
+                        "id": str(existente.id),
+                        "timestamp_unix": existente.timestamp_unix,
+                        "dimension": existente.dimension,
+                        "deduplicado": True,
+                    }
+                )
+                return respuesta
+        evento = EventoModel(
+            timestamp_unix=ts,
+            dimension=dimension,
+            fuente=fuente,
+            contenido=contenido,
+            embedding=vector,
+            amplitud=amplitud,
+            frecuencia=frecuencia,
+        )
+        await repo.crear(evento)
         await session.commit()
     respuesta.update(
         {"id": str(evento.id), "timestamp_unix": ts, "dimension": dimension}
@@ -234,6 +256,10 @@ async def recordar_evento(
     El contenido se vectoriza localmente (nada sale de la máquina) y
     queda indexado para búsqueda semántica y textual. Si no indicas
     dimension, se clasifica automáticamente por semejanza semántica.
+    Separación de patrones: un evento casi idéntico registrado dentro
+    de la última hora no se duplica — consolida el existente
+    ("deduplicado": true en la respuesta). Eventos recurrentes en
+    momentos distintos sí crean huellas separadas.
 
     Args:
         contenido: Texto del evento (p. ej. "decidí usar PostgreSQL").
