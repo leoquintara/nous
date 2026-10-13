@@ -24,6 +24,8 @@ export interface Nodo {
   dimension: Dimension;
   estado: EstadoNodo;
   amplitud: number;
+  /** Consolidación por evocación — alimenta el brillo persistente. */
+  refuerzos: number;
   timestamp_unix: number;
   /** Fijado por arrastre del usuario. */
   pinned: boolean;
@@ -130,10 +132,12 @@ export function colorNodo(n: Nodo): string {
 
 const DIA = 86_400;
 
-/** Deriva el estado de tejido de un evento por su edad y amplitud. */
+/** Deriva el estado de tejido de un evento por edad, amplitud y refuerzos. */
 function estadoDe(e: Evento, ahora: number): EstadoNodo {
   const edad = ahora - e.timestamp_unix;
   if (edad < 2 * DIA) return "fresh";
+  // Reconsolidación: una huella evocada ≥3 veces resiste el olvido.
+  if (e.refuerzos >= 3) return "consolidated";
   if (edad < 7 * DIA) return "working";
   if (edad < 30 * DIA) return e.amplitud >= 0.6 ? "consolidated" : "decayed";
   return "decayed";
@@ -162,6 +166,7 @@ export function eventosAGrafo(eventos: Evento[], ahora?: number): DatosCerebro {
     dimension: e.dimension,
     estado: estadoDe(e, t0),
     amplitud: e.amplitud,
+    refuerzos: e.refuerzos ?? 0,
     timestamp_unix: e.timestamp_unix,
     pinned: false,
     deg: 0,

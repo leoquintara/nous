@@ -77,12 +77,18 @@ export function materialMembrana(
     },
     vertexShader: `
       varying vec3 vN; varying vec3 vV; varying float vUp; varying vec3 vObj;
+      uniform float uTime;
       void main() {
+        // Respiración cortical: undulación lenta y local sobre la normal.
+        float respiracion =
+          sin(uTime * 1.15 + position.y * 3.1 + position.x * 2.2) * 0.013
+          + sin(uTime * 0.57 + position.z * 2.6 + position.x) * 0.007;
+        vec3 p = position + normal * respiracion;
         vN = normalize(normalMatrix * normal);
-        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
         vV = normalize(-mv.xyz);
         vUp = normal.y;
-        vObj = position;
+        vObj = p;
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: `
@@ -93,7 +99,13 @@ export function materialMembrana(
         float pulse = 0.8 + 0.2 * sin(uTime * 0.8);
         float shade = 0.5 + 0.5 * vUp;
         float wave = max(0.0, sin(uTime * 1.2 - vObj.y * 2.4 + vObj.z * 1.7)) * 0.07;
-        gl_FragColor = vec4(uColor, (f * 0.55 + shade * 0.045 + wave) * uStrength * pulse);
+        // Bandas de activación viajeras: barrido lento por la corteza.
+        float banda = pow(
+          max(0.0, sin(uTime * 0.75 - vObj.y * 4.2 + vObj.x * 1.9)), 6.0
+        ) * 0.12;
+        gl_FragColor = vec4(
+          uColor, (f * 0.55 + shade * 0.045 + wave + banda) * uStrength * pulse
+        );
       }`,
     transparent: true,
     side: THREE.BackSide,
@@ -201,6 +213,8 @@ export interface CerebroMembrana {
   grupo: THREE.Group;
   tractos: THREE.Curve<THREE.Vector3>[];
   material: THREE.ShaderMaterial;
+  /** Todos los materiales animables (corteza + estructuras profundas). */
+  materiales: THREE.ShaderMaterial[];
 }
 
 /**
@@ -286,5 +300,5 @@ export function construirMembrana(mem: Membrana): CerebroMembrana {
   blob(0, -0.3, 0.3, 0.09, 0.07, 0.09);
 
   grupo.add(profundas);
-  return { grupo, tractos, material: memMat };
+  return { grupo, tractos, material: memMat, materiales: [memMat, deepMat] };
 }

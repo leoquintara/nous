@@ -300,7 +300,7 @@ export function CerebroCanvas({
       scene.add(pPuntos);
 
       // Membrana cerebral procedural + estructuras profundas.
-      const { grupo: memGrupo, tractos, material: memMat } = construirMembrana(mem);
+      const { grupo: memGrupo, tractos, materiales } = construirMembrana(mem);
       scene.add(memGrupo);
 
       // Chispas recorriendo los tractos profundos.
@@ -732,6 +732,8 @@ export function CerebroCanvas({
           if (s2 < 0.02) flashes.delete(k);
           else f.s = s2;
         }
+        // Onda lenta que barre la corteza en Y (~6s) — actividad basal viva.
+        const yOnda = (((tNow * 0.00016) % 1) * 2 - 1) * mem.y * 1.15;
         let nHalo = 0;
         for (let i = 0; i < N; i++) {
           const p = pts[i];
@@ -752,6 +754,10 @@ export function CerebroCanvas({
           const ajeno = sel != null && i !== sel && !relacionado;
           const sg = P.selGlow;
           let boost = det ? 0.92 : 0.42;
+          // Brillo por consolidación: las memorias muy evocadas lucen.
+          boost += Math.min(0.4, nodes[i].refuerzos * 0.05);
+          if (P.ambient)
+            boost += Math.exp(-(((p.y - yOnda) / 80) ** 2)) * 0.5;
           if (m === false || ajeno) boost *= 0.35;
           if (relacionado || i === hover) boost = 1 + 0.5 * sg;
           if (i === sel) {
@@ -764,7 +770,10 @@ export function CerebroCanvas({
             tmpC.lerp(fl.c, Math.min(0.6, fl.s * 0.6));
           }
           malla.setColorAt(i, tmpC.multiplyScalar(boost));
-          if ((relacionado || (fl && fl.s > 0.15)) && nHalo < 256) {
+          if (
+            (relacionado || (fl && fl.s > 0.15) || nodes[i].refuerzos >= 4) &&
+            nHalo < 256
+          ) {
             dummy.scale.setScalar(wr * 2.2);
             dummy.updateMatrix();
             halos.setMatrixAt(nHalo, dummy.matrix);
@@ -934,8 +943,14 @@ export function CerebroCanvas({
           tpPuntos.visible = true;
         } else tpPuntos.visible = false;
 
-        memMat.uniforms.uTime.value = tNow * 0.001;
+        for (const m of materiales) m.uniforms.uTime.value = tNow * 0.001;
+        memGrupo.visible = P.membrane;
         memGrupo.scale.setScalar(1 + 0.015 * Math.sin(tNow * 0.0009));
+        // Marcapaso talámico: latido agudo que mantiene viva la escena.
+        const latido = Math.pow(Math.max(0, Math.sin(tNow * 0.0052)), 6);
+        puntoCorteza.scale.setScalar(1 + 0.55 * latido);
+        (puntoCorteza.material as THREE.MeshBasicMaterial).opacity =
+          0.45 + 0.55 * latido;
 
         // Proyección de etiquetas anatómicas al espacio de pantalla.
         const rect = wrap.getBoundingClientRect();

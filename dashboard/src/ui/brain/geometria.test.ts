@@ -37,7 +37,7 @@ describe("materialMembrana", () => {
 
 describe("construirMembrana", () => {
   it("construye el grupo con corteza, cerebelo, tronco y bulbos", () => {
-    const { grupo, tractos, material } = construirMembrana({
+    const { grupo, tractos, material, materiales } = construirMembrana({
       x: 400,
       y: 320,
       z: 400,
@@ -48,6 +48,9 @@ describe("construirMembrana", () => {
     // calloso, fórnix ×2, hipocampos ×2, caudados ×2, ópticos ×2.
     expect(tractos.length).toBe(9);
     expect(material.uniforms.uColor).toBeDefined();
+    // Corteza + estructuras profundas comparten el uniform de tiempo.
+    expect(materiales).toHaveLength(2);
+    for (const m of materiales) expect(m.uniforms.uTime).toBeDefined();
   });
 
   it("es reproducible: dos construcciones tienen la misma estructura", () => {

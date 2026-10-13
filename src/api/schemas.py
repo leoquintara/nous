@@ -58,3 +58,4 @@ class EventoResponse(BaseModel):
     contenido: str
     amplitud: float
     frecuencia: float | None = None
+    refuerzos: int = 0

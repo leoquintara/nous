@@ -16,6 +16,8 @@ export interface Evento {
   contenido: string;
   amplitud: number;
   frecuencia: number | null;
+  /** Veces que la memoria fue evocada (consolidación por recuerdo). */
+  refuerzos: number;
 }
 
 /** Contexto temporal adyacente a un resultado de búsqueda. */

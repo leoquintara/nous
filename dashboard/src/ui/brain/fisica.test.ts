@@ -27,6 +27,7 @@ function nodo(parcial: Partial<Nodo> = {}): Nodo {
     dimension: "cognitiva",
     estado: "working",
     amplitud: 0.5,
+    refuerzos: 0,
     timestamp_unix: 0,
     pinned: false,
     deg: 0,
@@ -109,11 +110,11 @@ describe("integración con eventosAGrafo", () => {
     const g = eventosAGrafo([
       {
         id: "a", timestamp_unix: 1, dimension: "cognitiva", fuente: "t",
-        contenido: "x", amplitud: 0.5, frecuencia: null,
+        contenido: "x", amplitud: 0.5, frecuencia: null, refuerzos: 0,
       },
       {
         id: "b", timestamp_unix: 2, dimension: "somatica", fuente: "t",
-        contenido: "y", amplitud: 0.5, frecuencia: null,
+        contenido: "y", amplitud: 0.5, frecuencia: null, refuerzos: 0,
       },
     ]);
     const vel = g.pts.map(() => ({ x: 0, y: 0, z: 0 }));

@@ -24,6 +24,7 @@ function evento(parcial: Partial<Evento> = {}): Evento {
     contenido: parcial.contenido ?? "nota",
     amplitud: parcial.amplitud ?? 0.5,
     frecuencia: null,
+    refuerzos: parcial.refuerzos ?? 0,
   };
 }
 
@@ -73,6 +74,21 @@ describe("eventosAGrafo", () => {
     expect(g.nodes[0].estado).toBe("decayed");
     expect(g.nodes[1].estado).toBe("working");
     expect(g.nodes[2].estado).toBe("fresh");
+  });
+
+  it("evento evocado 3+ veces queda consolidated aunque sea viejo", () => {
+    const g = eventosAGrafo(
+      [
+        evento({
+          timestamp_unix: AHORA - 90 * DIA,
+          amplitud: 0.1,
+          refuerzos: 5,
+        }),
+      ],
+      AHORA,
+    );
+    expect(g.nodes[0].estado).toBe("consolidated");
+    expect(g.nodes[0].refuerzos).toBe(5);
   });
 
   it("evento de 30+ días con amplitud alta queda consolidated", () => {
