@@ -7,16 +7,34 @@ Ningún texto sale hacia servicios externos.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import threading
 from collections import OrderedDict
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 from src.config import get_settings
 from src.core.exceptions import ProveedorNoDisponibleError
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
+    from transformers.tokenization_utils_base import (
+        PreTrainedTokenizerBase,
+    )
+
+logger = logging.getLogger(__name__)
+
+
+class _SesionOnnx(Protocol):
+    """Contrato mínimo de onnxruntime.InferenceSession (sin stubs)."""
+
+    def run(
+        self, output_names: list[str] | None, inputs: dict[str, Any]
+    ) -> list[Any]: ...
+
+    def get_inputs(self) -> list[Any]: ...
+
+    def get_outputs(self) -> list[Any]: ...
 
 
 def activar_offline_hf() -> None:
@@ -64,6 +82,13 @@ class GeneradorEmbeddings:
         self._hits = 0
         self._misses = 0
         self._modelo: SentenceTransformer | None = None
+        self._sesion_onnx: _SesionOnnx | None = None
+        self._tokenizer: PreTrainedTokenizerBase | None = None
+        self._entradas_onnx: set[str] = set()
+        self._dimension_cargada: int | None = None
+        self._backend_preferido: Literal["auto", "onnx", "torch"] = (
+            get_settings().embeddings_backend
+        )
         self._lock = threading.Lock()
 
     @property
@@ -73,10 +98,10 @@ class GeneradorEmbeddings:
 
     @property
     def dimension(self) -> int:
-        """Dimensión del vector que produce el modelo cargado."""
-        dimension = self._cargar_modelo().get_sentence_embedding_dimension()
-        assert dimension is not None
-        return dimension
+        """Dimensión del vector que produce el backend cargado."""
+        self._cargar_modelo()
+        assert self._dimension_cargada is not None
+        return self._dimension_cargada
 
     async def generar(self, texto: str) -> list[float]:
         """Genera el embedding normalizado de un texto.
@@ -116,12 +141,44 @@ class GeneradorEmbeddings:
         return [v for v in vectores if v is not None]
 
     def _encode(self, textos: list[str]) -> list[list[float]]:
-        """Codifica textos con el modelo (bloqueante, corre en thread)."""
-        modelo = self._cargar_modelo()
-        resultado = modelo.encode(
+        """Codifica textos con el backend activo (corre en thread)."""
+        self._cargar_modelo()
+        if self._sesion_onnx is not None:
+            return self._encode_onnx(textos)
+        assert self._modelo is not None
+        resultado = self._modelo.encode(
             textos, normalize_embeddings=True, convert_to_numpy=True
         )
         return resultado.tolist()  # type: ignore[no-any-return]
+
+    def _encode_onnx(self, textos: list[str]) -> list[list[float]]:
+        """Codifica con onnxruntime: tokenizer + mean-pooling + norma L2."""
+        import numpy as np
+
+        assert self._tokenizer is not None
+        assert self._sesion_onnx is not None
+        tokens = self._tokenizer(
+            textos,
+            return_tensors="np",
+            padding=True,
+            truncation=True,
+            max_length=256,
+        )
+        entradas = {
+            nombre: tokens[nombre]
+            for nombre in self._entradas_onnx
+            if nombre in tokens
+        }
+        salida = self._sesion_onnx.run(None, entradas)[0]
+        mascara = entradas["attention_mask"][..., None].astype(np.float32)
+        pooled = (salida * mascara).sum(axis=1) / np.clip(
+            mascara.sum(axis=1), 1e-9, None
+        )
+        normas = np.linalg.norm(pooled, axis=1, keepdims=True)
+        normalizado: list[list[float]] = (
+            pooled / np.clip(normas, 1e-9, None)
+        ).tolist()
+        return normalizado
 
     def _cache_get(self, texto: str) -> list[float] | None:
         """Busca el embedding cacheado por clave normalizada del texto."""
@@ -150,28 +207,89 @@ class GeneradorEmbeddings:
         """
         self._cargar_modelo()
 
-    def _cargar_modelo(self) -> SentenceTransformer:
-        """Carga perezosa del modelo; import pesado solo al primer uso.
+    def _cargar_modelo(self) -> None:
+        """Carga perezosa del backend; import pesado solo al primer uso.
+
+        Prefiere onnxruntime (~3x más rápido en CPU) cuando está
+        disponible y el modelo tiene pesos ONNX en caché; de lo
+        contrario cae a sentence-transformers/torch.
 
         Raises:
             ProveedorNoDisponibleError: el modelo no está en caché y
                 el modo offline de HF está activo.
         """
-        if self._modelo is None:
-            with self._lock:
-                if self._modelo is not None:
-                    return self._modelo
-                activar_offline_hf()
-                from sentence_transformers import SentenceTransformer
+        if self._modelo is not None or self._sesion_onnx is not None:
+            return
+        with self._lock:
+            if self._modelo is not None or self._sesion_onnx is not None:
+                return
+            activar_offline_hf()
+            if self._backend_preferido != "torch" and self._intentar_onnx():
+                return
+            self._cargar_torch()
 
-                try:
-                    self._modelo = SentenceTransformer(
-                        self._nombre_modelo, device="cpu"
-                    )
-                except OSError as exc:
-                    raise ProveedorNoDisponibleError(
-                        f"Modelo '{self._nombre_modelo}' no está en la "
-                        "caché local y NOUS_HF_OFFLINE=true. Descárgalo "
-                        "una vez con NOUS_HF_OFFLINE=false."
-                    ) from exc
-        return self._modelo
+    def _intentar_onnx(self) -> bool:
+        """Intenta cargar el backend ONNX; False si no es viable."""
+        try:
+            import onnxruntime
+            from huggingface_hub import hf_hub_download
+            from transformers import AutoTokenizer
+        except ImportError:
+            logger.info("onnxruntime no instalado: backend torch")
+            if self._backend_preferido == "onnx":
+                raise ProveedorNoDisponibleError(
+                    "NOUS_EMBEDDINGS_BACKEND=onnx requiere "
+                    "pip install onnxruntime"
+                ) from None
+            return False
+        try:
+            ruta = hf_hub_download(
+                self._nombre_modelo, "onnx/model.onnx"
+            )
+            opciones = onnxruntime.SessionOptions()
+            opciones.intra_op_num_threads = 4
+            self._sesion_onnx = onnxruntime.InferenceSession(
+                ruta, opciones, providers=["CPUExecutionProvider"]
+            )
+            auto_tokenizer: Any = AutoTokenizer
+            self._tokenizer = cast(
+                "PreTrainedTokenizerBase",
+                auto_tokenizer.from_pretrained(self._nombre_modelo),
+            )
+            self._entradas_onnx = {
+                entrada.name for entrada in self._sesion_onnx.get_inputs()
+            }
+            forma = self._sesion_onnx.get_outputs()[0].shape
+            self._dimension_cargada = (
+                forma[-1] if isinstance(forma[-1], int) else 384
+            )
+            logger.info("backend de embeddings: onnxruntime")
+            return True
+        except Exception as exc:  # noqa: BLE001 — fallback controlado
+            if self._backend_preferido == "onnx":
+                raise ProveedorNoDisponibleError(
+                    f"Backend ONNX no disponible para "
+                    f"'{self._nombre_modelo}': {exc}"
+                ) from exc
+            logger.info("ONNX no disponible (%s): backend torch", exc)
+            self._sesion_onnx = None
+            self._tokenizer = None
+            return False
+
+    def _cargar_torch(self) -> None:
+        """Carga el modelo vía sentence-transformers/torch."""
+        from sentence_transformers import SentenceTransformer
+
+        try:
+            self._modelo = SentenceTransformer(
+                self._nombre_modelo, device="cpu"
+            )
+        except OSError as exc:
+            raise ProveedorNoDisponibleError(
+                f"Modelo '{self._nombre_modelo}' no está en la "
+                "caché local y NOUS_HF_OFFLINE=true. Descárgalo "
+                "una vez con NOUS_HF_OFFLINE=false."
+            ) from exc
+        self._dimension_cargada = (
+            self._modelo.get_sentence_embedding_dimension()
+        )
