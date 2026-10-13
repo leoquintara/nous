@@ -5,12 +5,20 @@ automáticamente desde ``.env`` si existe.
 """
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PREFIXO_TOKEN = "ns_"
+
+# El .env se resuelve relativo al root del proyecto (donde vive este
+# archivo), no al cwd del proceso: los clientes MCP que spawnearan el
+# servidor desde otro directorio (p. ej. un launcher que ignore el
+# cwd configurado) seguían encontrando la configuración real en lugar
+# de caer silenciosamente a los defaults y apuntar a la DB equivocada.
+_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 
 
 class Settings(BaseSettings):
@@ -20,7 +28,7 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env", env_prefix="NOUS_", extra="ignore"
+        env_file=_ENV_FILE, env_prefix="NOUS_", extra="ignore"
     )
 
     database_url: str = "postgresql+asyncpg://nous:nous@localhost:5432/nous"
