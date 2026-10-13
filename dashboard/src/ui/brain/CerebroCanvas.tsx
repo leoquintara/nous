@@ -29,6 +29,7 @@ import type {
   Arista,
   DatosCerebro,
   EventoPensamiento,
+  ModoColor,
   PrefsCerebro,
 } from "./tipos";
 
@@ -43,6 +44,15 @@ interface Props {
   seleccion: { index: number } | null;
   alSeleccionar: (sel: { index: number } | null) => void;
   prefs?: Partial<PrefsCerebro>;
+  /** Modo de color activo del grafo (dimensión/estado/fuente/reglas). */
+  modoColor?: ModoColor;
+  /** Fuentes ocultas: sus nodos no se dibujan ni se pueden elegir. */
+  ocultas?: Set<string>;
+  /** Avisa cuando el usuario fija o suelta un nodo por arrastre. */
+  alCambiarPin?: (
+    eventoId: string,
+    pos: [number, number, number] | null,
+  ) => void;
   onPensarRef?: React.MutableRefObject<CerebroHandle | null>;
 }
 
@@ -73,13 +83,24 @@ export function CerebroCanvas({
   seleccion,
   alSeleccionar,
   prefs,
+  modoColor = "dimension",
+  ocultas,
+  alCambiarPin,
   onPensarRef,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const livePrefs = useRef<PrefsCerebro>({ ...PREFS_DEFAULT, ...prefs });
-  livePrefs.current = { ...PREFS_DEFAULT, ...prefs };
   const selRef = useRef(seleccion);
-  selRef.current = seleccion;
+  const modoRef = useRef(modoColor);
+  const ocultasRef = useRef(ocultas);
+  const pinRef = useRef(alCambiarPin);
+  useEffect(() => {
+    livePrefs.current = { ...PREFS_DEFAULT, ...prefs };
+    selRef.current = seleccion;
+    modoRef.current = modoColor;
+    ocultasRef.current = ocultas;
+    pinRef.current = alCambiarPin;
+  });
   const [glError, setGlError] = useState(false);
 
   useEffect(() => {
@@ -617,6 +638,7 @@ export function CerebroCanvas({
       const hitV = new THREE.Vector3();
       const lodVisible = (i: number) => {
         const P = livePrefs.current;
+        if (ocultasRef.current?.has(nodes[i].fuente)) return false;
         if (!P.lod) return true;
         const dist = camera.position.length();
         const corte = Math.max(25, Math.round(N * Math.min(1, (dist - 90) / 900)));
@@ -689,6 +711,8 @@ export function CerebroCanvas({
           alSeleccionar(i >= 0 ? { index: i } : null);
         } else if (drag?.node != null) {
           alSeleccionar({ index: drag.node });
+          const p = pts[drag.node];
+          pinRef.current?.(nodes[drag.node].id, [p.x, p.y, p.z]);
         }
         drag = null;
         controls.enabled = true;
@@ -699,7 +723,10 @@ export function CerebroCanvas({
       window.addEventListener("pointerup", onUp);
       renderer.domElement.addEventListener("dblclick", (ev) => {
         const i = pick(ev);
-        if (i >= 0 && nodes[i].pinned) nodes[i].pinned = false;
+        if (i >= 0 && nodes[i].pinned) {
+          nodes[i].pinned = false;
+          pinRef.current?.(nodes[i].id, null);
+        }
       });
       renderer.domElement.addEventListener("wheel", onWheel, { passive: false });
 
@@ -714,6 +741,7 @@ export function CerebroCanvas({
       ro.observe(wrap);
 
       const v3 = new THREE.Vector3();
+      const etiquetados = new Set<number>();
       let raf = 0;
       /** Bucle de animación principal: física + render por frame. */
       const frame = () => {
@@ -739,7 +767,8 @@ export function CerebroCanvas({
           const p = pts[i];
           const det = lodVisible(i);
           let wr = Math.max(2.2, (5.5 + Math.min(4, nodes[i].deg * 0.35)) * P.nodeSize);
-          if (!det) wr *= 0.4;
+          if (ocultasRef.current?.has(nodes[i].fuente)) wr = 0.0001;
+          else if (!det) wr *= 0.4;
           if (P.ambient) {
             const sh = TEMBLOR[nodes[i].estado];
             wr *= 1 + sh[0] * Math.sin(tNow * 0.004 * sh[1] + i * 1.618);
@@ -748,7 +777,7 @@ export function CerebroCanvas({
           dummy.scale.setScalar(wr);
           dummy.updateMatrix();
           malla.setMatrixAt(i, dummy.matrix);
-          tmpC.set(colorNodo(nodes[i]));
+          tmpC.set(colorNodo(nodes[i], modoRef.current, datos, P));
           const m = coincide(i);
           const relacionado = rel ? rel.has(i) : false;
           const ajeno = sel != null && i !== sel && !relacionado;
@@ -779,7 +808,11 @@ export function CerebroCanvas({
             halos.setMatrixAt(nHalo, dummy.matrix);
             halos.setColorAt(
               nHalo,
-              tmpC.set(fl && fl.s > 0.15 ? fl.c : colorNodo(nodes[i])),
+              tmpC.set(
+                fl && fl.s > 0.15
+                  ? fl.c
+                  : colorNodo(nodes[i], modoRef.current, datos, P),
+              ),
             );
             nHalo++;
           }
@@ -855,7 +888,7 @@ export function CerebroCanvas({
             pPos[i * 3 + 1] = a.y + (b.y - a.y) * pl.t;
             pPos[i * 3 + 2] = a.z + (b.z - a.z) * pl.t;
             const brillo = Math.sin(pl.t * Math.PI) * 1.7;
-            tmpC.set(colorNodo(nodes[pl.a]));
+            tmpC.set(colorNodo(nodes[pl.a], modoRef.current, datos, P));
             pCol[i * 3] = tmpC.r * brillo;
             pCol[i * 3 + 1] = tmpC.g * brillo;
             pCol[i * 3 + 2] = tmpC.b * brillo;
@@ -965,16 +998,40 @@ export function CerebroCanvas({
             el.style.top = `${(-v3.y * 0.5 + 0.5) * rect.height}px`;
           }
         });
-        // Etiquetas de nodo: solo selección y hover.
-        for (const i of [sel, hover]) {
-          if (i == null || i < 0) continue;
+        // Etiquetas de nodo según el modo: hover (selección+cursor),
+        // hubs (los de mayor grado) o all (todos los del nivel de
+        // detalle, con tope por rendimiento).
+        etiquetados.clear();
+        const anotar = (i: number) => {
+          if (i < 0 || !lodVisible(i)) return;
           v3.set(pts[i].x, pts[i].y, pts[i].z).project(camera);
-          if (v3.z > 1) continue;
+          if (v3.z > 1) return;
           const el = etiqueta(i);
           el.textContent = nodes[i].etiqueta;
           el.style.left = `${(v3.x * 0.5 + 0.5) * rect.width}px`;
           el.style.top = `${(-v3.y * 0.5 + 0.5) * rect.height}px`;
           el.style.opacity = "1";
+          etiquetados.add(i);
+        };
+        anotar(sel ?? -1);
+        anotar(hover);
+        if (P.labels === "hubs") {
+          let hubs = 0;
+          for (let i = 0; i < N && hubs < 12; i++) {
+            if (nodes[i].rank < 12) {
+              anotar(i);
+              hubs++;
+            }
+          }
+        } else if (P.labels === "all") {
+          for (let i = 0; i < N && etiquetados.size < 160; i++) {
+            anotar(i);
+          }
+        }
+        for (let i = 0; i < poolEtiquetas.length; i++) {
+          if (poolEtiquetas[i] && !etiquetados.has(i)) {
+            poolEtiquetas[i].style.opacity = "0";
+          }
         }
 
         // Pensamientos en vuelo: semilla asciende, arcos disparan.

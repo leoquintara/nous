@@ -13,6 +13,8 @@ import { NuevoEvento } from "@/application/puertos";
 import type {
   BenchmarkRun,
   Evento,
+  EventoActividad,
+  Preferencias,
   Proyeccion,
   ResultadoBusqueda,
 } from "@/domain/modelos";
@@ -69,6 +71,23 @@ export function crearClienteNous(token: string): PuertoMemoria {
       const params = new URLSearchParams({ limite: String(limite) });
       if (nombre) params.set("nombre", nombre);
       return peticion<BenchmarkRun[]>(`/api/benchmarks?${params}`, token);
+    },
+    actividad: (limite = 50) =>
+      peticion<EventoActividad[]>(
+        `/api/actividad?limite=${limite}`,
+        token,
+      ),
+    leerPreferencias: (clave) =>
+      peticion<Preferencias>(
+        `/api/preferencias/${encodeURIComponent(clave)}`,
+        token,
+      ),
+    guardarPreferencias: async (clave, valor) => {
+      await peticion<{ guardado: boolean }>(
+        `/api/preferencias/${encodeURIComponent(clave)}`,
+        token,
+        { method: "PUT", body: JSON.stringify(valor) },
+      );
     },
   };
 }

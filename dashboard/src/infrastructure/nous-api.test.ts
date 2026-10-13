@@ -91,6 +91,53 @@ describe("crearClienteNous", () => {
     [url] = espia.mock.calls[1] as [string];
     expect(url).toContain("nombre=suite_benchmarks");
   });
+
+  it("actividad consulta el endpoint con el límite indicado", async () => {
+    const espia = vi
+      .fn()
+      .mockResolvedValue(
+        respuestaJson([{ kind: "recall", q: "hola", ids: ["a"], ts: 1 }]),
+      );
+    vi.stubGlobal("fetch", espia);
+
+    const eventos = await crearClienteNous("t").actividad(25);
+
+    const [url] = espia.mock.calls[0] as [string];
+    expect(url).toContain("/api/actividad?limite=25");
+    expect(eventos[0].kind).toBe("recall");
+  });
+
+  it("leerPreferencias hace GET sobre la clave codificada", async () => {
+    const espia = vi
+      .fn()
+      .mockResolvedValue(respuestaJson({ nodeSize: 2 }));
+    vi.stubGlobal("fetch", espia);
+
+    const doc = await crearClienteNous("t").leerPreferencias("cerebro");
+
+    const [url, init] = espia.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/api/preferencias/cerebro");
+    expect(init.method ?? "GET").toBe("GET");
+    expect(doc.nodeSize).toBe(2);
+  });
+
+  it("guardarPreferencias hace PUT con el documento JSON", async () => {
+    const espia = vi
+      .fn()
+      .mockResolvedValue(respuestaJson({ guardado: true }));
+    vi.stubGlobal("fetch", espia);
+
+    await crearClienteNous("t").guardarPreferencias("cerebro", {
+      nodeSize: 2,
+      pins: { e1: [1, 2, 3] },
+    });
+
+    const [, init] = espia.mock.calls[0] as [string, RequestInit];
+    expect(init.method).toBe("PUT");
+    const cuerpo = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(cuerpo.nodeSize).toBe(2);
+    expect(cuerpo.pins).toEqual({ e1: [1, 2, 3] });
+  });
 });
 
 describe("crearAuth", () => {

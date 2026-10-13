@@ -59,6 +59,20 @@ export interface Proyeccion {
   creado_en?: string;
 }
 
+/** Evento de actividad cerebral reciente (store/recall) para el grafo vivo. */
+export interface EventoActividad {
+  kind: "store" | "recall" | "search" | "session" | "inject";
+  /** Texto que originó la actividad (truncado a 80 chars por el backend). */
+  q: string;
+  /** UUIDs de los eventos implicados. */
+  ids: string[];
+  /** Timestamp Unix en segundos. */
+  ts: number;
+}
+
+/** Documento de preferencias persistido en PostgreSQL (clave-valor JSON). */
+export type Preferencias = Record<string, unknown>;
+
 /** Corrida de benchmark persistida. */
 export interface BenchmarkRun {
   id: string;

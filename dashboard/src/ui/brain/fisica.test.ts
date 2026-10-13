@@ -24,6 +24,8 @@ function nodo(parcial: Partial<Nodo> = {}): Nodo {
   return {
     id: "n",
     etiqueta: "",
+    contenido: "",
+    fuente: "test",
     dimension: "cognitiva",
     estado: "working",
     amplitud: 0.5,

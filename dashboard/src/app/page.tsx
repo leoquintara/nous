@@ -1,17 +1,37 @@
 "use client";
 
 /**
- * Vista principal: cerebro 3D con los eventos de los últimos 90 días
- * más panel lateral de detalle del evento seleccionado.
+ * Vista principal: cerebro 3D vivo con los eventos recientes.
+ *
+ * Port de la experiencia completa del plugin DSH Memory: grafo con
+ * física y pensamientos, panel de ajustes, filtro de procedencia,
+ * modos de color semánticos, historial con replay y visor de detalle.
+ * Las preferencias y los pins se persisten en PostgreSQL.
  */
 
+import { Settings } from "iconoir-react";
 import dynamic from "next/dynamic";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { usarApp } from "@/ui/proveedor-app";
 import { Shell } from "@/ui/shell";
-import { eventosAGrafo } from "@/ui/brain/tipos";
+import type { EventoActividad } from "@/domain/modelos";
 import type { CerebroHandle } from "@/ui/brain/CerebroCanvas";
+import {
+  PanelControl,
+  PanelFuentes,
+  TarjetaVidrio,
+} from "@/ui/brain/controles";
+import { HistorialActividad } from "@/ui/brain/historial";
+import { REGLAS_DEFAULT } from "@/ui/brain/reglas";
+import {
+  eventosAGrafo,
+  PINS_MAX,
+  type DatosCerebro,
+  type PosicionPin,
+} from "@/ui/brain/tipos";
+import { usePrefsCerebro } from "@/ui/brain/usar-prefs-cerebro";
+import { VisorNodo } from "@/ui/brain/visor-nodo";
 
 const CerebroCanvas = dynamic(
   () =>
@@ -22,24 +42,148 @@ const CerebroCanvas = dynamic(
 );
 
 const DIA = 86_400;
+const INTERVALO_ACTIVIDAD_MS = 4000;
 
 export default function PaginaCerebro() {
   const { memoria } = usarApp();
-  const [datos, setDatos] = useState<ReturnType<typeof eventosAGrafo> | null>(
-    null,
-  );
+  const { prefs, setPref } = usePrefsCerebro(memoria);
+  const [datos, setDatos] = useState<DatosCerebro | null>(null);
   const [sel, setSel] = useState<{ index: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [cargando, setCargando] = useState(false);
+  const [panelAbierto, setPanelAbierto] = useState(false);
+  const [historial, setHistorial] = useState<EventoActividad[]>([]);
   const pensarRef = useRef<CerebroHandle | null>(null);
-
+  const pinsRef = useRef(prefs.pins);
+  const datosRef = useRef(datos);
   useEffect(() => {
+    pinsRef.current = prefs.pins;
+    datosRef.current = datos;
+  });
+
+  /** Recarga los eventos y reconstruye el grafo respetando los pins. */
+  const recargar = useCallback(() => {
     if (!memoria) return;
     const ahora = Math.floor(Date.now() / 1000);
+    setCargando(true);
     memoria
-      .listarEventos(ahora - 90 * DIA, ahora, 500)
-      .then((eventos) => setDatos(eventosAGrafo(eventos)))
-      .catch((e: Error) => setError(e.message));
-  }, [memoria]);
+      .listarEventos(ahora - 90 * DIA, ahora, prefs.srcCap)
+      .then((eventos) => {
+        setDatos(eventosAGrafo(eventos, ahora, pinsRef.current));
+        setError(null);
+      })
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setCargando(false));
+  }, [memoria, prefs.srcCap]);
+
+  useEffect(() => {
+    const id = setTimeout(recargar, 0);
+    return () => clearTimeout(id);
+  }, [recargar]);
+
+  // Fuentes ocultas: srcFilter nulo = todas visibles.
+  const ocultas = useMemo(() => {
+    const s = new Set<string>();
+    if (prefs.srcFilter && datos) {
+      for (const f of datos.fuentes) {
+        if (!prefs.srcFilter.includes(f.id)) s.add(f.id);
+      }
+    }
+    return s;
+  }, [prefs.srcFilter, datos]);
+
+  /** Alterna la visibilidad de una fuente y lo persiste. */
+  const alternarFuente = useCallback(
+    (fuente: string) => {
+      if (!datos) return;
+      const todas = datos.fuentes.map((f) => f.id);
+      const visibles = prefs.srcFilter ?? todas;
+      const siguiente = visibles.includes(fuente)
+        ? visibles.filter((f) => f !== fuente)
+        : [...visibles, fuente];
+      setPref(
+        "srcFilter",
+        siguiente.length === todas.length ? null : siguiente,
+      );
+    },
+    [datos, prefs.srcFilter, setPref],
+  );
+
+  /** Persiste la posición de un nodo fijado/soltado por arrastre. */
+  const alCambiarPin = useCallback(
+    (eventoId: string, pos: PosicionPin | null) => {
+      const pins = { ...pinsRef.current };
+      if (pos) {
+        pins[eventoId] = pos;
+        const ids = Object.keys(pins);
+        if (ids.length > PINS_MAX) {
+          for (const viejo of ids.slice(0, ids.length - PINS_MAX)) {
+            delete pins[viejo];
+          }
+        }
+      } else {
+        delete pins[eventoId];
+      }
+      setPref("pins", pins);
+    },
+    [setPref],
+  );
+
+  // Conteo de coincidencias de la consulta de resaltado.
+  const coincidencias = useMemo(() => {
+    const q = prefs.query.trim().toLowerCase();
+    if (!q || !datos) return null;
+    return datos.nodes.filter((n) =>
+      n.etiqueta.toLowerCase().includes(q),
+    ).length;
+  }, [prefs.query, datos]);
+
+  // Polling de actividad: cada evento nuevo dispara un pensamiento en
+  // el grafo y entra al historial; un store recarga los datos.
+  useEffect(() => {
+    if (!memoria) return;
+    const vistos = new Set<string>();
+    let ultimoTs = 0;
+    let vivo = true;
+
+    /** Procesa eventos nuevos: pensamiento + historial + refresh. */
+    const procesar = (eventos: EventoActividad[]) => {
+      const nuevos = eventos.filter((ev) => {
+        const k = `${ev.ts}:${ev.kind}:${ev.q}`;
+        if (ev.ts <= ultimoTs || vistos.has(k)) return false;
+        vistos.add(k);
+        return true;
+      });
+      if (nuevos.length === 0) return;
+      ultimoTs = Math.max(...nuevos.map((e) => e.ts));
+      setHistorial((h) => [...nuevos.reverse(), ...h].slice(0, 40));
+      for (const ev of nuevos) {
+        pensarRef.current?.pensar({ ...ev });
+      }
+      if (nuevos.some((ev) => ev.kind === "store")) recargar();
+    };
+
+    memoria
+      .actividad(50)
+      .then((eventos) => {
+        if (!vivo) return;
+        ultimoTs = Math.max(0, ...eventos.map((e) => e.ts));
+        for (const e of eventos) vistos.add(`${e.ts}:${e.kind}:${e.q}`);
+        setHistorial([...eventos].reverse().slice(0, 40));
+      })
+      .catch(() => undefined);
+
+    const intervalo = setInterval(() => {
+      memoria
+        .actividad(50)
+        .then((eventos) => vivo && procesar(eventos))
+        .catch(() => undefined);
+    }, INTERVALO_ACTIVIDAD_MS);
+    return () => {
+      vivo = false;
+      clearInterval(intervalo);
+    };
+  }, [memoria, recargar]);
 
   const nodoSel = useMemo(
     () => (sel && datos ? datos.nodes[sel.index] : null),
@@ -48,81 +192,90 @@ export default function PaginaCerebro() {
 
   return (
     <Shell>
-      <div className="grid h-[calc(100dvh-7rem)] grid-cols-1 gap-4 lg:grid-cols-[1fr_300px]">
-        <section
-          className="vidrio relative overflow-hidden rounded-3xl"
-          aria-label="Cerebro de memoria 3D"
-        >
-          {error && (
-            <p className="p-6 text-sm" style={{ color: "var(--danger)" }}>
-              {error}
-            </p>
-          )}
-          {!error && (!datos || datos.status !== "ready") && (
-            <div className="texto-suave flex h-full items-center justify-center text-sm">
-              {datos?.status === "vacio"
-                ? "Sin eventos en los últimos 90 días."
-                : "Cargando memoria…"}
-            </div>
-          )}
-          {datos?.status === "ready" && (
-            <CerebroCanvas
-              datos={datos}
-              seleccion={sel}
-              alSeleccionar={setSel}
-              onPensarRef={pensarRef}
-            />
-          )}
-          <div className="texto-suave pointer-events-none absolute bottom-3 left-4 flex gap-4 text-xs">
-            <Leyenda color="var(--dim-cognitiva)" nombre="Cognitiva" />
-            <Leyenda color="var(--dim-somatica)" nombre="Somática" />
-            <Leyenda color="var(--dim-conductual)" nombre="Conductual" />
+      <section
+        className="vidrio relative h-[calc(100dvh-7rem)] overflow-hidden rounded-3xl"
+        aria-label="Cerebro de memoria 3D"
+      >
+        {error && (
+          <p className="p-6 text-sm" style={{ color: "var(--danger)" }}>
+            {error}
+          </p>
+        )}
+        {!error && (!datos || datos.status !== "ready") && (
+          <div className="texto-suave flex h-full items-center justify-center text-sm">
+            {datos?.status === "vacio"
+              ? "Sin eventos en los últimos 90 días."
+              : "Cargando memoria…"}
           </div>
-        </section>
+        )}
+        {datos?.status === "ready" && (
+          <CerebroCanvas
+            datos={datos}
+            seleccion={sel}
+            alSeleccionar={setSel}
+            prefs={prefs}
+            modoColor={prefs.modoColor}
+            ocultas={ocultas}
+            alCambiarPin={alCambiarPin}
+            onPensarRef={pensarRef}
+          />
+        )}
 
-        <aside className="vidrio-fuerte flex flex-col gap-3 overflow-auto p-5">
-          <h2 className="text-sm font-semibold tracking-wide uppercase">
-            Evento
-          </h2>
-          {nodoSel ? (
-            <>
-              <p className="text-sm">{nodoSel.etiqueta}</p>
-              <dl className="texto-suave grid grid-cols-2 gap-2 text-xs">
-                <dt>Dimensión</dt>
-                <dd className="font-medium" style={{ color: "var(--ink)" }}>
-                  {nodoSel.dimension}
-                </dd>
-                <dt>Estado</dt>
-                <dd>{nodoSel.estado}</dd>
-                <dt>Amplitud</dt>
-                <dd>{nodoSel.amplitud.toFixed(2)}</dd>
-                <dt>Fecha</dt>
-                <dd>
-                  {new Date(nodoSel.timestamp_unix * 1000).toLocaleString("es")}
-                </dd>
-              </dl>
-            </>
-          ) : (
-            <p className="texto-suave text-sm">
-              Toca una neurona para ver el evento. Arrastra para fijarla;
-              doble clic para soltarla.
-            </p>
-          )}
-        </aside>
-      </div>
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-2 p-3">
+          <div className="vidrio-fuerte pointer-events-auto">
+            <PanelFuentes
+              fuentes={datos?.fuentes ?? []}
+              ocultas={ocultas}
+              alAlternar={alternarFuente}
+              cap={prefs.srcCap}
+              alCambiarCap={(cap) => setPref("srcCap", cap)}
+            />
+          </div>
+          <div className="vidrio-fuerte">
+            <TarjetaVidrio
+              datos={datos}
+              modoColor={prefs.modoColor}
+              alCambiarModo={(m) => setPref("modoColor", m)}
+              alRefrescar={recargar}
+              cargando={cargando}
+              reglas={prefs.rules ?? REGLAS_DEFAULT}
+            />
+          </div>
+          <div className="vidrio-fuerte pointer-events-auto flex flex-col">
+            <button
+              type="button"
+              onClick={() => setPanelAbierto((p) => !p)}
+              aria-label="Ajustes del grafo"
+              aria-expanded={panelAbierto}
+              className="texto-suave self-end rounded-lg p-2 hover:text-(--ink)"
+            >
+              <Settings width={18} height={18} />
+            </button>
+            {panelAbierto && (
+              <PanelControl
+                prefs={prefs}
+                setPref={setPref}
+                coincidencias={coincidencias}
+                modoColor={prefs.modoColor}
+                fuentes={datos?.fuentes ?? []}
+              />
+            )}
+          </div>
+        </div>
+
+        <div className="pointer-events-none absolute bottom-3 left-3 z-10">
+          <div className="vidrio-fuerte">
+            <HistorialActividad
+              eventos={historial}
+              alReproducir={(ev) => pensarRef.current?.pensar({ ...ev })}
+            />
+          </div>
+        </div>
+
+        {nodoSel && (
+          <VisorNodo nodo={nodoSel} alCerrar={() => setSel(null)} />
+        )}
+      </section>
     </Shell>
-  );
-}
-
-/** Punto de leyenda de una dimensión. */
-function Leyenda({ color, nombre }: { color: string; nombre: string }) {
-  return (
-    <span className="flex items-center gap-1.5">
-      <span
-        className="inline-block h-2 w-2 rounded-full"
-        style={{ background: color }}
-      />
-      {nombre}
-    </span>
   );
 }

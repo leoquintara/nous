@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import type { Evento } from "@/domain/modelos";
 
+import { REGLAS_DEFAULT } from "./reglas";
 import { colorNodo, eventosAGrafo } from "./tipos";
 
 const AHORA = 1_800_000_000;
@@ -20,7 +21,7 @@ function evento(parcial: Partial<Evento> = {}): Evento {
     id: parcial.id ?? crypto.randomUUID(),
     timestamp_unix: parcial.timestamp_unix ?? AHORA,
     dimension: parcial.dimension ?? "cognitiva",
-    fuente: "test",
+    fuente: parcial.fuente ?? "test",
     contenido: parcial.contenido ?? "nota",
     amplitud: parcial.amplitud ?? 0.5,
     frecuencia: null,
@@ -42,6 +43,53 @@ describe("colorNodo", () => {
     expect(dead.estado).toBe("decayed");
     const canal = (hex: string) => parseInt(hex.slice(1, 3), 16);
     expect(canal(colorNodo(fresh))).toBeGreaterThan(canal(colorNodo(dead)));
+  });
+});
+
+describe("colorNodo por modo", () => {
+  const g = () =>
+    eventosAGrafo(
+      [
+        evento({
+          id: "a",
+          fuente: "signal",
+          timestamp_unix: AHORA - 1 * DIA,
+          refuerzos: 5,
+        }),
+        evento({ id: "b", fuente: "cli", timestamp_unix: AHORA }),
+      ],
+      AHORA,
+    );
+
+  it("modo estado usa la paleta de tejido", () => {
+    const d = g();
+    expect(colorNodo(d.nodes[0], "estado", d)).toBe("#ff5a66");
+    expect(colorNodo(d.nodes[1], "estado", d)).toBe("#4ade80");
+  });
+
+  it("modo fuente asigna color estable por procedencia", () => {
+    const d = g();
+    const c1 = colorNodo(d.nodes[0], "fuente", d);
+    const c2 = colorNodo(d.nodes[1], "fuente", d);
+    expect(c1).not.toBe(c2);
+    expect(colorNodo(d.nodes[0], "fuente", d)).toBe(c1);
+  });
+
+  it("modo reglas aplica la primera regla que coincide", () => {
+    const d = g();
+    // refuerzos 5 → regla "important" (#ff5a66).
+    expect(
+      colorNodo(d.nodes[0], "reglas", d, { rules: REGLAS_DEFAULT }),
+    ).toBe("#ff5a66");
+  });
+
+  it("una sobreescritura en prefs.colors gana al color del modo", () => {
+    const d = g();
+    expect(
+      colorNodo(d.nodes[0], "estado", d, {
+        colors: { "estado:consolidated": "#123456" },
+      }),
+    ).toBe("#123456");
   });
 });
 
@@ -114,6 +162,60 @@ describe("eventosAGrafo", () => {
     // Solo las dos cognitivas comparten dimensión.
     expect(tags).toHaveLength(1);
     expect(tags[0]).toMatchObject({ a: 0, b: 2 });
+  });
+
+  it("un nodo viejo, débil y nunca evocado queda dead", () => {
+    const g = eventosAGrafo(
+      [
+        evento({
+          timestamp_unix: AHORA - 60 * DIA,
+          amplitud: 0.1,
+          refuerzos: 0,
+        }),
+      ],
+      AHORA,
+    );
+    expect(g.nodes[0].estado).toBe("dead");
+  });
+
+  it("fuentes cuenta nodos por procedencia ordenada de mayor a menor", () => {
+    const g = eventosAGrafo(
+      [
+        evento({ fuente: "cli", timestamp_unix: AHORA - 3 * DIA }),
+        evento({ fuente: "signal", timestamp_unix: AHORA - 2 * DIA }),
+        evento({ fuente: "cli", timestamp_unix: AHORA - 1 * DIA }),
+      ],
+      AHORA,
+    );
+    expect(g.fuentes).toEqual([
+      { id: "cli", count: 2 },
+      { id: "signal", count: 1 },
+    ]);
+  });
+
+  it("stateCounts suma un nodo por cada estado presente", () => {
+    const g = eventosAGrafo(
+      [
+        evento({ timestamp_unix: AHORA - 1 * DIA }),
+        evento({ timestamp_unix: AHORA - 40 * DIA }),
+      ],
+      AHORA,
+    );
+    expect(g.stateCounts.fresh).toBe(1);
+    expect(g.stateCounts.decayed).toBe(1);
+    expect(g.stateCounts.consolidated).toBe(0);
+  });
+
+  it("un pin persistido restaura la posición exacta y marca el nodo", () => {
+    const g = eventosAGrafo(
+      [evento({ id: "fijado" }), evento({ id: "libre" })],
+      AHORA,
+      { fijado: [11, 22, 33] },
+    );
+    expect(g.pts[0]).toEqual({ x: 11, y: 22, z: 33 });
+    expect(g.nodes[0].pinned).toBe(true);
+    expect(g.nodes[1].pinned).toBe(false);
+    expect(g.pts[1]).not.toEqual({ x: 11, y: 22, z: 33 });
   });
 
   it("deg cuenta aristas y nbrs registra vecinos simétricos", () => {

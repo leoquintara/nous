@@ -7,6 +7,8 @@ import type {
   BenchmarkRun,
   Dimension,
   Evento,
+  EventoActividad,
+  Preferencias,
   Proyeccion,
   ResultadoBusqueda,
 } from "@/domain/modelos";
@@ -34,6 +36,12 @@ export interface PuertoMemoria {
   proyeccionActual(): Promise<Proyeccion | { estado: "sin_proyecciones" }>;
   /** Lista corridas de benchmark persistidas. */
   benchmarks(nombre?: string, limite?: number): Promise<BenchmarkRun[]>;
+  /** Actividad cerebral reciente (store/recall) para el grafo vivo. */
+  actividad(limite?: number): Promise<EventoActividad[]>;
+  /** Lee un documento de preferencias persistido en PostgreSQL. */
+  leerPreferencias(clave: string): Promise<Preferencias>;
+  /** Persiste un documento de preferencias en PostgreSQL. */
+  guardarPreferencias(clave: string, valor: Preferencias): Promise<void>;
 }
 
 /** Puerto de autenticación del dashboard. */
