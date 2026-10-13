@@ -3,9 +3,10 @@
 import hmac
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from src.api.auth import verificar_token
+from src.api.rate_limit import LimitadorIntentos
 from src.api.schemas import (
     BenchmarkResponse,
     EventoRequest,
@@ -21,6 +22,8 @@ from src.storage.repositories import BenchmarkRepository, ProyeccionRepository
 
 router = APIRouter()
 
+_limitador_login = LimitadorIntentos(max_intentos=5, ventana_segundos=60)
+
 
 @router.get("/health")  # público vía raíz en main.py
 async def health() -> HealthResponse:
@@ -33,23 +36,32 @@ async def health() -> HealthResponse:
 
 
 @router.post("/login")
-async def login(credenciales: LoginRequest) -> LoginResponse:
+async def login(credenciales: LoginRequest, request: Request) -> LoginResponse:
     """Autentica al dashboard por usuario/contraseña y entrega el token.
 
     Alternativa a pegar el token ``ns_*`` a mano: si el operador configuró
     ``NOUS_DASHBOARD_USUARIO`` y ``NOUS_DASHBOARD_PASSWORD``, un login
     correcto devuelve el token de servicio para usar como Bearer.
+    Limitado a 5 intentos por minuto por IP contra fuerza bruta.
 
     Args:
         credenciales: Usuario y contraseña del dashboard.
+        request: Petición entrante (IP para el rate limit).
 
     Returns:
         LoginResponse con el token de servicio.
 
     Raises:
         HTTPException 401: credenciales inválidas.
+        HTTPException 429: cupo de intentos excedido.
         HTTPException 503: login por usuario/contraseña no configurado.
     """
+    ip = request.client.host if request.client else "desconocida"
+    if not _limitador_login.permite(ip):
+        raise HTTPException(
+            status_code=429,
+            detail="Demasiados intentos; espera un minuto",
+        )
     settings = get_settings()
     if not settings.dashboard_usuario or not settings.dashboard_password:
         raise HTTPException(
@@ -60,10 +72,15 @@ async def login(credenciales: LoginRequest) -> LoginResponse:
         raise HTTPException(
             status_code=503, detail="Servidor sin token configurado"
         )
-    valido = hmac.compare_digest(
+    # Ambas comparaciones se evalúan siempre: un cortocircuito `and`
+    # revelaría por timing si el usuario existe aunque el password falle.
+    usuario_ok = hmac.compare_digest(
         credenciales.usuario, settings.dashboard_usuario
-    ) and hmac.compare_digest(credenciales.password, settings.dashboard_password)
-    if not valido:
+    )
+    password_ok = hmac.compare_digest(
+        credenciales.password, settings.dashboard_password
+    )
+    if not (usuario_ok and password_ok):
         raise HTTPException(status_code=401, detail="Credenciales inválidas")
     return LoginResponse(token=settings.api_token)
 

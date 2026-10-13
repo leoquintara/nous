@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class HealthResponse(BaseModel):
@@ -40,12 +40,12 @@ class LoginResponse(BaseModel):
 class EventoRequest(BaseModel):
     """Cuerpo para registrar un evento desde la API REST."""
 
-    contenido: str
+    contenido: str = Field(min_length=1, max_length=100_000)
     dimension: Literal["cognitiva", "somatica", "conductual"] | None = None
-    fuente: str = "dashboard"
-    amplitud: float = 0.5
-    frecuencia: float | None = None
-    timestamp_unix: int | None = None
+    fuente: str = Field(default="dashboard", min_length=1, max_length=50)
+    amplitud: float = Field(default=0.5, ge=0.0, le=1.0)
+    frecuencia: float | None = Field(default=None, gt=0.0)
+    timestamp_unix: int | None = Field(default=None, ge=0)
 
 
 class EventoResponse(BaseModel):

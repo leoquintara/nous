@@ -12,6 +12,7 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from src.api.auth import BearerTokenMiddleware
 from src.api.routes import router
@@ -27,14 +28,52 @@ async def _salud(_request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
-def crear_app_http() -> BearerTokenMiddleware:
+class SecurityHeadersMiddleware:
+    """Añade cabeceras de seguridad HTTP a toda respuesta.
+
+    Envuelve a ``BearerTokenMiddleware`` para que las respuestas 401
+    del middleware también las lleven. La API solo sirve JSON, así que
+    una CSP de ``default-src 'none'`` es correcta y estricta.
+    """
+
+    _HEADERS = (
+        (b"x-content-type-options", b"nosniff"),
+        (b"x-frame-options", b"DENY"),
+        (b"referrer-policy", b"no-referrer"),
+        (b"content-security-policy", b"default-src 'none'"),
+    )
+
+    def __init__(self, app: ASGIApp) -> None:
+        """Envuelve la app ASGI interior."""
+        self._app = app
+
+    async def __call__(
+        self, scope: Scope, receive: Receive, send: Send
+    ) -> None:
+        """Inyecta las cabeceras en el inicio de la respuesta."""
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+
+        async def _send_con_headers(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                headers.extend(self._HEADERS)
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self._app(scope, receive, _send_con_headers)
+
+
+def crear_app_http() -> SecurityHeadersMiddleware:
     """Compone la app ASGI combinada: REST bajo /api y MCP en /mcp.
 
     El lifespan del transporte MCP se propaga manualmente porque
     Starlette no lo reenvía a sub-aplicaciones montadas.
 
     Returns:
-        Aplicación ASGI lista para uvicorn, con auth Bearer aplicada.
+        Aplicación ASGI lista para uvicorn: security headers →
+        Bearer token → rutas.
     """
     api = FastAPI(title="Nous API")
 
@@ -70,7 +109,7 @@ def crear_app_http() -> BearerTokenMiddleware:
         ],
         lifespan=_lifespan,
     )
-    return BearerTokenMiddleware(app)
+    return SecurityHeadersMiddleware(BearerTokenMiddleware(app))
 
 
 def _precalentar() -> None:

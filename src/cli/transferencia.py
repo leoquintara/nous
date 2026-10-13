@@ -14,7 +14,7 @@ import json
 import logging
 import uuid
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -26,6 +26,8 @@ from src.storage.models import EventoModel
 logger = logging.getLogger("nous.cli.transferencia")
 
 LOTE_EMBEDDING = 64
+
+_DIMENSIONES = frozenset({"cognitiva", "somatica", "conductual"})
 
 
 class FilaEvento(TypedDict):
@@ -104,21 +106,49 @@ def _leer_jsonl(archivo: Path) -> tuple[list[FilaEvento], int]:
             continue
         try:
             cruda = json.loads(linea)
-            filas.append(
-                FilaEvento(
-                    id=str(uuid.UUID(str(cruda["id"]))),
-                    timestamp_unix=int(cruda["timestamp_unix"]),
-                    dimension=str(cruda["dimension"]),
-                    fuente=cruda.get("fuente"),
-                    contenido=str(cruda["contenido"]),
-                    amplitud=cruda.get("amplitud"),
-                    frecuencia=cruda.get("frecuencia"),
-                )
-            )
+            filas.append(_validar_fila(cruda))
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             logger.warning("Línea JSONL inválida descartada: %s", exc)
             errores += 1
     return filas, errores
+
+
+def _validar_fila(cruda: dict[str, Any]) -> FilaEvento:
+    """Valida una línea JSONL contra el contrato de la tabla eventos.
+
+    Sin esta validación una dimensión arbitraria o una amplitud fuera
+    de rango reventaría los CHECK constraints de PostgreSQL a mitad de
+    la importación en vez de contarse como línea errónea.
+    """
+    dimension = str(cruda["dimension"])
+    if dimension not in _DIMENSIONES:
+        raise ValueError(f"dimensión desconocida: {dimension}")
+    timestamp = int(cruda["timestamp_unix"])
+    if timestamp < 0:
+        raise ValueError("timestamp_unix negativo")
+    fuente = cruda.get("fuente")
+    if fuente is not None and len(str(fuente)) > 50:
+        raise ValueError("fuente excede 50 caracteres")
+    contenido = str(cruda["contenido"])
+    if not contenido or len(contenido) > 100_000:
+        raise ValueError("contenido vacío o excede 100KB")
+    amplitud = cruda.get("amplitud")
+    if amplitud is not None:
+        amplitud = float(amplitud)
+        if not 0.0 <= amplitud <= 1.0:
+            raise ValueError("amplitud fuera de [0, 1]")
+    frecuencia = cruda.get("frecuencia")
+    if frecuencia is not None and float(frecuencia) <= 0:
+        raise ValueError("frecuencia debe ser positiva")
+    return FilaEvento(
+        id=str(uuid.UUID(str(cruda["id"]))),
+        timestamp_unix=timestamp,
+        dimension=dimension,
+        fuente=None if fuente is None else str(fuente),
+        contenido=contenido,
+        amplitud=amplitud,
+        frecuencia=None if frecuencia is None else float(frecuencia),
+    )
 
 
 async def _filtrar_nuevos(
