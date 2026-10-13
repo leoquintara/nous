@@ -231,3 +231,17 @@ class ProyeccionRepository:
         await self._session.flush()
         await self._session.refresh(proyeccion)
         return proyeccion
+
+    async def ultima(self) -> ProyeccionModel | None:
+        """Retorna la proyección más reciente.
+
+        Returns:
+            La última proyección persistida, o None si no hay ninguna.
+        """
+        stmt = (
+            select(ProyeccionModel)
+            .order_by(ProyeccionModel.creado_en.desc())
+            .limit(1)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().first()

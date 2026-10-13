@@ -18,4 +18,5 @@ def ping() -> str:
     return "pong"
 
 
+from src.mcp import resources as _resources  # noqa: E402,F401  # registra los resources
 from src.mcp import tools as _tools  # noqa: E402,F401  # registra las tools de dominio
