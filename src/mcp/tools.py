@@ -11,12 +11,13 @@ from src.config import get_settings
 from src.core.busqueda import BusquedaHibrida4D
 from src.core.clasificador import ClasificadorDimensiones
 from src.core.embeddings import GeneradorEmbeddings
-from src.core.modelos import Evento, ResultadoBusqueda
+from src.core.modelos import Evento, ResultadoBusqueda, Trayectoria
 from src.core.reranker import ReordenadorLocal
+from src.core.temporal import detectar_trayectorias, proyectar
 from src.mcp.server import mcp_server
 from src.storage.database import get_session, obtener_engine
-from src.storage.models import EventoModel
-from src.storage.repositories import EventoRepository
+from src.storage.models import EventoModel, ProyeccionModel
+from src.storage.repositories import EventoRepository, ProyeccionRepository
 
 _embeddings: GeneradorEmbeddings | None = None
 _busqueda: BusquedaHibrida4D | None = None
@@ -217,3 +218,77 @@ async def obtener_linea_de_universo(
             desde_unix, hasta_unix, min(max(limite, 1), 500)
         )
     return [_modelo_a_dict(e) for e in eventos]
+
+
+def _trayectoria_a_dict(t: Trayectoria) -> dict[str, Any]:
+    """Serializa una Trayectoria de dominio a dict JSON-compatible."""
+    return {
+        "tipo": t.tipo,
+        "fecha_inicio": t.fecha_inicio,
+        "fecha_fin": t.fecha_fin,
+        "descripcion": t.descripcion,
+        "eventos": len(t.eventos_ids),
+        "amplitud_promedio": t.amplitud_promedio,
+        "confianza": t.confianza,
+        "activa": t.activa,
+    }
+
+
+@mcp_server.tool()
+async def proyectar_trayectoria(
+    horizonte_dias: int = 7,
+    dias_historial: int = 30,
+) -> dict[str, Any]:
+    """Proyecta la dimensión probable del futuro del usuario.
+
+    USAR CUANDO: pregunten hacia dónde va el usuario ("¿cómo ves mi
+    semana?", "¿qué patrón se está formando?", "¿qué es probable que
+    pase?"). Analiza el historial reciente, detecta rachas de dimensión
+    activas y proyecta la distribución probable de la dimensión dominante.
+
+    NO usar para recuperar memorias del pasado: consultar_memoria.
+    NO usar para listar eventos de un rango: obtener_linea_de_universo.
+    Cada llamada persiste la proyección como historial auditable.
+
+    Args:
+        horizonte_dias: Días hacia adelante a proyectar (1-90). Default 7.
+        dias_historial: Días de historial a analizar (1-365). Default 30.
+
+    Returns:
+        Dict con "dimension_probable", "probabilidad", "distribucion"
+        por dimensión, "trayectorias" detectadas (con flag "activa") e
+        "id" de la proyección persistida en la tabla proyecciones.
+    """
+    ahora = int(time.time())
+    desde = ahora - min(max(dias_historial, 1), 365) * 86_400
+    horizonte = min(max(horizonte_dias, 1), 90)
+    async with get_session(obtener_engine()) as session:
+        modelos = await EventoRepository(session).listar_por_rango(
+            desde, ahora, 500
+        )
+        eventos = [Evento.desde_modelo(m) for m in modelos]
+        proyeccion = proyectar(eventos, horizonte, ahora)
+        trayectorias = detectar_trayectorias(eventos)
+        persistida = await ProyeccionRepository(session).registrar(
+            ProyeccionModel(
+                horizonte_dias=horizonte,
+                variable_objetivo=proyeccion.variable_objetivo,
+                probabilidad=proyeccion.probabilidad,
+                vector_proyectado=proyeccion.vector_proyectado,
+                rama_decision=max(
+                    proyeccion.vector_proyectado,
+                    key=lambda d: proyeccion.vector_proyectado[d],
+                ),
+                basada_en_eventos=list(proyeccion.basada_en_eventos),
+            )
+        )
+        await session.commit()
+    return {
+        "id": str(persistida.id),
+        "horizonte_dias": horizonte,
+        "dimension_probable": persistida.rama_decision,
+        "probabilidad": proyeccion.probabilidad,
+        "distribucion": proyeccion.vector_proyectado,
+        "eventos_analizados": len(eventos),
+        "trayectorias": [_trayectoria_a_dict(t) for t in trayectorias],
+    }

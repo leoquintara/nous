@@ -1,7 +1,13 @@
 """Dataclasses y enums del dominio de Nous."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.storage.models import EventoModel
 
 
 class Dimension(StrEnum):
@@ -30,6 +36,17 @@ class Evento:
     contenido: str
     amplitud: float = 0.5
 
+    @classmethod
+    def desde_modelo(cls, modelo: EventoModel) -> Evento:
+        """Convierte un EventoModel ORM en el dataclass de dominio."""
+        return cls(
+            id=str(modelo.id),
+            timestamp_unix=modelo.timestamp_unix,
+            dimension=Dimension(modelo.dimension),
+            contenido=modelo.contenido,
+            amplitud=modelo.amplitud,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ResultadoClasificacion:
@@ -46,6 +63,50 @@ class ResultadoClasificacion:
     confianza: float
     scores: dict[Dimension, float]
     dudoso: bool
+
+
+@dataclass(frozen=True, slots=True)
+class Trayectoria:
+    """Patrón detectado en la línea de universo del usuario.
+
+    Attributes:
+        tipo: Categoría del patrón (p. ej. ``racha_somatica``).
+        fecha_inicio: Timestamp Unix del primer evento del patrón.
+        fecha_fin: Timestamp del último evento; None si sigue activa.
+        descripcion: Resumen legible del patrón.
+        eventos_ids: Ids de los eventos que la componen.
+        amplitud_promedio: Media de amplitud de sus eventos.
+        confianza: Fuerza del patrón en [0, 1].
+        activa: True si la racha alcanza el evento más reciente.
+    """
+
+    tipo: str
+    fecha_inicio: int
+    fecha_fin: int | None
+    descripcion: str
+    eventos_ids: tuple[str, ...]
+    amplitud_promedio: float
+    confianza: float
+    activa: bool
+
+
+@dataclass(frozen=True, slots=True)
+class Proyeccion:
+    """Futuro probable proyectado desde la trayectoria del usuario.
+
+    Attributes:
+        horizonte_dias: Horizonte de la proyección en días.
+        variable_objetivo: Qué se proyecta (p. ej. ``dimension_dominante``).
+        probabilidad: Probabilidad del valor más probable (0-1).
+        vector_proyectado: Distribución de probabilidad por dimensión.
+        basada_en_eventos: Ids de los eventos que fundamentan la proyección.
+    """
+
+    horizonte_dias: int
+    variable_objetivo: str
+    probabilidad: float
+    vector_proyectado: dict[str, float]
+    basada_en_eventos: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)

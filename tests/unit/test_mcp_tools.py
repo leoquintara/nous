@@ -11,6 +11,7 @@ async def test_tools_de_dominio_registradas_con_descripcion() -> None:
         "recordar_evento",
         "consultar_memoria",
         "obtener_linea_de_universo",
+        "proyectar_trayectoria",
     ):
         assert nombre in tools, f"tool {nombre} no registrada"
         descripcion = tools[nombre].description or ""

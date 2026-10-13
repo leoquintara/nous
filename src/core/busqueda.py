@@ -15,7 +15,7 @@ from dataclasses import replace
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.embeddings import GeneradorEmbeddings
-from src.core.modelos import Contexto4D, Dimension, Evento, ResultadoBusqueda
+from src.core.modelos import Contexto4D, Evento, ResultadoBusqueda
 from src.core.reranker import ReordenadorLocal
 from src.storage.models import EventoModel
 from src.storage.repositories import EventoRepository
@@ -280,10 +280,4 @@ def _similitud(vector_query: list[float], embedding: list[float] | None) -> floa
 
 def _a_evento(modelo: EventoModel) -> Evento:
     """Convierte un modelo ORM en el dataclass de dominio."""
-    return Evento(
-        id=str(modelo.id),
-        timestamp_unix=modelo.timestamp_unix,
-        dimension=Dimension(modelo.dimension),
-        contenido=modelo.contenido,
-        amplitud=modelo.amplitud,
-    )
+    return Evento.desde_modelo(modelo)

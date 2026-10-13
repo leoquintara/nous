@@ -10,7 +10,11 @@ from collections.abc import Sequence
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.storage.models import BenchmarkRunModel, EventoModel
+from src.storage.models import (
+    BenchmarkRunModel,
+    EventoModel,
+    ProyeccionModel,
+)
 
 
 class EventoRepository:
@@ -201,3 +205,29 @@ class BenchmarkRepository:
             stmt = stmt.where(BenchmarkRunModel.nombre == nombre)
         resultado = await self._session.execute(stmt)
         return resultado.scalars().all()
+
+
+class ProyeccionRepository:
+    """Acceso a datos de las proyecciones persistidas."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Inicializa el repositorio con una sesión async.
+
+        Args:
+            session: Sesión async de SQLAlchemy.
+        """
+        self._session = session
+
+    async def registrar(self, proyeccion: ProyeccionModel) -> ProyeccionModel:
+        """Persiste una proyección.
+
+        Args:
+            proyeccion: Instancia de ProyeccionModel a persistir.
+
+        Returns:
+            La proyección persistida con id y timestamp poblados.
+        """
+        self._session.add(proyeccion)
+        await self._session.flush()
+        await self._session.refresh(proyeccion)
+        return proyeccion
