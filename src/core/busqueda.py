@@ -15,6 +15,7 @@ from dataclasses import replace
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.config import get_settings
 from src.core.embeddings import GeneradorEmbeddings
 from src.core.modelos import Contexto4D, Evento, ResultadoBusqueda
 from src.core.reranker import ReordenadorLocal
@@ -26,6 +27,7 @@ PESO_RRF = 0.6
 PESO_COSENO = 0.3
 PESO_RECENCIA = 0.1
 BOOST_AMPLITUD = 0.25
+BOOST_PRIMING = 0.15
 UMBRAL_COSENO_MIN = 0.25
 SOBREMUESTREO = 4
 CANDIDATOS_RERANK = 15
@@ -88,6 +90,7 @@ class BusquedaHibrida4D:
         reordenador: ReordenadorLocal | None = None,
         cantidad_contexto: int = 3,
         vida_media_dias: float = 30.0,
+        priming_segundos: int | None = None,
     ) -> None:
         """Inicializa el orquestador de búsqueda.
 
@@ -97,11 +100,19 @@ class BusquedaHibrida4D:
                 reranking. Sin él, el ranking termina en el re-score.
             cantidad_contexto: Eventos adyacentes por lado a adjuntar.
             vida_media_dias: Vida media del decaimiento por recencia.
+            priming_segundos: TTL de la activación difusa (None =
+                ``settings.priming_segundos``, 0 = apagado).
         """
         self._embeddings = embeddings
         self._reordenador = reordenador
         self._cantidad_contexto = cantidad_contexto
         self._vida_media_dias = vida_media_dias
+        self._priming_ttl = (
+            get_settings().priming_segundos
+            if priming_segundos is None
+            else priming_segundos
+        )
+        self._primados: dict[str, tuple[float, float]] = {}
 
     async def buscar(
         self, session: AsyncSession, query: str, top_n: int = 10
@@ -126,15 +137,54 @@ class BusquedaHibrida4D:
         if not fusionados:
             return []
 
+        ahora = int(time.time())
         resultados = _re_scored(
-            fusionados, modelos, vector_query, int(time.time()), self._vida_media_dias
+            fusionados,
+            modelos,
+            vector_query,
+            ahora,
+            self._vida_media_dias,
+            self._activaciones(ahora),
         )
         resultados = _deduplicar(resultados)
         if self._reordenador is not None:
             resultados = await self._reordenar(query, resultados)
         finales = await self._contextualizar(repo, resultados[:top_n])
         await repo.reforzar([uuid.UUID(r.evento_id) for r in finales])
+        self._primar(finales, ahora)
         return finales
+
+    def _activaciones(self, ahora: float) -> dict[str, float]:
+        """Devuelve las activaciones vivas y purga las expiradas.
+
+        Returns:
+            Mapa evento_id → fuerza de priming residual (0-1].
+        """
+        if self._priming_ttl <= 0:
+            return {}
+        expirados = [
+            eid for eid, (expira, _) in self._primados.items() if expira <= ahora
+        ]
+        for eid in expirados:
+            del self._primados[eid]
+        return {eid: fuerza for eid, (_, fuerza) in self._primados.items()}
+
+    def _primar(self, resultados: list[ResultadoBusqueda], ahora: float) -> None:
+        """Activa los resultados y sus vecinos temporales (activación difusa).
+
+        Los hits quedan a fuerza 1.0; sus eventos adyacentes a 0.5,
+        salvo que ya estuvieran activados con más fuerza.
+        """
+        if self._priming_ttl <= 0:
+            return
+        expira = ahora + self._priming_ttl
+        for r in resultados:
+            self._primados[r.evento_id] = (expira, 1.0)
+            if r.contexto is None:
+                continue
+            for vecino in (*r.contexto.previos, *r.contexto.siguientes):
+                previa = self._primados.get(vecino.id, (0.0, 0.0))[1]
+                self._primados[vecino.id] = (expira, max(previa, 0.5))
 
     async def _contextualizar(
         self, repo: EventoRepository, resultados: list[ResultadoBusqueda]
@@ -219,8 +269,9 @@ def _re_scored(
     vector_query: list[float],
     ahora: int,
     vida_media_dias: float,
+    activaciones: dict[str, float] | None = None,
 ) -> list[ResultadoBusqueda]:
-    """Mezcla RRF con coseno y recencia; aplica boost por amplitud."""
+    """Mezcla RRF con coseno y recencia; aplica amplitud y priming."""
     rrf_max = max(r.score_rrf for r in fusionados)
     resultados = []
     for r in fusionados:
@@ -236,6 +287,10 @@ def _re_scored(
             + PESO_RECENCIA * recencia
         )
         score_final = blend * (1.0 + BOOST_AMPLITUD * modelo.amplitud)
+        if activaciones:
+            score_final *= 1.0 + BOOST_PRIMING * activaciones.get(
+                r.evento_id, 0.0
+            )
         resultados.append(
             replace(
                 r,
