@@ -15,11 +15,10 @@ Comportamiento:
 
 import hmac
 import logging
-from collections.abc import Awaitable, Callable
-from typing import Any
 
 from fastapi import HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from src.config import get_settings
 
@@ -81,7 +80,7 @@ class BearerTokenMiddleware:
     MCP, que no pasa por dependencias FastAPI.
     """
 
-    def __init__(self, app: Callable[..., Awaitable[Any]]) -> None:
+    def __init__(self, app: ASGIApp) -> None:
         """Envuelve una aplicación ASGI con la verificación de token.
 
         Args:
@@ -91,12 +90,21 @@ class BearerTokenMiddleware:
 
     async def __call__(
         self,
-        scope: dict[str, Any],
-        receive: Callable[..., Awaitable[Any]],
-        send: Callable[..., Awaitable[Any]],
+        scope: Scope,
+        receive: Receive,
+        send: Send,
     ) -> None:
         """Verifica el bearer token antes de delegar en la app interior."""
         if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        # Sondas de vida, el login del dashboard y los preflight CORS
+        # son públicos por diseño.
+        if scope.get("method") == "OPTIONS" or scope.get("path") in (
+            "/health",
+            "/api/health",
+            "/api/login",
+        ):
             await self._app(scope, receive, send)
             return
         esperado = token_configurado()
@@ -117,7 +125,7 @@ class BearerTokenMiddleware:
 
     @staticmethod
     async def _responder_401(
-        send: Callable[..., Awaitable[Any]],
+        send: Send,
     ) -> None:
         """Emite una respuesta 401 JSON sin tocar la app interior."""
         cuerpo = b'{"error":"Token de acceso invalido o ausente"}'

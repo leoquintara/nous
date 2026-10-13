@@ -99,6 +99,102 @@ def _resultado_a_dict(r: ResultadoBusqueda) -> dict[str, Any]:
     }
 
 
+async def _recordar(
+    contenido: str,
+    dimension: Literal["cognitiva", "somatica", "conductual"] | None,
+    fuente: str,
+    amplitud: float,
+    frecuencia: float | None,
+    timestamp_unix: int | None,
+) -> dict[str, Any]:
+    """Persiste un evento: valida, clasifica si hace falta, embebe y guarda."""
+    if not 0.0 <= amplitud <= 1.0:
+        raise ErrorValidacion("amplitud debe estar entre 0.0 y 1.0")
+    if frecuencia is not None and frecuencia <= 0.0:
+        raise ErrorValidacion("frecuencia debe ser positiva (Hz)")
+    respuesta: dict[str, Any] = {}
+    if dimension is None:
+        resultado = await _obtener_clasificador().clasificar(contenido)
+        dimension = resultado.dimension.value
+        respuesta["confianza_clasificacion"] = resultado.confianza
+        respuesta["dimension_dudosa"] = resultado.dudoso
+    ts = timestamp_unix if timestamp_unix is not None else int(time.time())
+    vector = await _obtener_embeddings().generar(contenido)
+    evento = EventoModel(
+        timestamp_unix=ts,
+        dimension=dimension,
+        fuente=fuente,
+        contenido=contenido,
+        embedding=vector,
+        amplitud=amplitud,
+        frecuencia=frecuencia,
+    )
+    async with get_session(obtener_engine()) as session:
+        await EventoRepository(session).crear(evento)
+        await session.commit()
+    respuesta.update(
+        {"id": str(evento.id), "timestamp_unix": ts, "dimension": dimension}
+    )
+    return respuesta
+
+
+async def _consultar(consulta: str, top_n: int) -> list[dict[str, Any]]:
+    """Ejecuta la búsqueda híbrida 4D y serializa los resultados."""
+    async with get_session(obtener_engine()) as session:
+        resultados = await _obtener_busqueda().buscar(
+            session, consulta, top_n=max(1, min(top_n, 50))
+        )
+    return [_resultado_a_dict(r) for r in resultados]
+
+
+async def _linea(desde_unix: int, hasta_unix: int, limite: int) -> list[dict[str, Any]]:
+    """Devuelve los eventos del rango temporal en orden cronológico."""
+    if desde_unix > hasta_unix:
+        raise ErrorValidacion("desde_unix debe ser <= hasta_unix")
+    async with get_session(obtener_engine()) as session:
+        eventos = await EventoRepository(session).listar_por_rango(
+            desde_unix, hasta_unix, min(max(limite, 1), 500)
+        )
+    return [_modelo_a_dict(e) for e in eventos]
+
+
+async def _proyectar(horizonte_dias: int, dias_historial: int) -> dict[str, Any]:
+    """Detecta trayectorias, proyecta la dimensión futura y la persiste."""
+    ahora = int(time.time())
+    desde = ahora - min(max(dias_historial, 1), 365) * 86_400
+    horizonte = min(max(horizonte_dias, 1), 90)
+    async with get_session(obtener_engine()) as session:
+        modelos = await EventoRepository(session).listar_por_rango(
+            desde, ahora, 500
+        )
+        eventos = [Evento.desde_modelo(m) for m in modelos]
+        proyeccion = proyectar(eventos, horizonte, ahora)
+        trayectorias = detectar_trayectorias(eventos)
+        persistida = await ProyeccionRepository(session).registrar(
+            ProyeccionModel(
+                horizonte_dias=horizonte,
+                variable_objetivo=proyeccion.variable_objetivo,
+                probabilidad=proyeccion.probabilidad,
+                vector_proyectado=proyeccion.vector_proyectado,
+                rama_decision=max(
+                    proyeccion.vector_proyectado,
+                    key=lambda d: proyeccion.vector_proyectado[d],
+                ),
+                basada_en_eventos=list(proyeccion.basada_en_eventos),
+            )
+        )
+        await session.commit()
+    return {
+        "id": str(persistida.id),
+        "horizonte_dias": horizonte,
+        "dimension_probable": persistida.rama_decision,
+        "probabilidad": proyeccion.probabilidad,
+        "distribucion": proyeccion.vector_proyectado,
+        "eventos_analizados": len(eventos),
+        "trayectorias": [_trayectoria_a_dict(t) for t in trayectorias],
+    }
+
+
 @mcp_server.tool()
 async def recordar_evento(
     contenido: str,
@@ -136,34 +232,9 @@ async def recordar_evento(
         Dict con "id", "timestamp_unix", "dimension" usada y
         "confianza_clasificacion" si se clasificó automáticamente.
     """
-    if not 0.0 <= amplitud <= 1.0:
-        raise ErrorValidacion("amplitud debe estar entre 0.0 y 1.0")
-    if frecuencia is not None and frecuencia <= 0.0:
-        raise ErrorValidacion("frecuencia debe ser positiva (Hz)")
-    respuesta: dict[str, Any] = {}
-    if dimension is None:
-        resultado = await _obtener_clasificador().clasificar(contenido)
-        dimension = resultado.dimension.value
-        respuesta["confianza_clasificacion"] = resultado.confianza
-        respuesta["dimension_dudosa"] = resultado.dudoso
-    ts = timestamp_unix if timestamp_unix is not None else int(time.time())
-    vector = await _obtener_embeddings().generar(contenido)
-    evento = EventoModel(
-        timestamp_unix=ts,
-        dimension=dimension,
-        fuente=fuente,
-        contenido=contenido,
-        embedding=vector,
-        amplitud=amplitud,
-        frecuencia=frecuencia,
+    return await _recordar(
+        contenido, dimension, fuente, amplitud, frecuencia, timestamp_unix
     )
-    async with get_session(obtener_engine()) as session:
-        await EventoRepository(session).crear(evento)
-        await session.commit()
-    respuesta.update(
-        {"id": str(evento.id), "timestamp_unix": ts, "dimension": dimension}
-    )
-    return respuesta
 
 
 @mcp_server.tool()
@@ -190,11 +261,7 @@ async def consultar_memoria(
         completo, sus scores y "contexto_temporal": los eventos que
         ocurrieron justo antes y después en la línea de tiempo.
     """
-    async with get_session(obtener_engine()) as session:
-        resultados = await _obtener_busqueda().buscar(
-            session, consulta, top_n=max(1, min(top_n, 50))
-        )
-    return [_resultado_a_dict(r) for r in resultados]
+    return await _consultar(consulta, top_n)
 
 
 @mcp_server.tool()
@@ -221,13 +288,7 @@ async def obtener_linea_de_universo(
         Eventos {"id","timestamp_unix","dimension","fuente","contenido",
         "amplitud","frecuencia"} ordenados cronológicamente.
     """
-    if desde_unix > hasta_unix:
-        raise ErrorValidacion("desde_unix debe ser <= hasta_unix")
-    async with get_session(obtener_engine()) as session:
-        eventos = await EventoRepository(session).listar_por_rango(
-            desde_unix, hasta_unix, min(max(limite, 1), 500)
-        )
-    return [_modelo_a_dict(e) for e in eventos]
+    return await _linea(desde_unix, hasta_unix, limite)
 
 
 def _trayectoria_a_dict(t: Trayectoria) -> dict[str, Any]:
@@ -269,36 +330,4 @@ async def proyectar_trayectoria(
         por dimensión, "trayectorias" detectadas (con flag "activa") e
         "id" de la proyección persistida en la tabla proyecciones.
     """
-    ahora = int(time.time())
-    desde = ahora - min(max(dias_historial, 1), 365) * 86_400
-    horizonte = min(max(horizonte_dias, 1), 90)
-    async with get_session(obtener_engine()) as session:
-        modelos = await EventoRepository(session).listar_por_rango(
-            desde, ahora, 500
-        )
-        eventos = [Evento.desde_modelo(m) for m in modelos]
-        proyeccion = proyectar(eventos, horizonte, ahora)
-        trayectorias = detectar_trayectorias(eventos)
-        persistida = await ProyeccionRepository(session).registrar(
-            ProyeccionModel(
-                horizonte_dias=horizonte,
-                variable_objetivo=proyeccion.variable_objetivo,
-                probabilidad=proyeccion.probabilidad,
-                vector_proyectado=proyeccion.vector_proyectado,
-                rama_decision=max(
-                    proyeccion.vector_proyectado,
-                    key=lambda d: proyeccion.vector_proyectado[d],
-                ),
-                basada_en_eventos=list(proyeccion.basada_en_eventos),
-            )
-        )
-        await session.commit()
-    return {
-        "id": str(persistida.id),
-        "horizonte_dias": horizonte,
-        "dimension_probable": persistida.rama_decision,
-        "probabilidad": proyeccion.probabilidad,
-        "distribucion": proyeccion.vector_proyectado,
-        "eventos_analizados": len(eventos),
-        "trayectorias": [_trayectoria_a_dict(t) for t in trayectorias],
-    }
+    return await _proyectar(horizonte_dias, dias_historial)

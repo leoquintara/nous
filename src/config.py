@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     api_token: str | None = None
     api_host: str = "127.0.0.1"
     api_port: int = 8720
+    dashboard_usuario: str | None = None
+    dashboard_password: str | None = None
     log_level: str = "INFO"
 
     @field_validator("api_token")
