@@ -175,6 +175,11 @@ export interface EventoPensamiento {
   q: string;
   ids: string[];
   ts: number;
+  /**
+   * Replay manual (historial): dibuja la semilla aunque ningún id
+   * resuelva — la traza siempre da feedback visual al usuario.
+   */
+  inmediato?: boolean;
 }
 
 export const COLORES_DIMENSION: Record<Dimension, string> = {

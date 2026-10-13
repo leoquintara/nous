@@ -734,14 +734,19 @@ export function CerebroCanvas({
         }
         pendientesRef.current = resto;
       };
-      /** Crea un pensamiento: lo que resuelve se anima, el resto espera. */
+      /**
+       * Crea un pensamiento: lo que resuelve se anima, el resto espera.
+       * Con `inmediato` (replay del historial) la semilla se dibuja
+       * siempre — aunque ningún id esté en el grafo — y los que faltan
+       * no se encolan: si no están ahora, no llegarán después.
+       */
       const pensar = (ev: EventoPensamiento) => {
         const ok = ev.ids.filter((id) => datos.idToIdx.has(id));
         const falta = ev.ids.filter((id) => !datos.idToIdx.has(id));
-        if (ok.length || ev.ids.length === 0) {
+        if (ok.length || ev.ids.length === 0 || ev.inmediato) {
           spawnPensamiento({ ...ev, ids: ok });
         }
-        if (falta.length) {
+        if (falta.length && !ev.inmediato) {
           pendientesRef.current.push({
             ev: { ...ev, ids: falta },
             hasta: performance.now() + 8000,

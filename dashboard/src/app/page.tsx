@@ -326,7 +326,9 @@ export default function PaginaCerebro() {
           <div className="vidrio-fuerte">
             <HistorialActividad
               eventos={historial}
-              alReproducir={(ev) => pensarRef.current?.pensar({ ...ev })}
+              alReproducir={(ev) =>
+                pensarRef.current?.pensar({ ...ev, inmediato: true })
+              }
             />
           </div>
         </div>
