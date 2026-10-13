@@ -185,7 +185,14 @@ export function CerebroCanvas({
         1,
         5000,
       );
-      camera.position.set(0, 120, 620);
+      // El centro de masa real de los nodos (con el tirón del tallo)
+      // es el punto de mira: centra la composición verticalmente con
+      // cualquier distribución de datos.
+      const centro = new THREE.Vector3();
+      for (const p of pts) centro.add(p);
+      centro.divideScalar(Math.max(1, pts.length));
+      centro.y -= mem.y * 0.1;
+      camera.position.set(centro.x, centro.y + 120, centro.z + 620);
       const renderer = new THREE.WebGLRenderer({
         antialias: true,
         alpha: true,
@@ -202,6 +209,7 @@ export function CerebroCanvas({
       controls.autoRotateSpeed = 0.4;
       controls.minDistance = 80;
       controls.maxDistance = 2200;
+      controls.target.copy(centro);
 
       /** Gesto de trackpad: pan con dos dedos orbita la escena. */
       const onWheel = (ev: WheelEvent) => {
@@ -1270,7 +1278,10 @@ export function CerebroCanvas({
           }
         });
       };
-    })().catch(() => setGlError(true));
+    })().catch((e) => {
+      console.error("[CerebroCanvas] fallo en la escena:", e);
+      setGlError(true);
+    });
 
     return () => {
       cancelado = true;
@@ -1286,5 +1297,5 @@ export function CerebroCanvas({
         WebGL no disponible en este navegador.
       </div>
     );
-  return <div ref={wrapRef} className="relative h-full w-full" />;
+  return <div ref={wrapRef} className="absolute inset-0" />;
 }

@@ -299,16 +299,6 @@ export default function PaginaCerebro() {
           ) : (
             <div />
           )}
-          <div className="vidrio-fuerte">
-            <TarjetaVidrio
-              datos={datos}
-              modoColor={prefs.modoColor}
-              alCambiarModo={(m) => setPref("modoColor", m)}
-              alRefrescar={recargar}
-              cargando={cargando}
-              reglas={prefs.rules ?? REGLAS_DEFAULT}
-            />
-          </div>
           <div className="vidrio-fuerte pointer-events-auto flex flex-col">
             <button
               type="button"
@@ -337,6 +327,19 @@ export default function PaginaCerebro() {
             <HistorialActividad
               eventos={historial}
               alReproducir={(ev) => pensarRef.current?.pensar({ ...ev })}
+            />
+          </div>
+        </div>
+
+        <div className="pointer-events-none absolute right-3 bottom-3 z-10">
+          <div className="vidrio-fuerte pointer-events-auto">
+            <TarjetaVidrio
+              datos={datos}
+              modoColor={prefs.modoColor}
+              alCambiarModo={(m) => setPref("modoColor", m)}
+              alRefrescar={recargar}
+              cargando={cargando}
+              reglas={prefs.rules ?? REGLAS_DEFAULT}
             />
           </div>
         </div>

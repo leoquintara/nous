@@ -1,6 +1,14 @@
 @import "tailwindcss";
 
 /*
+ * La auto-detección de fuentes de Tailwind v4 no es fiable bajo
+ * Turbopack en Windows (deja de emitir utilidades tras hot-reloads
+ * frecuentes). @source explícito cubre todo src/: app/, ui/,
+ * domain/, infrastructure/, application/.
+ */
+@source "../**/*.{ts,tsx}";
+
+/*
  * Tema Nous — liquid glass + glassmorphism.
  * Paleta Quintara AI: primary #198BF8, secondary #00D6D4, ink #101050.
  * Todos los colores viven en custom properties; los componentes
