@@ -607,57 +607,75 @@ export function TarjetaVidrio({
               ])
             : reglas.filter((r) => r.enabled !== false).map((r) => [r.id, r.color]);
   return (
-    <div className="pointer-events-auto flex flex-col gap-1 p-3">
-      <div className="flex items-center gap-3">
+    <div className="pointer-events-auto flex w-[min(300px,74vw)] flex-col gap-1 p-2.5">
+      <div className="flex items-center gap-2">
         <span className="text-xs font-semibold tabular-nums">
-          {datos?.nodes.length ?? 0} memorias · {datos?.edges.length ?? 0} aristas
+          {datos?.nodes.length ?? 0} memorias · {datos?.edges.length ?? 0}{" "}
+          aristas
         </span>
-        <button
-          type="button"
-          onClick={() => alCambiarModo(siguiente)}
-          title={`Color: ${NOMBRE_MODO[modoColor]} → ${NOMBRE_MODO[siguiente]}`}
-          className="vidrio flex items-center gap-1.5 rounded-xl px-2.5 py-1 text-[0.7rem] font-medium hover:brightness-110"
-        >
-          <Palette width={13} height={13} />
-          {NOMBRE_MODO[modoColor]}
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setGiros((g) => g + 1);
-            alRefrescar();
-          }}
-          disabled={cargando}
-          title="Recargar grafo"
-          className="texto-suave rounded-lg p-1 transition-transform duration-200 hover:scale-110 hover:text-(--ink) active:scale-90 disabled:opacity-40"
-          aria-label="Recargar grafo"
-        >
-          <Refresh
-            width={15}
-            height={15}
-            className={
-              cargando
-                ? "animate-spin"
-                : "transition-transform duration-500 ease-out"
-            }
-            style={cargando ? undefined : { transform: `rotate(${giros * 180}deg)` }}
-          />
-        </button>
-        <button
-          type="button"
-          onClick={() => setPlegada((p) => !p)}
-          aria-label={plegada ? "Expandir" : "Colapsar"}
-          className="texto-suave rounded-lg p-1 transition-transform duration-200 hover:scale-110 hover:text-(--ink) active:scale-90"
-        >
-          {plegada ? <NavArrowDown width={15} height={15} /> : <NavArrowUp width={15} height={15} />}
-        </button>
+        <span className="ml-auto flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => alCambiarModo(siguiente)}
+            title={`Color: ${NOMBRE_MODO[modoColor]} → ${NOMBRE_MODO[siguiente]}`}
+            className="vidrio flex items-center gap-1.5 rounded-xl px-2 py-1 text-[0.7rem] font-medium hover:brightness-110"
+          >
+            <Palette width={13} height={13} />
+            {NOMBRE_MODO[modoColor]}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setGiros((g) => g + 1);
+              alRefrescar();
+            }}
+            disabled={cargando}
+            title="Recargar grafo"
+            className="texto-suave rounded-lg p-1 transition-transform duration-200 hover:scale-110 hover:text-(--ink) active:scale-90 disabled:opacity-40"
+            aria-label="Recargar grafo"
+          >
+            <Refresh
+              width={15}
+              height={15}
+              className={
+                cargando
+                  ? "animate-spin"
+                  : "transition-transform duration-500 ease-out"
+              }
+              style={
+                cargando
+                  ? undefined
+                  : { transform: `rotate(${giros * 180}deg)` }
+              }
+            />
+          </button>
+          <button
+            type="button"
+            onClick={() => setPlegada((p) => !p)}
+            aria-label={plegada ? "Expandir leyenda" : "Colapsar leyenda"}
+            aria-expanded={!plegada}
+            className="texto-suave rounded-lg p-1 transition-transform duration-200 hover:scale-110 hover:text-(--ink) active:scale-90"
+          >
+            {plegada ? (
+              <NavArrowDown width={15} height={15} />
+            ) : (
+              <NavArrowUp width={15} height={15} />
+            )}
+          </button>
+        </span>
       </div>
       {!plegada && leyenda.length > 0 && (
-        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+        <div className="sin-scrollbar mt-1 flex max-h-44 flex-col gap-0.5 overflow-y-auto pr-0.5">
           {leyenda.map(([nombre, color]) => (
-            <span key={nombre} className="texto-suave flex items-center gap-1.5 text-[0.65rem]">
-              <span className="h-2 w-2 rounded-full" style={{ background: color }} />
-              {nombre}
+            <span
+              key={nombre}
+              className="texto-suave flex items-center gap-1.5 text-[0.65rem]"
+            >
+              <span
+                className="h-2 w-2 shrink-0 rounded-full"
+                style={{ background: color }}
+              />
+              <span className="truncate">{nombre}</span>
             </span>
           ))}
         </div>
