@@ -35,9 +35,9 @@ import {
   type EventoRio,
 } from "./geometria";
 import {
-  COLORES_ESCENARIO,
   colorDeFuente,
   colorDimension,
+  colorEscenario,
   materialAtomo,
   materialFlujo,
   materialPuntosSuaves,
@@ -48,7 +48,6 @@ import type { PrefsUniverso } from "./prefs";
 export interface DatosRio {
   eventos: Evento[];
   relaciones: Relacion[];
-  escenarios: Escenario[];
   objetivos: Objetivo[];
   ctx: CtxTemporal;
   /** Segundos de zona de proyección tras tMax. */
@@ -60,6 +59,11 @@ export interface DatosRio {
 
 interface Props {
   rio: DatosRio;
+  /**
+   * Escenarios de futuro proyectados desde el punto enfocado —
+   * cambian al mover el cursor sin reconstruir la escena.
+   */
+  escenarios: Escenario[];
   /** Cursor del observador; null = presente vivo. */
   cursor: number | null;
   /** Apariencia configurable del universo (persistida en DB). */
@@ -84,6 +88,7 @@ const RADIO_ORBE = 2.1;
  */
 export function UniversoCanvas({
   rio,
+  escenarios,
   cursor,
   vista,
   alCambiarCursor,
@@ -95,6 +100,9 @@ export function UniversoCanvas({
   const wrapRef = useRef<HTMLDivElement>(null);
   const [glError, setGlError] = useState(false);
   const cursorRef = useRef<number | null>(cursor);
+  // Re-montaje aislado del grupo fantasma (no reconstruye la escena).
+  const montarRef = useRef<((e: Escenario[]) => void) | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selRef = useRef(alSeleccionar);
   const selFuenteRef = useRef(alSeleccionarFuente);
   const selFantasmaRef = useRef(alSeleccionarFantasma);
@@ -110,6 +118,19 @@ export function UniversoCanvas({
     cursorCbRef.current = alCambiarCursor;
     vistaRef.current = vista;
   });
+
+  // Re-proyección de fantasmas al cambiar `escenarios` (cursor o
+  // prefs): debounce corto para no tubear geometría por cada tick
+  // del slider; solo el grupo fantasma se reconstruye.
+  useEffect(() => {
+    const montar = montarRef.current;
+    if (!montar) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => montar(escenarios), 140);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [escenarios]);
 
   useEffect(() => {
     const wrap = wrapRef.current;
@@ -349,31 +370,57 @@ export function UniversoCanvas({
       grupoAfluentes.add(sedPuntos);
 
       // ── Cauces-fantasma: escenarios de futuro con corriente ──
-      // Cada tubo lleva un materialFlujo intenso — energía viajando
-      // hacia el destino, opacidad modulada por la probabilidad.
+      // Reconstruibles sin tocar la escena: al mover el cursor, la
+      // proyección se recalcula y este grupo se re-monta en caliente.
       interface EntradaFantasma {
         mesh: THREE.Mesh;
         mat: THREE.ShaderMaterial;
         escenario: Escenario;
       }
       const caucesF: EntradaFantasma[] = [];
-      for (const f of rio.escenarios) {
-        const color = COLORES_ESCENARIO[f.id];
-        const mat = materialFlujo(color, 0.8);
-        matsFlujo.push(mat);
-        const pts = f.puntos.map((p) => new THREE.Vector3(p.x, p.y - 1.2, p.z));
-        const mallaF = new THREE.Mesh(
-          new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 70, 0.6, 6),
-          mat,
-        );
-        grupoFantasmas.add(mallaF);
-        caucesF.push({ mesh: mallaF, mat, escenario: f });
-        // Etiqueta del escenario: "Continuidad · 52%".
-        anotar(
-          `${f.nombre} · ${Math.round(f.probabilidad * 100)}%`,
-          pts[Math.floor(pts.length * 0.62)].clone().add(new THREE.Vector3(0, 8, 0)),
-        );
-      }
+      // Subconjunto de `etiquetas` que pertenece a escenarios.
+      const etiquetasF: { el: HTMLSpanElement; pos: THREE.Vector3 }[] = [];
+
+      /** (Re)monta los cauces-fantasma: descarta tubos y etiquetas. */
+      const montarFantasmas = (escs: Escenario[]) => {
+        for (const c of caucesF) {
+          grupoFantasmas.remove(c.mesh);
+          c.mesh.geometry.dispose();
+          c.mat.dispose();
+        }
+        caucesF.length = 0;
+        for (const et of etiquetasF.splice(0)) {
+          et.el.remove();
+          const i = etiquetas.indexOf(et);
+          if (i >= 0) etiquetas.splice(i, 1);
+        }
+        for (const f of escs) {
+          const mat = materialFlujo(colorEscenario(f), 0.8);
+          const pts = f.puntos.map(
+            (p) => new THREE.Vector3(p.x, p.y - 1.2, p.z),
+          );
+          const mallaF = new THREE.Mesh(
+            new THREE.TubeGeometry(
+              new THREE.CatmullRomCurve3(pts),
+              70,
+              0.6,
+              6,
+            ),
+            mat,
+          );
+          grupoFantasmas.add(mallaF);
+          caucesF.push({ mesh: mallaF, mat, escenario: f });
+          anotar(
+            `${f.nombre} · ${Math.round(f.probabilidad * 100)}%`,
+            pts[Math.floor(pts.length * 0.62)]
+              .clone()
+              .add(new THREE.Vector3(0, 8, 0)),
+          );
+          etiquetasF.push(etiquetas[etiquetas.length - 1]);
+        }
+      };
+      montarRef.current = montarFantasmas;
+      montarFantasmas(escenarios);
 
       // ── Objetivos: faros pulsantes al final del futuro ───────
       interface Faro {
@@ -711,13 +758,14 @@ export function UniversoCanvas({
         }
         corrAttr.needsUpdate = true;
 
-        // Escenarios de futuro: visibles según `canales`; su corriente
-        // interna (uT) brilla más al acercarse el playhead al ahora.
+        // Escenarios de futuro: su corriente interna (uT) brilla más
+        // al acercarse el playhead al punto donde brotan.
         for (const c of caucesF) {
           const prob = c.escenario.probabilidad;
-          const activo = v.fantasmas && v.canales.includes(c.escenario.id);
+          const activo = v.fantasmas;
           c.mesh.visible = activo;
           if (!activo) continue;
+          c.mat.uniforms.uT.value = tSec;
           c.mat.uniforms.uIntensidad.value =
             (prob * (0.5 + gp * 1.1) + 0.05 * Math.sin(tNow * 0.002)) *
             v.intensidadFantasma;
@@ -758,6 +806,7 @@ export function UniversoCanvas({
 
       limpiar = () => {
         cancelAnimationFrame(raf);
+        montarRef.current = null;
         ro.disconnect();
         renderer.domElement.removeEventListener("pointerdown", onDown);
         renderer.domElement.removeEventListener("pointerup", onUp);

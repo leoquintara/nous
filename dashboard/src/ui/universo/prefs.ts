@@ -7,7 +7,6 @@
  */
 
 import type { Dimension } from "@/domain/modelos";
-import type { IdEscenario } from "./geometria";
 
 /** Apariencia configurable del río temporal. */
 export interface PrefsUniverso {
@@ -19,8 +18,8 @@ export interface PrefsUniverso {
   ramas: boolean;
   /** Mostrar los cauces-fantasma de futuros probables. */
   fantasmas: boolean;
-  /** Escenarios de futuro activos (continuidad/riesgo/florecer). */
-  canales: IdEscenario[];
+  /** Máximo de futuros alternativos dibujados (1..10). */
+  maxEscenarios: number;
   /** Multiplicador de opacidad de los fantasmas (0..2). */
   intensidadFantasma: number;
   /** Mostrar arcos de relación entre orbes. */
@@ -44,7 +43,7 @@ export const PREFS_UNIVERSO_DEFAULT: PrefsUniverso = {
   maxAfluentes: 14,
   ramas: true,
   fantasmas: true,
-  canales: ["continuidad", "riesgo", "florecer"],
+  maxEscenarios: 4,
   intensidadFantasma: 1,
   arcos: true,
   etiquetas: true,

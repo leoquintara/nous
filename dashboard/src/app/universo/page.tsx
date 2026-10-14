@@ -48,7 +48,7 @@ import {
 import { PanelVistaUniverso } from "@/ui/universo/controles";
 import { usePrefsUniverso } from "@/ui/universo/usar-prefs-universo";
 import type { DatosRio } from "@/ui/universo/UniversoCanvas";
-import { COLORES_ESCENARIO } from "@/ui/universo/materiales";
+import { colorEscenarioHex } from "@/ui/universo/materiales";
 import { COLORES_DIMENSION } from "@/ui/brain/tipos";
 
 const UniversoCanvas = dynamic(
@@ -90,7 +90,7 @@ export default function PaginaUniverso() {
   const [panelVista, setPanelVista] = useState(false);
   const datosRef = useRef({ eventos: [] as Evento[], ctx: null as CtxTemporal | null });
 
-  /** Eventos como EventoRio (para stats de escenarios). */
+  /** Eventos como EventoRio (para stats y proyección de escenarios). */
   const eventosRio = useMemo<EventoRio[]>(
     () =>
       (rio?.eventos ?? []).map((e) => ({
@@ -103,6 +103,49 @@ export default function PaginaUniverso() {
       })),
     [rio],
   );
+
+  /**
+   * Escenarios de futuro proyectados desde el punto enfocado:
+   * brotan del cursor (o del "ahora" si no hay viaje) y se
+   * recalculan con los eventos visibles hasta ese instante —
+   * así el usuario explora futuros contrafácticos en cualquier t.
+   */
+  const escenarios = useMemo(() => {
+    if (!rio) return [];
+    const origen =
+      cursor == null
+        ? rio.ctx.tMax
+        : Math.min(Math.max(cursor, rio.ctx.tMin), rio.ctx.tMax);
+    // Loops abiertos *en el origen*: el cierre cuenta solo si su
+    // evento de cierre ya existía en ese instante.
+    const tsPorId = new Map(rio.eventos.map((e) => [e.id, e.timestamp_unix]));
+    const cerradosEn = new Set(
+      rio.relaciones
+        .filter(
+          (r) =>
+            r.tipo === "cierra" &&
+            (tsPorId.get(r.destino_id) ?? Infinity) <= origen,
+        )
+        .map((r) => r.origen_id),
+    );
+    const loopsAbiertos = rio.eventos.filter(
+      (e) =>
+        e.tipo === "compromiso" &&
+        e.timestamp_unix <= origen &&
+        !cerradosEn.has(e.id) &&
+        !e.reemplazado_por &&
+        !(e.expira_en != null && e.expira_en < origen),
+    ).length;
+    return construirEscenarios({
+      eventos: eventosRio,
+      origen,
+      loopsAbiertos,
+      objetivos,
+      horizonte: rio.horizonte,
+      ctx: rio.ctx,
+      maxEscenarios: prefs.maxEscenarios,
+    });
+  }, [rio, eventosRio, cursor, objetivos, prefs.maxEscenarios]);
 
   /** Reconstruye el río con eventos + relaciones + proyección + metas. */
   const recargar = useCallback(
@@ -131,8 +174,6 @@ export default function PaginaUniverso() {
         const tMax = eventos[eventos.length - 1].timestamp_unix;
         const ctx = ctxDe(tMin, tMax, RIO);
         const horizonte = Math.max(ctx.span * 0.15, 3 * DIA);
-        const distribucion =
-          proy && "distribucion" in proy ? proy.distribucion : null;
         const ramas = [
           "main",
           ...[...new Set(eventos.map((e) => e.rama))].filter(
@@ -147,42 +188,9 @@ export default function PaginaUniverso() {
         const fuentes = [...conteo.entries()]
           .map(([id, count]) => ({ id, count }))
           .sort((a, b) => b.count - a.count);
-        // Sustrato estadístico de los escenarios: soporte por
-        // dimensión + compromisos abiertos que presionan el declive.
-        const ers: EventoRio[] = eventos.map((e) => ({
-          id: e.id,
-          ts: e.timestamp_unix,
-          dimension: e.dimension,
-          fuente: e.fuente ?? "desconocida",
-          amplitud: e.amplitud,
-          rama: e.rama,
-        }));
-        const stats = Object.fromEntries(
-          DIMENSIONES.map((d) => [d, statsDimension(d, ers, tMax)]),
-        ) as Record<Dimension, StatsDimension>;
-        const cerrados = new Set(
-          relaciones
-            .filter((r) => r.tipo === "cierra")
-            .map((r) => r.origen_id),
-        );
-        const loopsAbiertos = eventos.filter(
-          (e) =>
-            e.tipo === "compromiso" &&
-            !cerrados.has(e.id) &&
-            !e.reemplazado_por &&
-            !(e.expira_en != null && e.expira_en < tMax),
-        ).length;
         setRio({
           eventos,
           relaciones,
-          escenarios: construirEscenarios({
-            distribucion,
-            stats,
-            loopsAbiertos,
-            objetivos: metas,
-            horizonte,
-            ctx,
-          }),
           objetivos: metas,
           ctx,
           horizonte,
@@ -262,6 +270,7 @@ export default function PaginaUniverso() {
         {rio && (
           <UniversoCanvas
             rio={rio}
+            escenarios={escenarios}
             cursor={cursor}
             vista={prefs}
             alCambiarCursor={setCursor}
@@ -411,7 +420,11 @@ export default function PaginaUniverso() {
             escenario={selFantasma}
             stats={
               selFantasma.sustrato
-                ? statsDimension(selFantasma.sustrato, eventosRio, rio.ctx.tMax)
+                ? statsDimension(
+                    selFantasma.sustrato,
+                    eventosRio,
+                    selFantasma.origen,
+                  )
                 : null
             }
             trayectoria={
@@ -700,7 +713,7 @@ function TarjetaEscenario({
   trayectoria: Trayectoria | null;
   alCerrar: () => void;
 }) {
-  const hex = `#${COLORES_ESCENARIO[escenario.id].toString(16).padStart(6, "0")}`;
+  const hex = colorEscenarioHex(escenario);
   return (
     <Tarjeta
       titulo={`${escenario.nombre} · ${Math.round(escenario.probabilidad * 100)}%`}

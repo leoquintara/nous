@@ -32,7 +32,6 @@ function mezclar(parcial: Partial<PrefsUniverso>): PrefsUniverso {
     ...PREFS_UNIVERSO_DEFAULT,
     ...parcial,
     colores: { ...PREFS_UNIVERSO_DEFAULT.colores, ...parcial.colores },
-    canales: parcial.canales ?? PREFS_UNIVERSO_DEFAULT.canales,
   };
 }
 

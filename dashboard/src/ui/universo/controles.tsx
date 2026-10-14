@@ -11,17 +11,9 @@
 
 import type { Dimension } from "@/domain/modelos";
 import { COLORES_DIMENSION } from "@/ui/brain/tipos";
-import type { IdEscenario } from "./geometria";
 import type { PrefsUniverso } from "./prefs";
 
 const DIMENSIONES: Dimension[] = ["cognitiva", "somatica", "conductual"];
-
-/** Escenarios de futuro togglables, con nombre legible. */
-const ESCENARIOS: { id: IdEscenario; nombre: string }[] = [
-  { id: "continuidad", nombre: "Continuidad (tu patrón sigue)" },
-  { id: "riesgo", nombre: "Declive (señales de desgaste)" },
-  { id: "florecer", nombre: "Florecer (hacia tus metas)" },
-];
 
 /** Fila etiqueta + control. */
 function Fila({
@@ -165,21 +157,21 @@ export function PanelVistaUniverso({
       <p className="texto-suave mt-1 border-t border-(--linea-vidrio) pt-2 text-[0.62rem] font-semibold tracking-wide uppercase">
         Escenarios de futuro
       </p>
-      {ESCENARIOS.map((e) => (
-        <Fila key={e.id} etiqueta={e.nombre}>
-          <Interruptor
-            activo={prefs.canales.includes(e.id)}
-            alCambiar={(x) =>
-              setPref(
-                "canales",
-                x
-                  ? [...prefs.canales, e.id]
-                  : prefs.canales.filter((q) => q !== e.id),
-              )
-            }
-          />
-        </Fila>
-      ))}
+      <Fila etiqueta="Mostrar fantasmas">
+        <Interruptor
+          activo={prefs.fantasmas}
+          alCambiar={(x) => setPref("fantasmas", x)}
+        />
+      </Fila>
+      <Fila etiqueta="Alternativas de futuro">
+        <Deslizador
+          valor={prefs.maxEscenarios}
+          min={1}
+          max={10}
+          paso={1}
+          alCambiar={(x) => setPref("maxEscenarios", Math.round(x))}
+        />
+      </Fila>
       <Fila etiqueta="Intensidad fantasma">
         <Deslizador
           valor={prefs.intensidadFantasma}

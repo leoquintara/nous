@@ -203,7 +203,91 @@ export function carrilFantasma(dimension: Dimension | null): number {
 }
 
 /** Identificador de escenario de futuro del río. */
-export type IdEscenario = "continuidad" | "riesgo" | "florecer";
+export type IdEscenario =
+  | "continuidad"
+  | "riesgo"
+  | "florecer"
+  | `racha:${string}`
+  | `giro:${string}`
+  | `meta:${string}`;
+
+/** Racha de eventos consecutivos de la misma dimensión (espejo del backend). */
+export interface Racha {
+  dimension: Dimension;
+  eventos: number;
+  inicio: number;
+  /** min(1, longitud/6) — mismo criterio que el backend. */
+  confianza: number;
+  /** La racha llega viva hasta el instante enfocado. */
+  activa: boolean;
+}
+
+const MIN_RACHA = 3;
+const BOOST_RACHA = 1.4;
+const VIDA_MEDIA_S = 30 * 86_400;
+
+/**
+ * Detecta rachas de dimensión entre eventos ≤ t (misma lógica que
+ * ``detectar_trayectorias`` del backend): runs consecutivos de la
+ * misma dimensión con al menos ``minLongitud`` eventos.
+ */
+export function detectarRachas(
+  eventos: EventoRio[],
+  t: number,
+  minLongitud = MIN_RACHA,
+): Racha[] {
+  const hist = eventos.filter((e) => e.ts <= t).sort((a, b) => a.ts - b.ts);
+  const rachas: Racha[] = [];
+  let inicio = 0;
+  for (let i = 1; i <= hist.length; i++) {
+    const cierra =
+      i === hist.length || hist[i].dimension !== hist[inicio].dimension;
+    if (!cierra) continue;
+    const n = i - inicio;
+    if (n >= minLongitud) {
+      rachas.push({
+        dimension: hist[inicio].dimension,
+        eventos: n,
+        inicio: hist[inicio].ts,
+        confianza: Math.min(1, n / 6),
+        activa: i === hist.length,
+      });
+    }
+    inicio = i;
+  }
+  return rachas;
+}
+
+/**
+ * Distribución dimensional proyectada en el instante t — espejo
+ * local de ``proyectar()`` del backend: decaimiento exponencial con
+ * vida media de 30 días + boost 1.4 a la dimensión con racha activa.
+ */
+export function distribucionEn(
+  eventos: EventoRio[],
+  t: number,
+): Record<Dimension, number> {
+  const pesos: Record<Dimension, number> = {
+    cognitiva: 0,
+    somatica: 0,
+    conductual: 0,
+  };
+  for (const e of eventos) {
+    if (e.ts > t) continue;
+    pesos[e.dimension] += Math.pow(0.5, Math.max(0, t - e.ts) / VIDA_MEDIA_S);
+  }
+  const activa = detectarRachas(eventos, t).find((r) => r.activa);
+  if (activa) pesos[activa.dimension] *= BOOST_RACHA;
+  const total = pesos.cognitiva + pesos.somatica + pesos.conductual;
+  if (total <= 0) {
+    return { cognitiva: 1 / 3, somatica: 1 / 3, conductual: 1 / 3 };
+  }
+  return {
+    cognitiva: pesos.cognitiva / total,
+    somatica: pesos.somatica / total,
+    conductual: pesos.conductual / total,
+  };
+}
 
 /**
  * Escenario de futuro: un cauce-fantasma con nombre y narrativa.
@@ -230,118 +314,90 @@ export interface Escenario {
   probabilidad: number;
   /** Dimensión cuyo patrón sostiene el escenario (null = mixto). */
   sustrato: Dimension | null;
-  /** Curva muestreada desde el "ahora" hasta el destino. */
+  /** Curva muestreada desde el origen enfocado hasta el destino. */
   puntos: Punto3[];
+  /** Instante desde el que se proyectó (para stats coherentes). */
+  origen: number;
   /** Objetivo al que este cauce pretende llegar, si existe. */
   objetivoAncla: Objetivo | null;
 }
 
 /** Datos de entrada para proyectar los escenarios de futuro. */
 export interface EntradaEscenarios {
-  /** Distribución recency-weighted por dimensión (del backend). */
-  distribucion: Record<string, number> | null;
-  /** Soporte por dimensión (statsDimension sobre el historial). */
-  stats: Record<Dimension, StatsDimension>;
-  /** Compromisos abiertos sin cerrar (alimentan el declive). */
+  /** Historial de eventos (se filtran a ts ≤ origen adentro). */
+  eventos: EventoRio[];
+  /** Instante desde el que se proyecta — el punto enfocado. */
+  origen: number;
+  /** Compromisos abiertos en ese instante (presionan el declive). */
   loopsAbiertos: number;
   /** Metas activas del usuario. */
   objetivos: Objetivo[];
-  /** Segundos de proyección tras tMax. */
+  /** Segundos de proyección tras el origen. */
   horizonte: number;
   ctx: CtxTemporal;
+  /** Máximo de futuros alternativos dibujados (1..10). */
+  maxEscenarios?: number;
   muestras?: number;
 }
 
 const pct = (x: number) => `${Math.round(x * 100)}%`;
 
+/** Candidato a futuro antes de materializar su curva. */
+interface Candidato {
+  id: IdEscenario;
+  nombre: string;
+  descripcion: string;
+  probabilidad: number;
+  sustrato: Dimension | null;
+  /** Destino fijo (ancla de objetivo) o null = abanico libre. */
+  destino: Punto3 | null;
+  objetivoAncla: Objetivo | null;
+}
+
 /**
- * Proyecta los tres escenarios de futuro tras el "ahora":
+ * Genera los escenarios de futuro desde el instante enfocado.
  *
- * - **continuidad**: el cauce sigue su curso — prob = share de la
- *   dimensión dominante (recency-weighted).
- * - **riesgo**: señales somáticas recientes + loops abiertos hunden
- *   el cauce — prob heurística = base + share somática reciente +
- *   presión de compromisos.
- * - **florecer**: converge al objetivo activo más próximo — prob =
- *   base + impulso de la dimensión ancla + amplitud media.
+ * El pool de candidatos nace de los datos (no es fijo):
+ * continuidad del patrón dominante, declive por desgaste, un cauce
+ * por cada objetivo activo, persistencia de la racha viva y giros
+ * de momentum hacia dimensiones que aceleran. Se ordenan por
+ * probabilidad y se cortan al tope del usuario (``maxEscenarios``).
  *
- * Heurísticas documentadas: no son inferencia estadística dura,
- * son una lectura honesta de los patrones actuales.
+ * Con meta activa, TODOS los cauces pretenden llegar al ancla —
+ * florecer llega (1.0), el resto se acerca sin alcanzarla.
  */
 export function construirEscenarios(
   entrada: EntradaEscenarios,
 ): Escenario[] {
-  const {
-    distribucion,
-    stats,
-    loopsAbiertos,
-    objetivos,
-    horizonte,
-    ctx,
-  } = entrada;
+  const { origen, loopsAbiertos, objetivos, horizonte, ctx } = entrada;
   const muestras = entrada.muestras ?? 40;
+  const tope = Math.min(10, Math.max(1, entrada.maxEscenarios ?? 3));
   const clamp = (x: number) => Math.min(0.95, Math.max(0.03, x));
   const dims: Dimension[] = ["cognitiva", "somatica", "conductual"];
-  const inicio = posEnRio(ctx.tMax, 0, null, ctx);
-  const fin = ctx.tMax + horizonte;
+  const hist = entrada.eventos.filter((e) => e.ts <= origen);
+  if (hist.length === 0) return [];
+
+  const dist = distribucionEn(entrada.eventos, origen);
+  const stats = Object.fromEntries(
+    dims.map((d) => [d, statsDimension(d, hist, origen)]),
+  ) as Record<Dimension, StatsDimension>;
+  const dominante = dims.reduce((a, b) => (dist[b] > dist[a] ? b : a));
+  const shareDom = dist[dominante];
+  const recTot = Math.max(1, dims.reduce((s, d) => s + stats[d].recientes, 0));
+  const shareSom = stats.somatica.recientes / recTot;
+  const rachas = detectarRachas(entrada.eventos, origen);
+  const activa = rachas.find((r) => r.activa) ?? null;
+
+  const inicio = posEnRio(origen, 0, null, ctx);
+  const fin = origen + horizonte;
   const xFin = xEnTiempo(fin, ctx);
 
-  const dominante = dims.reduce((a, b) =>
-    (distribucion?.[b] ?? 0) > (distribucion?.[a] ?? 0) ? b : a,
-  );
-  const shareDom = distribucion?.[dominante] ?? 1 / 3;
-  const recTot = Math.max(
-    1,
-    dims.reduce((s, d) => s + stats[d].recientes, 0),
-  );
-  const shareSom = stats.somatica.recientes / recTot;
-  const ancla =
-    objetivos
-      .filter((o) => o.estado === "activo" && o.fecha_objetivo > ctx.tMax)
-      .sort((a, b) => a.fecha_objetivo - b.fecha_objetivo)[0] ?? null;
-  const sustratoFlor = ancla?.dimension ?? dominante;
-  const impulsoFlor = stats[sustratoFlor].recientes / recTot;
-
-  const probs: Record<IdEscenario, number> = {
-    continuidad: clamp(shareDom),
-    riesgo: clamp(0.06 + shareSom * 0.55 + Math.min(0.35, loopsAbiertos * 0.06)),
-    florecer: ancla
-      ? clamp(
-          0.18 +
-            impulsoFlor * 0.5 +
-            stats[sustratoFlor].amplitudMedia * 0.2,
-        )
-      : 0.08,
-  };
-
+  // Metas vivas vistas desde el origen (ordenadas por cercanía).
+  const metas = objetivos
+    .filter((o) => o.estado === "activo" && o.fecha_objetivo > origen)
+    .sort((a, b) => a.fecha_objetivo - b.fecha_objetivo);
+  const ancla = metas[0] ?? null;
   const destinoAncla = ancla ? anclaDeObjetivo(ancla, ctx) : null;
-  const descripciones: Record<IdEscenario, string> = {
-    continuidad:
-      `Si tu patrón sigue igual: "${dominante}" domina tu línea ` +
-      `(${pct(shareDom)}) con ${stats[dominante].recientes} eventos ` +
-      `recientes sosteniendo el rumbo.` +
-      (ancla
-        ? ` Apunta a ◆ "${ancla.titulo}" pero no llega — el hábito pesa más que la meta.`
-        : ""),
-    riesgo:
-      `Camino de desgaste: ${stats.somatica.recientes} señales ` +
-      `somáticas recientes y ${loopsAbiertos} compromisos abiertos ` +
-      `presionan el cauce hacia abajo.` +
-      (ancla
-        ? ` Apunta a ◆ "${ancla.titulo}" pero erra — las señales actuales no lo sostienen.`
-        : ""),
-    florecer: ancla
-      ? `Converge a ◆ "${ancla.titulo}". Impulso ` +
-        `${sustratoFlor}: ${stats[sustratoFlor].recientes} eventos ` +
-        `recientes amigan esta meta.`
-      : "Sin metas fijadas — crea un objetivo para darle destino a este cauce.",
-  };
-
-  /**
-   * Destinos naturales de cada escenario. Con meta activa, todos
-   * apuntan al ancla: florecer llega (1.0), continuidad se acerca
-   * sin llegar (0.45) y declive falla quedándose bajo (0.22).
-   */
   const tirarHacia = (p: Punto3, f: number): Punto3 =>
     destinoAncla
       ? {
@@ -351,8 +407,20 @@ export function construirEscenarios(
         }
       : p;
 
-  const destinos: Record<IdEscenario, Punto3> = {
-    continuidad: tirarHacia(
+  const candidatos: Candidato[] = [];
+  const mencion = ancla ? ` Apunta a ◆ "${ancla.titulo}"` : "";
+
+  candidatos.push({
+    id: "continuidad",
+    nombre: "Continuidad",
+    probabilidad: clamp(shareDom),
+    sustrato: dominante,
+    descripcion:
+      `Si tu patrón sigue igual: "${dominante}" domina tu línea ` +
+      `(${pct(shareDom)}) con ${stats[dominante].recientes} eventos ` +
+      `recientes sosteniendo el rumbo.` +
+      (ancla ? `${mencion} pero no llega — el hábito pesa más que la meta.` : ""),
+    destino: tirarHacia(
       {
         x: xFin,
         y: Math.sin(xFin * 0.012) * ctx.cfg.meandroY + 10,
@@ -360,31 +428,134 @@ export function construirEscenarios(
       },
       0.45,
     ),
-    riesgo: tirarHacia(
+    objetivoAncla: ancla,
+  });
+
+  candidatos.push({
+    id: "riesgo",
+    nombre: "Declive",
+    probabilidad: clamp(
+      0.06 + shareSom * 0.55 + Math.min(0.35, loopsAbiertos * 0.06),
+    ),
+    sustrato: "somatica",
+    descripcion:
+      `Camino de desgaste: ${stats.somatica.recientes} señales ` +
+      `somáticas recientes y ${loopsAbiertos} compromisos abiertos ` +
+      `presionan el cauce hacia abajo.` +
+      (ancla ? `${mencion} pero erra — las señales actuales no lo sostienen.` : ""),
+    destino: tirarHacia(
       {
-        x: xEnTiempo(ctx.tMax + horizonte * 0.85, ctx),
+        x: xEnTiempo(origen + horizonte * 0.85, ctx),
         y: -52,
         z: -ctx.cfg.separacionRama * 0.95,
       },
       0.22,
     ),
-    // Florecer es el único que llega exactamente al ancla.
-    florecer:
-      destinoAncla ?? {
-        x: xFin,
-        y: 58,
-        z: ctx.cfg.separacionRama * 0.95,
-      },
-  };
+    objetivoAncla: ancla,
+  });
 
-  const def: { id: IdEscenario; nombre: string; sustrato: Dimension | null }[] = [
-    { id: "continuidad", nombre: "Continuidad", sustrato: dominante },
-    { id: "riesgo", nombre: "Declive", sustrato: "somatica" },
-    { id: "florecer", nombre: "Florecer", sustrato: sustratoFlor },
-  ];
+  // Un cauce por cada meta: todas pretenden llegar y llegan — son
+  // las líneas donde el objetivo se cumple.
+  metas.forEach((m, i) => {
+    const sus = m.dimension ?? dominante;
+    const impulso = stats[sus].recientes / recTot;
+    candidatos.push({
+      id: i === 0 ? "florecer" : `meta:${m.id}`,
+      nombre: i === 0 ? "Florecer" : `Meta: ${m.titulo}`,
+      probabilidad: clamp(
+        0.18 + impulso * 0.5 + stats[sus].amplitudMedia * 0.2 - i * 0.04,
+      ),
+      sustrato: sus,
+      descripcion:
+        `Converge a ◆ "${m.titulo}" (${pct(
+          clamp(0.18 + impulso * 0.5 + stats[sus].amplitudMedia * 0.2),
+        )}). Impulso ${sus}: ${stats[sus].recientes} eventos ` +
+        `recientes amigan esta meta.`,
+      destino: anclaDeObjetivo(m, ctx),
+      objetivoAncla: m,
+    });
+  });
+  if (metas.length === 0) {
+    candidatos.push({
+      id: "florecer",
+      nombre: "Florecer",
+      probabilidad: 0.08,
+      sustrato: dominante,
+      descripcion:
+        "Sin metas fijadas — crea un objetivo para darle destino a este cauce.",
+      destino: null,
+      objetivoAncla: null,
+    });
+  }
 
-  return def.map(({ id, nombre, sustrato }) => {
-    const destino = destinos[id];
+  // Persistencia de la racha viva: "si la racha actual continúa".
+  if (activa) {
+    candidatos.push({
+      id: `racha:${activa.dimension}`,
+      nombre: `Racha ${activa.dimension}`,
+      probabilidad: clamp(activa.confianza * 0.85),
+      sustrato: activa.dimension,
+      descripcion:
+        `Racha viva de ${activa.eventos} eventos ${activa.dimension} ` +
+        `seguidos — si el patrón se mantiene, el cauce profundiza ` +
+        `en esta dimensión.` + mencion,
+      destino: tirarHacia(
+        {
+          x: xEnTiempo(origen + horizonte * 0.9, ctx),
+          y: 34,
+          z: carrilFantasma(activa.dimension) * ctx.cfg.separacionRama * 0.8,
+        },
+        0.3,
+      ),
+      objetivoAncla: ancla,
+    });
+  }
+
+  // Giros de momentum: dimensión no dominante acelerando reciente.
+  for (const d of dims) {
+    if (d === dominante) continue;
+    const shareRec = stats[d].recientes / recTot;
+    if (stats[d].recientes >= 3 && shareRec >= 0.25) {
+      candidatos.push({
+        id: `giro:${d}`,
+        nombre: `Giro ${d}`,
+        probabilidad: clamp(shareRec * 0.75),
+        sustrato: d,
+        descripcion:
+          `Momentum hacia ${d}: ${pct(shareRec)} de tu actividad ` +
+          `reciente (${stats[d].recientes} en 30d) gira el cauce ` +
+          `hacia esta dimensión.` + mencion,
+        destino: tirarHacia(
+          {
+            x: xEnTiempo(origen + horizonte * 0.9, ctx),
+            y: 30,
+            z: carrilFantasma(d) * ctx.cfg.separacionRama * 0.8,
+          },
+          0.3,
+        ),
+        objetivoAncla: ancla,
+      });
+    }
+  }
+
+  // Orden por probabilidad y corte al tope; los libres sin ancla
+  // se reparten en abanico ±carril (la bifurcación de realidades).
+  const elegidos = [...candidatos]
+    .sort((a, b) => b.probabilidad - a.probabilidad)
+    .slice(0, tope);
+  const libres = elegidos.filter((c) => c.destino === null);
+  libres.forEach((c, j) => {
+    const signo = j % 2 === 0 ? 1 : -1;
+    const nivel = 1 + Math.floor(j / 2);
+    c.destino = {
+      x: xEnTiempo(origen + horizonte * (0.8 + nivel * 0.06), ctx),
+      y: signo * (26 + nivel * 18),
+      z: signo * nivel * ctx.cfg.separacionRama * 0.6,
+    };
+  });
+
+  return elegidos.map((c) => {
+    const destino = c.destino!;
     const dx = Math.max(40, destino.x - inicio.x);
     const c1: Punto3 = { x: inicio.x + dx * 0.35, y: inicio.y, z: inicio.z };
     const c2: Punto3 = {
@@ -396,16 +567,7 @@ export function construirEscenarios(
     for (let i = 0; i <= muestras; i++) {
       puntos.push(bezierCubica(inicio, c1, c2, destino, i / muestras));
     }
-    return {
-      id,
-      nombre,
-      descripcion: descripciones[id],
-      probabilidad: probs[id],
-      sustrato,
-      puntos,
-      // Todos los cauces pretenden llegar al objetivo.
-      objetivoAncla: ancla,
-    };
+    return { ...c, puntos, origen };
   });
 }
 

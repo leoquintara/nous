@@ -10,14 +10,35 @@ import {
   COLORES_ESTADO,
   colorFuente,
 } from "@/ui/brain/tipos";
-import type { IdEscenario } from "./geometria";
+import type { Dimension } from "@/domain/modelos";
+import type { Escenario, IdEscenario } from "./geometria";
 
-/** Color semántico por escenario de futuro (no por dimensión). */
-export const COLORES_ESCENARIO: Record<IdEscenario, number> = {
+/** Color semántico por escenario canónico de futuro. */
+export const COLORES_ESCENARIO: Record<string, number> = {
   continuidad: 0x6aa9ff,
   riesgo: 0xe0664f,
   florecer: 0x6fe3a5,
 };
+
+/**
+ * Resuelve el color de un escenario: canónicos tienen color propio;
+ * ``racha:``/``giro:`` heredan el color de su dimensión sustrato y
+ * ``meta:`` luce dorado como los faros de objetivos.
+ */
+export function colorEscenario(e: Pick<Escenario, "id" | "sustrato">): number {
+  const fijo = COLORES_ESCENARIO[e.id as IdEscenario & string];
+  if (fijo !== undefined) return fijo;
+  if (e.id.startsWith("meta:")) return 0xffd66b;
+  if (e.sustrato) return colorDimension(e.sustrato);
+  return 0x8ea6d8;
+}
+
+/** Versión CSS (#rrggbb) del color de un escenario. */
+export function colorEscenarioHex(
+  e: Pick<Escenario, "id" | "sustrato">,
+): string {
+  return `#${colorEscenario(e).toString(16).padStart(6, "0")}`;
+}
 
 /** Color numérico de una dimensión (paleta semántica del cerebro). */
 export function colorDimension(dimension: string): number {

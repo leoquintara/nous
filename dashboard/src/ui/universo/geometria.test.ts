@@ -17,6 +17,8 @@ import {
   ctxDe,
   desfaseAfluente,
   desfaseCauce,
+  detectarRachas,
+  distribucionEn,
   forkDe,
   posEnRio,
   RIO,
@@ -168,15 +170,18 @@ describe("bezierCubica", () => {
   });
 });
 
-describe("escenarios de futuro", () => {
-  const statsVacias = {
-    cognitiva: { total: 0, recientes: 0, amplitudMedia: 0 },
-    somatica: { total: 0, recientes: 0, amplitudMedia: 0 },
-    conductual: { total: 0, recientes: 0, amplitudMedia: 0 },
-  };
+describe("escenarios de futuro (dinámicos)", () => {
+  /** Historial mínimo con eventos en el origen. */
+  const base: EventoRio[] = [
+    ev({ id: "e1", ts: T_MAX - 20 * DIA, dimension: "cognitiva" }),
+    ev({ id: "e2", ts: T_MAX - 10 * DIA, dimension: "cognitiva" }),
+    ev({ id: "e3", ts: T_MAX - 5 * DIA, dimension: "cognitiva" }),
+    ev({ id: "e4", ts: T_MAX - 2 * DIA, dimension: "somatica" }),
+    ev({ id: "e5", ts: T_MAX - DIA, dimension: "conductual" }),
+  ];
   const entradaBase = (parcial = {}) => ({
-    distribucion: null,
-    stats: statsVacias,
+    eventos: base,
+    origen: T_MAX,
     loopsAbiertos: 0,
     objetivos: [] as Objetivo[],
     horizonte: 30 * DIA,
@@ -185,7 +190,7 @@ describe("escenarios de futuro", () => {
     ...parcial,
   });
 
-  it("genera los tres escenarios con nombre arrancando en el ahora", () => {
+  it("genera los tres escenarios base arrancando en el origen", () => {
     const es = construirEscenarios(entradaBase());
     expect(es.map((e) => e.id)).toEqual([
       "continuidad",
@@ -202,44 +207,163 @@ describe("escenarios de futuro", () => {
     }
   });
 
-  it("continuidad toma la probabilidad de la dimensión dominante", () => {
-    const es = construirEscenarios(
-      entradaBase({ distribucion: { cognitiva: 0.7 } }),
-    );
+  it("continuidad refleja la dimensión dominante en el origen", () => {
+    const es = construirEscenarios(entradaBase());
     const cont = es.find((e) => e.id === "continuidad")!;
-    expect(cont.probabilidad).toBeCloseTo(0.7, 6);
     expect(cont.sustrato).toBe("cognitiva");
+    expect(cont.probabilidad).toBeGreaterThan(0.4);
+  });
+
+  it("una racha viva agrega un cauce de persistencia", () => {
+    // Cuatro eventos conductuales seguidos CERRANDO la historia —
+    // la racha queda viva en el origen (e5 ya era conductual: run=5).
+    const eventos = [
+      ...base,
+      ev({ id: "r1", ts: T_MAX - 80_000, dimension: "conductual" }),
+      ev({ id: "r2", ts: T_MAX - 60_000, dimension: "conductual" }),
+      ev({ id: "r3", ts: T_MAX - 40_000, dimension: "conductual" }),
+      ev({ id: "r4", ts: T_MAX - 20_000, dimension: "conductual" }),
+    ];
+    const es = construirEscenarios(
+      entradaBase({ eventos, maxEscenarios: 5 }),
+    );
+    expect(es.some((e) => e.id === "racha:conductual")).toBe(true);
+  });
+
+  it("un giro de momentum agrega un candidato si otra dimensión acelera", () => {
+    // Cognitiva domina el histórico; conductual acelera en los
+    // últimos días sin llegar a dominar ni formar racha viva.
+    const eventos = [
+      ev({ id: "a", ts: T_MAX - 80 * DIA, dimension: "cognitiva" }),
+      ev({ id: "b", ts: T_MAX - 70 * DIA, dimension: "cognitiva" }),
+      ev({ id: "c", ts: T_MAX - 60 * DIA, dimension: "cognitiva" }),
+      ev({ id: "d", ts: T_MAX - 50 * DIA, dimension: "cognitiva" }),
+      ev({ id: "g1", ts: T_MAX - 5 * DIA, dimension: "conductual" }),
+      ev({ id: "g2", ts: T_MAX - 4 * DIA, dimension: "cognitiva" }),
+      ev({ id: "g3", ts: T_MAX - 3 * DIA, dimension: "conductual" }),
+      ev({ id: "g4", ts: T_MAX - 2 * DIA, dimension: "cognitiva" }),
+      ev({ id: "g5", ts: T_MAX - DIA, dimension: "conductual" }),
+      ev({ id: "g6", ts: T_MAX - 12 * 3600, dimension: "cognitiva" }),
+    ];
+    const es = construirEscenarios(
+      entradaBase({ eventos, maxEscenarios: 5 }),
+    );
+    expect(es.some((e) => e.id === "giro:conductual")).toBe(true);
   });
 
   it("riesgo sube con señales somáticas recientes y loops abiertos", () => {
     const bajo = construirEscenarios(entradaBase());
-    const stats = {
-      ...statsVacias,
-      somatica: { total: 40, recientes: 20, amplitudMedia: 0.6 },
-      cognitiva: { total: 10, recientes: 2, amplitudMedia: 0.5 },
-    };
+    const eventos = [
+      ...base,
+      ...Array.from({ length: 8 }, (_, i) =>
+        ev({ id: `s${i}`, ts: T_MAX - (i + 1) * DIA, dimension: "somatica" }),
+      ),
+    ];
     const alto = construirEscenarios(
-      entradaBase({ stats, loopsAbiertos: 6 }),
+      entradaBase({ eventos, loopsAbiertos: 6 }),
     );
     expect(alto.find((e) => e.id === "riesgo")!.probabilidad).toBeGreaterThan(
       bajo.find((e) => e.id === "riesgo")!.probabilidad,
     );
   });
 
-  it("florecer converge al objetivo activo más próximo", () => {
-    const meta = obj({ id: "m1", fecha_objetivo: T_MAX + 20 * DIA });
-    const es = construirEscenarios(
-      entradaBase({ objetivos: [meta], horizonte: 60 * DIA }),
+  it("el tope del usuario limita y ordena por probabilidad", () => {
+    // 8 metas → pool de 10+ candidatos; el tope corta.
+    const metas = Array.from({ length: 8 }, (_, i) =>
+      obj({ id: `m${i}`, fecha_objetivo: T_MAX + (10 + i * 5) * DIA }),
     );
-    const flor = es.find((e) => e.id === "florecer")!;
-    expect(flor.objetivoAncla?.id).toBe("m1");
-    const ultimo = flor.puntos[flor.puntos.length - 1];
-    const ancla = anclaDeObjetivo(meta, ctx);
-    expect(ultimo.x).toBeCloseTo(ancla.x, 6);
-    expect(ultimo.z).toBeCloseTo(ancla.z, 6);
+    const diez = construirEscenarios(
+      entradaBase({ objetivos: metas, horizonte: 60 * DIA }),
+    );
+    expect(diez.length).toBeLessThanOrEqual(10);
+    const cuatro = construirEscenarios(
+      entradaBase({
+        objetivos: metas,
+        horizonte: 60 * DIA,
+        maxEscenarios: 4,
+      }),
+    );
+    expect(cuatro).toHaveLength(4);
+    // Ordenados por probabilidad descendente.
+    for (let i = 1; i < cuatro.length; i++) {
+      expect(cuatro[i].probabilidad).toBeLessThanOrEqual(
+        cuatro[i - 1].probabilidad,
+      );
+    }
   });
 
-  it("todos los escenarios apuntan al objetivo, solo florecer llega", () => {
+  it("los escenarios cambian al enfocar otro instante del río", () => {
+    // Historia en dos épocas: cognitiva al inicio, conductual al final.
+    const eventos = [
+      ...Array.from({ length: 5 }, (_, i) =>
+        ev({ id: `c${i}`, ts: T_MIN + (i + 1) * DIA, dimension: "cognitiva" }),
+      ),
+      ...Array.from({ length: 5 }, (_, i) =>
+        ev({
+          id: `k${i}`,
+          ts: T_MAX - (5 - i) * DIA,
+          dimension: "conductual",
+        }),
+      ),
+    ];
+    const temprano = construirEscenarios(
+      entradaBase({ eventos, origen: T_MIN + 10 * DIA }),
+    );
+    const tardio = construirEscenarios(entradaBase({ eventos }));
+    expect(
+      temprano.find((e) => e.id === "continuidad")!.sustrato,
+    ).toBe("cognitiva");
+    expect(
+      tardio.find((e) => e.id === "continuidad")!.sustrato,
+    ).toBe("conductual");
+    // Los cauces brotan de su propio origen, no siempre del ahora.
+    expect(temprano[0].puntos[0].x).toBeCloseTo(
+      xEnTiempo(T_MIN + 10 * DIA, ctx),
+      6,
+    );
+  });
+
+  it("los eventos posteriores al origen no cuentan", () => {
+    const eventos = [
+      ...base,
+      // Futuro lejano lleno de somática — invisible si enfoco antes.
+      ...Array.from({ length: 10 }, (_, i) =>
+        ev({
+          id: `f${i}`,
+          ts: T_MAX + (i + 1) * DIA,
+          dimension: "somatica",
+        }),
+      ),
+    ];
+    const es = construirEscenarios(entradaBase({ eventos }));
+    expect(es.find((e) => e.id === "continuidad")!.sustrato).not.toBe(
+      "somatica",
+    );
+  });
+
+  it("todas las metas activas reciben su propio cauce", () => {
+    const metas = [
+      obj({ id: "m1", fecha_objetivo: T_MAX + 20 * DIA }),
+      obj({ id: "m2", titulo: "segunda", fecha_objetivo: T_MAX + 40 * DIA }),
+    ];
+    const es = construirEscenarios(
+      entradaBase({ objetivos: metas, horizonte: 60 * DIA }),
+    );
+    const m1 = es.find((e) => e.objetivoAncla?.id === "m1")!;
+    const m2 = es.find((e) => e.objetivoAncla?.id === "m2")!;
+    // Ambas llegan exactamente a su faro.
+    for (const [e, meta] of [
+      [m1, metas[0]],
+      [m2, metas[1]],
+    ] as const) {
+      const fin = e.puntos[e.puntos.length - 1];
+      const ancla = anclaDeObjetivo(meta, ctx);
+      expect(fin.x).toBeCloseTo(ancla.x, 6);
+      expect(fin.z).toBeCloseTo(ancla.z, 6);
+    }
+  });
+
+  it("con meta activa, los cauces libres apuntan pero no llegan", () => {
     const meta = obj({ id: "m1", fecha_objetivo: T_MAX + 20 * DIA });
     const con = construirEscenarios(
       entradaBase({ objetivos: [meta], horizonte: 60 * DIA }),
@@ -252,13 +376,11 @@ describe("escenarios de futuro", () => {
       const f = e.puntos[e.puntos.length - 1];
       return Math.hypot(f.x - ancla.x, f.y - ancla.y, f.z - ancla.z);
     };
-    // Todos pretenden llegar: terminan más cerca del ancla que sin meta.
     for (const e of con) {
       expect(e.objetivoAncla?.id).toBe("m1");
       const libre = sin.find((s) => s.id === e.id)!;
       expect(dist(e)).toBeLessThan(dist(libre));
     }
-    // Pero solo florecer la alcanza de verdad.
     expect(dist(con.find((e) => e.id === "florecer")!)).toBeCloseTo(0, 5);
     expect(dist(con.find((e) => e.id === "continuidad")!)).toBeGreaterThan(5);
     expect(dist(con.find((e) => e.id === "riesgo")!)).toBeGreaterThan(5);
@@ -271,7 +393,7 @@ describe("escenarios de futuro", () => {
     expect(flor.probabilidad).toBeLessThanOrEqual(0.1);
   });
 
-  it("ignora objetivos cumplidos o vencidos como ancla", () => {
+  it("ignora objetivos cumplidos o vencidos antes del origen", () => {
     const viejos = [
       obj({ id: "cerrado", estado: "cumplido" }),
       obj({ id: "vencido", fecha_objetivo: T_MAX - DIA }),
@@ -280,11 +402,20 @@ describe("escenarios de futuro", () => {
     expect(es.find((e) => e.id === "florecer")!.objetivoAncla).toBeNull();
   });
 
-  it("riesgo se hunde por debajo del cauce; florecer asciende", () => {
+  it("historial vacío en el origen no produce cauces", () => {
+    expect(
+      construirEscenarios(entradaBase({ eventos: [] })),
+    ).toHaveLength(0);
+    // Origen anterior a cualquier evento.
+    expect(
+      construirEscenarios(entradaBase({ origen: T_MIN - DIA })),
+    ).toHaveLength(0);
+  });
+
+  it("riesgo se hunde por debajo del cauce", () => {
     const es = construirEscenarios(entradaBase());
-    const fin = (e: (typeof es)[number]) => e.puntos[e.puntos.length - 1];
-    expect(fin(es[1]).y).toBeLessThan(0); // riesgo bucea
-    expect(fin(es[2]).y).toBeGreaterThan(20); // florecer asciende
+    const fin = es.find((e) => e.id === "riesgo")!.puntos.at(-1)!;
+    expect(fin.y).toBeLessThan(0);
   });
 
   it("carrilFantasma diverge por dimensión", () => {
@@ -292,6 +423,39 @@ describe("escenarios de futuro", () => {
     expect(carrilFantasma("conductual")).toBe(1);
     expect(carrilFantasma("somatica")).toBe(0);
     expect(carrilFantasma(null)).toBe(0);
+  });
+});
+
+describe("proyección local (distribucionEn / detectarRachas)", () => {
+  it("distribucionEn decae con la antigüedad del evento", () => {
+    const eventos = [
+      ev({ id: "viejo", ts: T_MAX - 90 * DIA, dimension: "cognitiva" }),
+      ev({ id: "nuevo", ts: T_MAX - DIA, dimension: "conductual" }),
+    ];
+    const d = distribucionEn(eventos, T_MAX);
+    expect(d.conductual).toBeGreaterThan(d.cognitiva);
+    const suma = d.cognitiva + d.somatica + d.conductual;
+    expect(suma).toBeCloseTo(1, 6);
+  });
+
+  it("distribucionEn da tercios iguales sin datos", () => {
+    const d = distribucionEn([], T_MAX);
+    expect(d.cognitiva).toBeCloseTo(1 / 3, 6);
+  });
+
+  it("detectarRachas exige mínimo 3 y marca la racha viva", () => {
+    const eventos = [
+      ev({ id: "a", ts: T_MAX - 10 * DIA, dimension: "cognitiva" }),
+      ev({ id: "b", ts: T_MAX - 3 * DIA, dimension: "somatica" }),
+      ev({ id: "c", ts: T_MAX - 2 * DIA, dimension: "somatica" }),
+      ev({ id: "d", ts: T_MAX - DIA, dimension: "somatica" }),
+    ];
+    const rachas = detectarRachas(eventos, T_MAX);
+    expect(rachas).toHaveLength(1);
+    expect(rachas[0].dimension).toBe("somatica");
+    expect(rachas[0].activa).toBe(true);
+    // Enfocando antes de la racha, no existe.
+    expect(detectarRachas(eventos, T_MAX - 5 * DIA)).toHaveLength(0);
   });
 });
 
