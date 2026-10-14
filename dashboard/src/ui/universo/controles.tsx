@@ -11,9 +11,17 @@
 
 import type { Dimension } from "@/domain/modelos";
 import { COLORES_DIMENSION } from "@/ui/brain/tipos";
+import type { IdEscenario } from "./geometria";
 import type { PrefsUniverso } from "./prefs";
 
 const DIMENSIONES: Dimension[] = ["cognitiva", "somatica", "conductual"];
+
+/** Escenarios de futuro togglables, con nombre legible. */
+const ESCENARIOS: { id: IdEscenario; nombre: string }[] = [
+  { id: "continuidad", nombre: "Continuidad (tu patrón sigue)" },
+  { id: "riesgo", nombre: "Declive (señales de desgaste)" },
+  { id: "florecer", nombre: "Florecer (hacia tus metas)" },
+];
 
 /** Fila etiqueta + control. */
 function Fila({
@@ -155,18 +163,18 @@ export function PanelVistaUniverso({
       </Fila>
 
       <p className="texto-suave mt-1 border-t border-(--linea-vidrio) pt-2 text-[0.62rem] font-semibold tracking-wide uppercase">
-        Futuros fantasma
+        Escenarios de futuro
       </p>
-      {DIMENSIONES.map((d) => (
-        <Fila key={d} etiqueta={`Camino ${d}`}>
+      {ESCENARIOS.map((e) => (
+        <Fila key={e.id} etiqueta={e.nombre}>
           <Interruptor
-            activo={prefs.fantasmaDims.includes(d)}
+            activo={prefs.canales.includes(e.id)}
             alCambiar={(x) =>
               setPref(
-                "fantasmaDims",
+                "canales",
                 x
-                  ? [...prefs.fantasmaDims, d]
-                  : prefs.fantasmaDims.filter((q) => q !== d),
+                  ? [...prefs.canales, e.id]
+                  : prefs.canales.filter((q) => q !== e.id),
               )
             }
           />

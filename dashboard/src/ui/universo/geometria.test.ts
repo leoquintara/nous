@@ -13,7 +13,7 @@ import {
   carrilDeRama,
   carrilFantasma,
   carrilDeFuente,
-  construirFantasmas,
+  construirEscenarios,
   ctxDe,
   desfaseAfluente,
   desfaseCauce,
@@ -168,64 +168,98 @@ describe("bezierCubica", () => {
   });
 });
 
-describe("fantasmas y objetivos", () => {
-  it("genera un cauce por dimensión arrancando en el ahora", () => {
-    const fs = construirFantasmas(null, [], 30 * DIA, ctx, 10);
-    expect(fs).toHaveLength(3);
-    for (const f of fs) {
-      expect(f.puntos).toHaveLength(11);
-      expect(f.puntos[0].x).toBeCloseTo(xEnTiempo(T_MAX, ctx), 6);
+describe("escenarios de futuro", () => {
+  const statsVacias = {
+    cognitiva: { total: 0, recientes: 0, amplitudMedia: 0 },
+    somatica: { total: 0, recientes: 0, amplitudMedia: 0 },
+    conductual: { total: 0, recientes: 0, amplitudMedia: 0 },
+  };
+  const entradaBase = (parcial = {}) => ({
+    distribucion: null,
+    stats: statsVacias,
+    loopsAbiertos: 0,
+    objetivos: [] as Objetivo[],
+    horizonte: 30 * DIA,
+    ctx,
+    muestras: 10,
+    ...parcial,
+  });
+
+  it("genera los tres escenarios con nombre arrancando en el ahora", () => {
+    const es = construirEscenarios(entradaBase());
+    expect(es.map((e) => e.id)).toEqual([
+      "continuidad",
+      "riesgo",
+      "florecer",
+    ]);
+    for (const e of es) {
+      expect(e.nombre.length).toBeGreaterThan(0);
+      expect(e.descripcion.length).toBeGreaterThan(0);
+      expect(e.puntos).toHaveLength(11);
+      expect(e.puntos[0].x).toBeCloseTo(xEnTiempo(T_MAX, ctx), 6);
+      expect(e.probabilidad).toBeGreaterThan(0);
+      expect(e.probabilidad).toBeLessThanOrEqual(0.95);
     }
   });
 
-  it("la probabilidad toma la distribución y se acota a [0,1]", () => {
-    const fs = construirFantasmas(
-      { cognitiva: 0.7, somatica: 1.4 },
-      [],
-      30 * DIA,
-      ctx,
-      4,
+  it("continuidad toma la probabilidad de la dimensión dominante", () => {
+    const es = construirEscenarios(
+      entradaBase({ distribucion: { cognitiva: 0.7 } }),
     );
-    expect(fs[0].probabilidad).toBeCloseTo(0.7, 6);
-    expect(fs[1].probabilidad).toBe(1);
-    expect(fs[2].probabilidad).toBeCloseTo(0.33, 2);
+    const cont = es.find((e) => e.id === "continuidad")!;
+    expect(cont.probabilidad).toBeCloseTo(0.7, 6);
+    expect(cont.sustrato).toBe("cognitiva");
   });
 
-  it("el cauce converge al objetivo más próximo de su dimensión", () => {
-    const meta = obj({
-      id: "m1",
-      dimension: "cognitiva",
-      fecha_objetivo: T_MAX + 20 * DIA,
-    });
-    const fs = construirFantasmas(null, [meta], 60 * DIA, ctx, 8);
-    const cogn = fs.find((f) => f.dimension === "cognitiva")!;
-    expect(cogn.objetivoAncla?.id).toBe("m1");
-    const ultimo = cogn.puntos[cogn.puntos.length - 1];
+  it("riesgo sube con señales somáticas recientes y loops abiertos", () => {
+    const bajo = construirEscenarios(entradaBase());
+    const stats = {
+      ...statsVacias,
+      somatica: { total: 40, recientes: 20, amplitudMedia: 0.6 },
+      cognitiva: { total: 10, recientes: 2, amplitudMedia: 0.5 },
+    };
+    const alto = construirEscenarios(
+      entradaBase({ stats, loopsAbiertos: 6 }),
+    );
+    expect(alto.find((e) => e.id === "riesgo")!.probabilidad).toBeGreaterThan(
+      bajo.find((e) => e.id === "riesgo")!.probabilidad,
+    );
+  });
+
+  it("florecer converge al objetivo activo más próximo", () => {
+    const meta = obj({ id: "m1", fecha_objetivo: T_MAX + 20 * DIA });
+    const es = construirEscenarios(
+      entradaBase({ objetivos: [meta], horizonte: 60 * DIA }),
+    );
+    const flor = es.find((e) => e.id === "florecer")!;
+    expect(flor.objetivoAncla?.id).toBe("m1");
+    const ultimo = flor.puntos[flor.puntos.length - 1];
     const ancla = anclaDeObjetivo(meta, ctx);
     expect(ultimo.x).toBeCloseTo(ancla.x, 6);
     expect(ultimo.z).toBeCloseTo(ancla.z, 6);
   });
 
-  it("ignora objetivos cumplidos, vencidos o de otra dimensión", () => {
-    const viejos = [
-      obj({ id: "cerrado", estado: "cumplido", dimension: "somatica" }),
-      obj({ id: "vencido", fecha_objetivo: T_MAX - DIA, dimension: "somatica" }),
-      obj({ id: "ajeno", dimension: "conductual" }),
-    ];
-    const fs = construirFantasmas(null, viejos, 30 * DIA, ctx, 4);
-    const som = fs.find((f) => f.dimension === "somatica")!;
-    expect(som.objetivoAncla).toBeNull();
+  it("florecer sin metas queda tenue y sin ancla", () => {
+    const es = construirEscenarios(entradaBase());
+    const flor = es.find((e) => e.id === "florecer")!;
+    expect(flor.objetivoAncla).toBeNull();
+    expect(flor.probabilidad).toBeLessThanOrEqual(0.1);
   });
 
-  it("un objetivo transversal ancla cualquier dimensión", () => {
-    const fs = construirFantasmas(
-      null,
-      [obj({ dimension: null })],
-      30 * DIA,
-      ctx,
-      4,
-    );
-    for (const f of fs) expect(f.objetivoAncla).not.toBeNull();
+  it("ignora objetivos cumplidos o vencidos como ancla", () => {
+    const viejos = [
+      obj({ id: "cerrado", estado: "cumplido" }),
+      obj({ id: "vencido", fecha_objetivo: T_MAX - DIA }),
+    ];
+    const es = construirEscenarios(entradaBase({ objetivos: viejos }));
+    expect(es.find((e) => e.id === "florecer")!.objetivoAncla).toBeNull();
+  });
+
+  it("riesgo se hunde por debajo del cauce; florecer asciende", () => {
+    const es = construirEscenarios(entradaBase());
+    const fin = (e: (typeof es)[number]) => e.puntos[e.puntos.length - 1];
+    expect(fin(es[1]).y).toBeLessThan(0); // riesgo bucea
+    expect(fin(es[2]).y).toBeGreaterThan(20); // florecer asciende
   });
 
   it("carrilFantasma diverge por dimensión", () => {

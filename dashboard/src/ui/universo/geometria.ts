@@ -194,6 +194,7 @@ export function anclaDeObjetivo(
 /**
  * Carril fantasma de una dimensión: cognitiva diverge a -1,
  * conductual a +1, somática hacia arriba (carril 0 con altura).
+ * Se usa para anclar objetivos por dimensión, no para los escenarios.
  */
 export function carrilFantasma(dimension: Dimension | null): number {
   if (dimension === "cognitiva") return -1;
@@ -201,57 +202,159 @@ export function carrilFantasma(dimension: Dimension | null): number {
   return 0;
 }
 
-/** Cauce-fantasma: futuro probable de una dimensión. */
-export interface CauceFantasma {
-  dimension: Dimension;
-  /** Peso de la distribución proyectada → opacidad del cauce. */
+/** Identificador de escenario de futuro del río. */
+export type IdEscenario = "continuidad" | "riesgo" | "florecer";
+
+/**
+ * Escenario de futuro: un cauce-fantasma con nombre y narrativa.
+ *
+ * Las dimensiones (cognitiva/somática/conductual) son el sustrato
+ * neurocientífico que hace posible proyectar — no el futuro mismo.
+ * Cada escenario responde "qué pasa si el cauce va por aquí":
+ * continuidad (tu patrón sigue igual), riesgo (las señales de
+ * desgaste ganan) y florecer (converge hacia tus objetivos).
+ */
+export interface Escenario {
+  id: IdEscenario;
+  /** Nombre visible del camino. */
+  nombre: string;
+  /** Qué pasa si el río toma este cauce — con cifras reales. */
+  descripcion: string;
+  /** Probabilidad heurística 0..1 → opacidad del cauce. */
   probabilidad: number;
-  /** Curva muestreada desde el "ahora" hasta el ancla del futuro. */
+  /** Dimensión cuyo patrón sostiene el escenario (null = mixto). */
+  sustrato: Dimension | null;
+  /** Curva muestreada desde el "ahora" hasta el destino. */
   puntos: Punto3[];
-  /** Ancla al objetivo más próximo de la dimensión, si existe. */
+  /** Objetivo al que converge el camino "florecer", si existe. */
   objetivoAncla: Objetivo | null;
 }
 
+/** Datos de entrada para proyectar los escenarios de futuro. */
+export interface EntradaEscenarios {
+  /** Distribución recency-weighted por dimensión (del backend). */
+  distribucion: Record<string, number> | null;
+  /** Soporte por dimensión (statsDimension sobre el historial). */
+  stats: Record<Dimension, StatsDimension>;
+  /** Compromisos abiertos sin cerrar (alimentan el declive). */
+  loopsAbiertos: number;
+  /** Metas activas del usuario. */
+  objetivos: Objetivo[];
+  /** Segundos de proyección tras tMax. */
+  horizonte: number;
+  ctx: CtxTemporal;
+  muestras?: number;
+}
+
+const pct = (x: number) => `${Math.round(x * 100)}%`;
+
 /**
- * Construye los cauces-fantasma tras el presente: uno por dimensión,
- * Bézier desde el "ahora" divergiendo a su carril. Si hay objetivos
- * activos de la dimensión, el cauce converge hacia el más próximo;
- * si no, extrapola hasta el horizonte en su carril libre.
+ * Proyecta los tres escenarios de futuro tras el "ahora":
+ *
+ * - **continuidad**: el cauce sigue su curso — prob = share de la
+ *   dimensión dominante (recency-weighted).
+ * - **riesgo**: señales somáticas recientes + loops abiertos hunden
+ *   el cauce — prob heurística = base + share somática reciente +
+ *   presión de compromisos.
+ * - **florecer**: converge al objetivo activo más próximo — prob =
+ *   base + impulso de la dimensión ancla + amplitud media.
+ *
+ * Heurísticas documentadas: no son inferencia estadística dura,
+ * son una lectura honesta de los patrones actuales.
  */
-export function construirFantasmas(
-  distribucion: Record<string, number> | null,
-  objetivos: Objetivo[],
-  horizonte: number,
-  ctx: CtxTemporal,
-  muestras = 40,
-): CauceFantasma[] {
+export function construirEscenarios(
+  entrada: EntradaEscenarios,
+): Escenario[] {
+  const {
+    distribucion,
+    stats,
+    loopsAbiertos,
+    objetivos,
+    horizonte,
+    ctx,
+  } = entrada;
+  const muestras = entrada.muestras ?? 40;
+  const clamp = (x: number) => Math.min(0.95, Math.max(0.03, x));
   const dims: Dimension[] = ["cognitiva", "somatica", "conductual"];
   const inicio = posEnRio(ctx.tMax, 0, null, ctx);
   const fin = ctx.tMax + horizonte;
-  return dims.map((dimension) => {
-    const prob = Math.max(0, Math.min(1, distribucion?.[dimension] ?? 0.33));
-    const ancla =
-      objetivos
-        .filter(
-          (o) =>
-            o.estado === "activo" &&
-            o.fecha_objetivo > ctx.tMax &&
-            (o.dimension === dimension || o.dimension === null),
+  const xFin = xEnTiempo(fin, ctx);
+
+  const dominante = dims.reduce((a, b) =>
+    (distribucion?.[b] ?? 0) > (distribucion?.[a] ?? 0) ? b : a,
+  );
+  const shareDom = distribucion?.[dominante] ?? 1 / 3;
+  const recTot = Math.max(
+    1,
+    dims.reduce((s, d) => s + stats[d].recientes, 0),
+  );
+  const shareSom = stats.somatica.recientes / recTot;
+  const ancla =
+    objetivos
+      .filter((o) => o.estado === "activo" && o.fecha_objetivo > ctx.tMax)
+      .sort((a, b) => a.fecha_objetivo - b.fecha_objetivo)[0] ?? null;
+  const sustratoFlor = ancla?.dimension ?? dominante;
+  const impulsoFlor = stats[sustratoFlor].recientes / recTot;
+
+  const probs: Record<IdEscenario, number> = {
+    continuidad: clamp(shareDom),
+    riesgo: clamp(0.06 + shareSom * 0.55 + Math.min(0.35, loopsAbiertos * 0.06)),
+    florecer: ancla
+      ? clamp(
+          0.18 +
+            impulsoFlor * 0.5 +
+            stats[sustratoFlor].amplitudMedia * 0.2,
         )
-        .sort((a, b) => a.fecha_objetivo - b.fecha_objetivo)[0] ?? null;
-    const carril = carrilFantasma(dimension);
-    const destino: Punto3 = ancla
+      : 0.08,
+  };
+
+  const descripciones: Record<IdEscenario, string> = {
+    continuidad:
+      `Si tu patrón sigue igual: "${dominante}" domina tu línea ` +
+      `(${pct(shareDom)}) con ${stats[dominante].recientes} eventos ` +
+      `recientes sosteniendo el rumbo.`,
+    riesgo:
+      `Camino de desgaste: ${stats.somatica.recientes} señales ` +
+      `somáticas recientes y ${loopsAbiertos} compromisos abiertos ` +
+      `presionan el cauce hacia abajo.`,
+    florecer: ancla
+      ? `Converge hacia ◆ "${ancla.titulo}". Impulso ` +
+        `${sustratoFlor}: ${stats[sustratoFlor].recientes} eventos ` +
+        `recientes amigan esta meta.`
+      : "Sin metas fijadas — crea un objetivo para darle destino a este cauce.",
+  };
+
+  const destinos: Record<IdEscenario, Punto3> = {
+    // El cauce sigue su meandro natural, apenas desviado.
+    continuidad: {
+      x: xFin,
+      y: Math.sin(xFin * 0.012) * ctx.cfg.meandroY + 10,
+      z: Math.sin(xFin * 0.008 + 1.3) * ctx.cfg.meandroZ + 16,
+    },
+    // El declive se hunde y diverge a la izquierda.
+    riesgo: {
+      x: xEnTiempo(ctx.tMax + horizonte * 0.85, ctx),
+      y: -52,
+      z: -ctx.cfg.separacionRama * 0.95,
+    },
+    // Florecer asciende; con meta, converge exactamente a su ancla.
+    florecer: ancla
       ? anclaDeObjetivo(ancla, ctx)
       : {
-          x: xEnTiempo(fin, ctx),
-          y:
-            Math.sin(xEnTiempo(fin, ctx) * 0.012) * ctx.cfg.meandroY +
-            (dimension === "somatica" ? 46 : carril * 26),
-          z:
-            Math.sin(xEnTiempo(fin, ctx) * 0.008 + 1.3) *
-              ctx.cfg.meandroZ +
-            carril * ctx.cfg.separacionRama * 1.15,
-        };
+          x: xFin,
+          y: 58,
+          z: ctx.cfg.separacionRama * 0.95,
+        },
+  };
+
+  const def: { id: IdEscenario; nombre: string; sustrato: Dimension | null }[] = [
+    { id: "continuidad", nombre: "Continuidad", sustrato: dominante },
+    { id: "riesgo", nombre: "Declive", sustrato: "somatica" },
+    { id: "florecer", nombre: "Florecer", sustrato: sustratoFlor },
+  ];
+
+  return def.map(({ id, nombre, sustrato }) => {
+    const destino = destinos[id];
     const dx = Math.max(40, destino.x - inicio.x);
     const c1: Punto3 = { x: inicio.x + dx * 0.35, y: inicio.y, z: inicio.z };
     const c2: Punto3 = {
@@ -263,7 +366,15 @@ export function construirFantasmas(
     for (let i = 0; i <= muestras; i++) {
       puntos.push(bezierCubica(inicio, c1, c2, destino, i / muestras));
     }
-    return { dimension, probabilidad: prob, puntos, objetivoAncla: ancla };
+    return {
+      id,
+      nombre,
+      descripcion: descripciones[id],
+      probabilidad: probs[id],
+      sustrato,
+      puntos,
+      objetivoAncla: id === "florecer" ? ancla : null,
+    };
   });
 }
 

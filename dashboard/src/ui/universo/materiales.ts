@@ -10,6 +10,14 @@ import {
   COLORES_ESTADO,
   colorFuente,
 } from "@/ui/brain/tipos";
+import type { IdEscenario } from "./geometria";
+
+/** Color semántico por escenario de futuro (no por dimensión). */
+export const COLORES_ESCENARIO: Record<IdEscenario, number> = {
+  continuidad: 0x6aa9ff,
+  riesgo: 0xe0664f,
+  florecer: 0x6fe3a5,
+};
 
 /** Color numérico de una dimensión (paleta semántica del cerebro). */
 export function colorDimension(dimension: string): number {
@@ -76,22 +84,38 @@ export function materialAtomo(): THREE.ShaderMaterial {
 
 /**
  * Puntos suaves (partículas): disco redondo con alpha radial — los
- * "sedimentos" que fluyen por los afluentes y los ecos fantasma.
- * Escala por atributo ``aSize`` con atenuación de distancia.
+ * "sedimentos" que fluyen por los afluentes, la corriente del cauce
+ * y el polvo ambiental. ``aFase`` + ``uDeriva`` añaden vaivén suave
+ * (senos de baja frecuencia) sin tocar la posición lógica.
  */
-export function materialPuntosSuaves(escalaPx: number): THREE.ShaderMaterial {
+export function materialPuntosSuaves(
+  escalaPx: number,
+  deriva = 0,
+): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     transparent: true,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
-    uniforms: { uEscala: { value: escalaPx } },
+    uniforms: {
+      uEscala: { value: escalaPx },
+      uT: { value: 0 },
+      uDeriva: { value: deriva },
+    },
     vertexShader: `
       attribute float aSize;
+      attribute float aFase;
       varying vec3 vC;
       uniform float uEscala;
+      uniform float uT;
+      uniform float uDeriva;
       void main() {
         vC = color;
-        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vec3 p = position + uDeriva * vec3(
+          sin(uT * 0.13 + aFase * 1.7) * 5.0,
+          sin(uT * 0.21 + aFase) * 3.0,
+          cos(uT * 0.17 + aFase * 1.3) * 5.0
+        );
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
         gl_PointSize = aSize * (uEscala / -mv.z);
         gl_Position = projectionMatrix * mv;
       }`,
@@ -103,5 +127,54 @@ export function materialPuntosSuaves(escalaPx: number): THREE.ShaderMaterial {
         gl_FragColor = vec4(vC, a * 0.8);
       }`,
     vertexColors: true,
+  });
+}
+
+/**
+ * Cauce con corriente luminosa interna: bandas de energía viajan a
+ * lo largo del tubo (uv.x) + fresnel suave en el rim. ``intensidad``
+ * regula el brillo — fantasmas la modulan por probabilidad y el
+ * cauce principal la mantiene como fluir constante del agua.
+ */
+export function materialFlujo(
+  color: number,
+  intensidad: number,
+): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+    uniforms: {
+      uColor: { value: new THREE.Color(color) },
+      uT: { value: 0 },
+      uIntensidad: { value: intensidad },
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      varying vec3 vN;
+      varying vec3 vV;
+      void main() {
+        vUv = uv;
+        vN = normalize(normalMatrix * normal);
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vV = normalize(-mv.xyz);
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      varying vec2 vUv;
+      varying vec3 vN;
+      varying vec3 vV;
+      uniform vec3 uColor;
+      uniform float uT;
+      uniform float uIntensidad;
+      void main() {
+        // Bandas de corriente viajando hacia el futuro (uv.x crece con t).
+        float onda = pow(0.5 + 0.5 * sin(vUv.x * 55.0 - uT * 1.7), 3.0);
+        float latido = 0.9 + 0.1 * sin(uT * 1.1 + vUv.x * 18.0);
+        float fres = 0.45 + 0.55 * pow(1.0 - abs(dot(normalize(vN), normalize(vV))), 1.6);
+        float energia = (0.16 + onda * 0.85) * latido * fres * uIntensidad;
+        gl_FragColor = vec4(uColor * energia, energia);
+      }`,
   });
 }

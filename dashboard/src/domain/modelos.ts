@@ -105,8 +105,8 @@ export interface EventoActividad {
 export interface Relacion {
   origen_id: string;
   destino_id: string;
-  /** "explicita" = declarada al registrar; "semantica" = inferida por embedding. */
-  tipo: "explicita" | "semantica";
+  /** "explicita"/"semantica" del tejido; "cierra"/"reemplaza" del ciclo de vida. */
+  tipo: "explicita" | "semantica" | "cierra" | "reemplaza";
   peso: number;
 }
 

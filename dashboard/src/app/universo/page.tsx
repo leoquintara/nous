@@ -36,17 +36,19 @@ import type {
 } from "@/domain/modelos";
 import { CursorTemporal } from "@/ui/brain/controles";
 import {
-  construirFantasmas,
+  construirEscenarios,
   ctxDe,
   statsDimension,
   RIO,
-  type CauceFantasma,
   type CtxTemporal,
+  type Escenario,
   type EventoRio,
+  type StatsDimension,
 } from "@/ui/universo/geometria";
 import { PanelVistaUniverso } from "@/ui/universo/controles";
 import { usePrefsUniverso } from "@/ui/universo/usar-prefs-universo";
 import type { DatosRio } from "@/ui/universo/UniversoCanvas";
+import { COLORES_ESCENARIO } from "@/ui/universo/materiales";
 import { COLORES_DIMENSION } from "@/ui/brain/tipos";
 
 const UniversoCanvas = dynamic(
@@ -82,7 +84,7 @@ export default function PaginaUniverso() {
   const [reproduciendo, setReproduciendo] = useState(false);
   const [sel, setSel] = useState<Evento | null>(null);
   const [selFuente, setSelFuente] = useState<string | null>(null);
-  const [selFantasma, setSelFantasma] = useState<CauceFantasma | null>(null);
+  const [selFantasma, setSelFantasma] = useState<Escenario | null>(null);
   const [selObjetivo, setSelObjetivo] = useState<Objetivo | null>(null);
   const [panelMetas, setPanelMetas] = useState(true);
   const [panelVista, setPanelVista] = useState(false);
@@ -145,15 +147,42 @@ export default function PaginaUniverso() {
         const fuentes = [...conteo.entries()]
           .map(([id, count]) => ({ id, count }))
           .sort((a, b) => b.count - a.count);
+        // Sustrato estadístico de los escenarios: soporte por
+        // dimensión + compromisos abiertos que presionan el declive.
+        const ers: EventoRio[] = eventos.map((e) => ({
+          id: e.id,
+          ts: e.timestamp_unix,
+          dimension: e.dimension,
+          fuente: e.fuente ?? "desconocida",
+          amplitud: e.amplitud,
+          rama: e.rama,
+        }));
+        const stats = Object.fromEntries(
+          DIMENSIONES.map((d) => [d, statsDimension(d, ers, tMax)]),
+        ) as Record<Dimension, StatsDimension>;
+        const cerrados = new Set(
+          relaciones
+            .filter((r) => r.tipo === "cierra")
+            .map((r) => r.origen_id),
+        );
+        const loopsAbiertos = eventos.filter(
+          (e) =>
+            e.tipo === "compromiso" &&
+            !cerrados.has(e.id) &&
+            !e.reemplazado_por &&
+            !(e.expira_en != null && e.expira_en < tMax),
+        ).length;
         setRio({
           eventos,
           relaciones,
-          fantasmas: construirFantasmas(
+          escenarios: construirEscenarios({
             distribucion,
-            metas,
+            stats,
+            loopsAbiertos,
+            objetivos: metas,
             horizonte,
             ctx,
-          ),
+          }),
           objetivos: metas,
           ctx,
           horizonte,
@@ -379,19 +408,20 @@ export default function PaginaUniverso() {
         {/* Escenario del camino fantasma seleccionado. */}
         {selFantasma && rio && (
           <TarjetaEscenario
-            fantasma={selFantasma}
-            stats={statsDimension(
-              selFantasma.dimension,
-              eventosRio,
-              rio.ctx.tMax,
-            )}
+            escenario={selFantasma}
+            stats={
+              selFantasma.sustrato
+                ? statsDimension(selFantasma.sustrato, eventosRio, rio.ctx.tMax)
+                : null
+            }
             trayectoria={
               trayectorias.find(
                 (t) =>
                   t.activa &&
+                  selFantasma.sustrato != null &&
                   t.descripcion
                     .toLowerCase()
-                    .includes(selFantasma.dimension),
+                    .includes(selFantasma.sustrato),
               ) ?? null
             }
             alCerrar={() => setSelFantasma(null)}
@@ -671,40 +701,39 @@ function TarjetaFuente({
 
 /**
  * Tarjeta de escenario: qué significa que el cauce se vaya por este
- * camino — probabilidad, impulso reciente de la dimensión, ancla de
- * objetivo y trayectoria activa que lo sostiene.
+ * camino — probabilidad, narrativa generada con cifras reales,
+ * soporte de la dimensión sustrato y trayectoria activa.
  */
 function TarjetaEscenario({
-  fantasma,
+  escenario,
   stats,
   trayectoria,
   alCerrar,
 }: {
-  fantasma: CauceFantasma;
-  stats: { total: number; recientes: number; amplitudMedia: number };
+  escenario: Escenario;
+  stats: { total: number; recientes: number; amplitudMedia: number } | null;
   trayectoria: Trayectoria | null;
   alCerrar: () => void;
 }) {
-  const color = COLORES_DIMENSION[fantasma.dimension];
+  const hex = `#${COLORES_ESCENARIO[escenario.id].toString(16).padStart(6, "0")}`;
   return (
     <Tarjeta
-      titulo={`camino ${fantasma.dimension} · ${Math.round(fantasma.probabilidad * 100)}%`}
-      color={color}
+      titulo={`${escenario.nombre} · ${Math.round(escenario.probabilidad * 100)}%`}
+      color={hex}
       alCerrar={alCerrar}
     >
-      <p className="mt-2 text-sm leading-snug">
-        {fantasma.objetivoAncla
-          ? `Converge hacia ◆ ${fantasma.objetivoAncla.titulo} (${fechaCorta(fantasma.objetivoAncla.fecha_objetivo)}).`
-          : "Sin objetivo ancla — extrapolación libre de la trayectoria."}
-      </p>
-      <p className="texto-suave mt-2 text-[0.68rem] leading-snug">
-        Impulso: {stats.recientes} eventos en 30d ({stats.total} en la
-        ventana) · amplitud media {stats.amplitudMedia.toFixed(2)}
-      </p>
+      <p className="mt-2 text-sm leading-snug">{escenario.descripcion}</p>
+      {stats && escenario.sustrato && (
+        <p className="texto-suave mt-2 text-[0.68rem] leading-snug">
+          Sustrato {escenario.sustrato}: {stats.recientes} eventos en
+          30d ({stats.total} en la ventana) · amplitud media{" "}
+          {stats.amplitudMedia.toFixed(2)}
+        </p>
+      )}
       {trayectoria && (
         <p
           className="mt-2 rounded-lg px-2 py-1.5 text-[0.65rem] leading-snug"
-          style={{ background: "var(--surface-vidrio)", color }}
+          style={{ background: "var(--surface-vidrio)", color: hex }}
         >
           Trayectoria activa: {trayectoria.descripcion} · confianza{" "}
           {Math.round(trayectoria.confianza * 100)}%

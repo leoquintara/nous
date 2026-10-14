@@ -30,14 +30,16 @@ import {
   posEnRio,
   ticksDeFecha,
   xEnTiempo,
-  type CauceFantasma,
   type CtxTemporal,
+  type Escenario,
   type EventoRio,
 } from "./geometria";
 import {
+  COLORES_ESCENARIO,
   colorDeFuente,
   colorDimension,
   materialAtomo,
+  materialFlujo,
   materialPuntosSuaves,
 } from "./materiales";
 import type { PrefsUniverso } from "./prefs";
@@ -46,7 +48,7 @@ import type { PrefsUniverso } from "./prefs";
 export interface DatosRio {
   eventos: Evento[];
   relaciones: Relacion[];
-  fantasmas: CauceFantasma[];
+  escenarios: Escenario[];
   objetivos: Objetivo[];
   ctx: CtxTemporal;
   /** Segundos de zona de proyección tras tMax. */
@@ -69,7 +71,7 @@ interface Props {
   /** Click en un afluente: muestra la ficha de la fuente. */
   alSeleccionarFuente?: (fuente: string) => void;
   /** Click en un cauce-fantasma: muestra el escenario del camino. */
-  alSeleccionarFantasma?: (fantasma: CauceFantasma) => void;
+  alSeleccionarFantasma?: (escenario: Escenario) => void;
   /** Click en un faro: muestra la ficha del objetivo. */
   alSeleccionarObjetivo?: (objetivo: Objetivo) => void;
 }
@@ -210,15 +212,9 @@ export function UniversoCanvas({
         malla.setMatrixAt(i, dummy.matrix);
       }
 
-      // ── Cauces por rama ──────────────────────────────────────
-      const matCauce = (color: number, opacidad: number) =>
-        new THREE.MeshBasicMaterial({
-          color,
-          transparent: true,
-          opacity: opacidad,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-        });
+      // ── Cauces por rama — corriente luminosa interna ─────────
+      // Todos los materiales de flujo comparten el reloj uT.
+      const matsFlujo: THREE.ShaderMaterial[] = [];
       // Capas togglables: cada grupo responde a una opción de `vista`.
       const grupoRamas = new THREE.Group();
       const grupoAfluentes = new THREE.Group();
@@ -237,6 +233,11 @@ export function UniversoCanvas({
           const p = posEnRio(t, carril, fork, ctx);
           pts.push(new THREE.Vector3(p.x, p.y - 1.2, p.z));
         }
+        const mat = materialFlujo(
+          carril === 0 ? 0x5b9ef4 : colorDeFuente(rama, rio.fuentes),
+          carril === 0 ? 0.55 : 0.34,
+        );
+        matsFlujo.push(mat);
         const tubo = new THREE.Mesh(
           new THREE.TubeGeometry(
             new THREE.CatmullRomCurve3(pts),
@@ -244,11 +245,40 @@ export function UniversoCanvas({
             carril === 0 ? 1.4 : 0.8,
             8,
           ),
-          matCauce(carril === 0 ? 0x5b9ef4 : colorDeFuente(rama, rio.fuentes), carril === 0 ? 0.34 : 0.26),
+          mat,
         );
         // El cauce main es estructural; las bifurcaciones se apagan.
         (carril === 0 ? scene : grupoRamas).add(tubo);
       }
+
+      // Corriente viva del cauce principal: partículas viajando
+      // pasado → presente dentro del tubo.
+      const N_CORRIENTE = 90;
+      const corrGeo = new THREE.BufferGeometry();
+      const corrPos = new Float32Array(N_CORRIENTE * 3);
+      const corrCol = new Float32Array(N_CORRIENTE * 3);
+      const corrSz = new Float32Array(N_CORRIENTE);
+      const corrFase = new Float32Array(N_CORRIENTE);
+      const corrVida = new Float32Array(N_CORRIENTE);
+      for (let i = 0; i < N_CORRIENTE; i++) {
+        corrVida[i] = Math.random();
+        tmpC.setHSL(0.58, 0.7, 0.72 + Math.random() * 0.2);
+        corrCol[i * 3] = tmpC.r;
+        corrCol[i * 3 + 1] = tmpC.g;
+        corrCol[i * 3 + 2] = tmpC.b;
+        corrSz[i] = 3 + Math.random() * 4;
+        corrFase[i] = Math.random() * Math.PI * 2;
+      }
+      corrGeo.setAttribute("position", new THREE.BufferAttribute(corrPos, 3));
+      corrGeo.setAttribute("color", new THREE.BufferAttribute(corrCol, 3));
+      corrGeo.setAttribute("aSize", new THREE.BufferAttribute(corrSz, 1));
+      corrGeo.setAttribute("aFase", new THREE.BufferAttribute(corrFase, 1));
+      const corriente = new THREE.Points(
+        corrGeo,
+        materialPuntosSuaves(H * 0.5, 0.4),
+      );
+      corriente.frustumCulled = false;
+      scene.add(corriente);
 
       // ── Afluentes por fuente ─────────────────────────────────
       const nacimiento = new Map<string, number>();
@@ -276,6 +306,7 @@ export function UniversoCanvas({
       const afPos: number[] = [];
       const afCol: number[] = [];
       const afSize: number[] = [];
+      const afFase: number[] = [];
       rio.fuentes.slice(0, MAX_AFUENTES).forEach((f, idx) => {
         const naci = nacimiento.get(f.id);
         if (naci === undefined) return;
@@ -290,9 +321,11 @@ export function UniversoCanvas({
           pts.push(new THREE.Vector3(p.x, p.y, p.z));
         }
         const color = colorDeFuente(f.id, rio.fuentes);
+        const mat = materialFlujo(color, 0.5);
+        matsFlujo.push(mat);
         const mallaAf = new THREE.Mesh(
           new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 90, 0.45, 6),
-          matCauce(color, 0.22),
+          mat,
         );
         mallaAf.userData.afluenteIdx = idx;
         grupoAfluentes.add(mallaAf);
@@ -304,54 +337,40 @@ export function UniversoCanvas({
           afPos.push(0, 0, 0);
           afCol.push(tmpC.r, tmpC.g, tmpC.b);
           afSize.push(5);
+          afFase.push(Math.random() * Math.PI * 2);
         }
       });
       afGeo.setAttribute("position", new THREE.Float32BufferAttribute(afPos, 3));
       afGeo.setAttribute("color", new THREE.Float32BufferAttribute(afCol, 3));
       afGeo.setAttribute("aSize", new THREE.Float32BufferAttribute(afSize, 1));
-      const sedPuntos = new THREE.Points(afGeo, materialPuntosSuaves(H * 0.5));
+      afGeo.setAttribute("aFase", new THREE.Float32BufferAttribute(afFase, 1));
+      const sedPuntos = new THREE.Points(afGeo, materialPuntosSuaves(H * 0.5, 0.35));
       sedPuntos.frustumCulled = false;
       grupoAfluentes.add(sedPuntos);
 
-      // ── Cauces-fantasma (futuros probables) ──────────────────
+      // ── Cauces-fantasma: escenarios de futuro con corriente ──
+      // Cada tubo lleva un materialFlujo intenso — energía viajando
+      // hacia el destino, opacidad modulada por la probabilidad.
       interface EntradaFantasma {
         mesh: THREE.Mesh;
-        mat: THREE.MeshBasicMaterial;
-        fantasma: CauceFantasma;
-        pts: THREE.Vector3[];
-        puntosEco: THREE.Points;
+        mat: THREE.ShaderMaterial;
+        escenario: Escenario;
       }
       const caucesF: EntradaFantasma[] = [];
-      for (const f of rio.fantasmas) {
-        const color = colorDimension(f.dimension);
-        const mat = matCauce(color, 0.2);
+      for (const f of rio.escenarios) {
+        const color = COLORES_ESCENARIO[f.id];
+        const mat = materialFlujo(color, 0.8);
+        matsFlujo.push(mat);
         const pts = f.puntos.map((p) => new THREE.Vector3(p.x, p.y - 1.2, p.z));
         const mallaF = new THREE.Mesh(
           new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 70, 0.6, 6),
           mat,
         );
         grupoFantasmas.add(mallaF);
-        // Ecos de eventos futuros: puntos que fluyen por el cauce.
-        const geo = new THREE.BufferGeometry();
-        const np = 24;
-        const arr = new Float32Array(np * 3);
-        const cols = new Float32Array(np * 3);
-        const szs = new Float32Array(np);
-        tmpC.set(color);
-        for (let i = 0; i < np; i++) {
-          cols[i * 3] = tmpC.r; cols[i * 3 + 1] = tmpC.g; cols[i * 3 + 2] = tmpC.b;
-          szs[i] = 4;
-        }
-        geo.setAttribute("position", new THREE.BufferAttribute(arr, 3));
-        geo.setAttribute("color", new THREE.BufferAttribute(cols, 3));
-        geo.setAttribute("aSize", new THREE.BufferAttribute(szs, 1));
-        const eco = new THREE.Points(geo, materialPuntosSuaves(H * 0.5));
-        eco.frustumCulled = false;
-        grupoFantasmas.add(eco);
-        caucesF.push({ mesh: mallaF, mat, fantasma: f, pts, puntosEco: eco });
-        // Etiqueta del escenario: "camino cognitiva · 41%".
+        caucesF.push({ mesh: mallaF, mat, escenario: f });
+        // Etiqueta del escenario: "Continuidad · 52%".
         anotar(
-          `${f.dimension} · ${Math.round(f.probabilidad * 100)}%`,
+          `${f.nombre} · ${Math.round(f.probabilidad * 100)}%`,
           pts[Math.floor(pts.length * 0.62)].clone().add(new THREE.Vector3(0, 8, 0)),
         );
       }
@@ -482,10 +501,13 @@ export function UniversoCanvas({
         pCol[i * 3] = tmpC.r; pCol[i * 3 + 1] = tmpC.g; pCol[i * 3 + 2] = tmpC.b;
         pSz[i] = 2 + Math.random() * 3;
       }
+      const pFase = new Float32Array(NP);
+      for (let i = 0; i < NP; i++) pFase[i] = Math.random() * Math.PI * 2;
       polvoGeo.setAttribute("position", new THREE.BufferAttribute(pArr, 3));
       polvoGeo.setAttribute("color", new THREE.BufferAttribute(pCol, 3));
       polvoGeo.setAttribute("aSize", new THREE.BufferAttribute(pSz, 1));
-      const polvo = new THREE.Points(polvoGeo, materialPuntosSuaves(H * 0.5));
+      polvoGeo.setAttribute("aFase", new THREE.BufferAttribute(pFase, 1));
+      const polvo = new THREE.Points(polvoGeo, materialPuntosSuaves(H * 0.5, 1));
       polvo.frustumCulled = false;
       scene.add(polvo);
 
@@ -529,7 +551,7 @@ export function UniversoCanvas({
         if (hitFantasma.length) {
           const c = caucesF.find((x) => x.mesh === hitFantasma[0].object);
           if (c) {
-            selFantasmaRef.current?.(c.fantasma);
+            selFantasmaRef.current?.(c.escenario);
             return;
           }
         }
@@ -563,12 +585,12 @@ export function UniversoCanvas({
         camera.updateProjectionMatrix();
         renderer.setSize(w, h);
         composer.setSize(w, h);
-        for (const m of [sedPuntos.material, polvo.material]) {
+        for (const m of [
+          sedPuntos.material,
+          polvo.material,
+          corriente.material,
+        ]) {
           (m as THREE.ShaderMaterial).uniforms.uEscala.value = h * 0.5;
-        }
-        for (const c of caucesF) {
-          (c.puntosEco.material as THREE.ShaderMaterial).uniforms.uEscala.value =
-            h * 0.5;
         }
       };
       const ro = new ResizeObserver(onResize);
@@ -615,6 +637,16 @@ export function UniversoCanvas({
             afSizeAttr.setX(i, s.carril <= ultimoMaxAf ? 5 : 0),
           );
           afSizeAttr.needsUpdate = true;
+        }
+
+        const tSec = tNow * 0.001;
+        for (const m of matsFlujo) m.uniforms.uT.value = tSec;
+        for (const m of [
+          sedPuntos.material,
+          polvo.material,
+          corriente.material,
+        ]) {
+          (m as THREE.ShaderMaterial).uniforms.uT.value = tSec;
         }
 
         const cur = cursorRef.current;
@@ -668,30 +700,27 @@ export function UniversoCanvas({
         });
         posAttr.needsUpdate = true;
 
-        // Cauces-fantasma: se encienden al cruzar el ahora; los ecos
-        // fluyen por la curva como sedimentos del futuro.
+        // Corriente del cauce principal: cada partícula viaja el span.
+        const corrAttr = corrGeo.getAttribute("position") as THREE.BufferAttribute;
+        for (let i = 0; i < N_CORRIENTE; i++) {
+          corrVida[i] += 0.0006 + (i % 5) * 0.00012;
+          if (corrVida[i] > 1) corrVida[i] = 0;
+          const t = ctx.tMin + ctx.span * corrVida[i];
+          const p = posEnRio(t, 0, null, ctx);
+          corrAttr.setXYZ(i, p.x, p.y - 0.6, p.z);
+        }
+        corrAttr.needsUpdate = true;
+
+        // Escenarios de futuro: visibles según `canales`; su corriente
+        // interna (uT) brilla más al acercarse el playhead al ahora.
         for (const c of caucesF) {
-          const prob = c.fantasma.probabilidad;
-          const activo =
-            v.fantasmas && v.fantasmaDims.includes(c.fantasma.dimension);
+          const prob = c.escenario.probabilidad;
+          const activo = v.fantasmas && v.canales.includes(c.escenario.id);
           c.mesh.visible = activo;
-          c.puntosEco.visible = activo;
           if (!activo) continue;
-          c.mat.color.setHex(
-            colDims.get(c.fantasma.dimension) ??
-              colorDimension(c.fantasma.dimension),
-          );
-          c.mat.opacity =
-            (prob * (0.16 + gp * 0.4) + 0.04 * Math.sin(tNow * 0.002)) *
+          c.mat.uniforms.uIntensidad.value =
+            (prob * (0.5 + gp * 1.1) + 0.05 * Math.sin(tNow * 0.002)) *
             v.intensidadFantasma;
-          const g = c.puntosEco.geometry.getAttribute("position") as THREE.BufferAttribute;
-          const npts = g.count;
-          for (let i = 0; i < npts; i++) {
-            const f = (tNow * 0.00005 + i / npts) % 1;
-            const p = c.pts[Math.floor(f * (c.pts.length - 1))];
-            g.setXYZ(i, p.x, p.y + 1.2, p.z);
-          }
-          g.needsUpdate = true;
         }
 
         // Faros de objetivos: anillo expandiéndose + pulso del núcleo.
