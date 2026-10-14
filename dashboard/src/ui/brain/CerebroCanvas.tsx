@@ -542,6 +542,9 @@ export function CerebroCanvas({
       const horizonteD = Math.max(spanD * 0.15, 3 * 86_400);
       const estadoBase = nodes.map((n) => n.estado);
       const nacimiento = new Float32Array(N).fill(1);
+      // Radio de render por nodo (unidades de mundo): el picking en
+      // pantalla lo usa como zona de acierto. Se actualiza cada frame.
+      const radiosW = new Float32Array(N);
       /** Altura en la hélice temporal para un instante (ft ∈ ℝ). */
       const yEnTiempo = (t: number) =>
         (((t - tMinD) / spanD) - 0.5) * 320;
@@ -1026,6 +1029,8 @@ export function CerebroCanvas({
       const ndc = new THREE.Vector2();
       const planoDrag = new THREE.Plane();
       const hitV = new THREE.Vector3();
+      const vPickA = new THREE.Vector3();
+      const vPickB = new THREE.Vector3();
       const lodVisible = (i: number) => {
         const P = livePrefs.current;
         if (ocultasRef.current?.has(nodes[i].fuente)) return false;
@@ -1046,19 +1051,50 @@ export function CerebroCanvas({
       const seleccionable = (i: number) =>
         nacimiento[i] > 0.01 &&
         !ocultasRef.current?.has(nodes[i].fuente);
-      /** Devuelve el índice del nodo bajo el cursor o -1. */
+      /**
+       * Picking en espacio de pantalla: proyecta cada nodo a píxeles
+       * y elige el más cercano dentro de su radio visual. El raycast
+       * contra la InstancedMesh fallaba con nodos atenuados por LOD —
+       * el cursor ve un punto clickable pero la esfera era más
+       * pequeña que el cono del rayo.
+       */
+      const RADIO_MIN_PX = 13;
       const pick = (ev: PointerEvent | MouseEvent) => {
         const r = renderer.domElement.getBoundingClientRect();
-        ndc.set(
-          ((ev.clientX - r.left) / r.width) * 2 - 1,
-          -((ev.clientY - r.top) / r.height) * 2 + 1,
-        );
-        ray.setFromCamera(ndc, camera);
-        for (const h of ray.intersectObject(malla)) {
-          const i = h.instanceId;
-          if (i != null && seleccionable(i)) return i;
+        const px = ev.clientX - r.left;
+        const py = ev.clientY - r.top;
+        hitV.setFromMatrixColumn(camera.matrixWorld, 0);
+        let mejor = -1;
+        let mejorD2 = Infinity;
+        let mejorZ = Infinity;
+        for (let i = 0; i < N; i++) {
+          if (!seleccionable(i)) continue;
+          vPickA.set(pts[i].x, pts[i].y, pts[i].z).project(camera);
+          if (vPickA.z > 1) continue;
+          const sx = (vPickA.x * 0.5 + 0.5) * r.width;
+          const sy = (-vPickA.y * 0.5 + 0.5) * r.height;
+          vPickB
+            .set(
+              pts[i].x + hitV.x * radiosW[i],
+              pts[i].y + hitV.y * radiosW[i],
+              pts[i].z + hitV.z * radiosW[i],
+            )
+            .project(camera);
+          const radioPx = Math.max(
+            RADIO_MIN_PX,
+            Math.abs(vPickB.x - vPickA.x) * 0.5 * r.width * 1.3,
+          );
+          const d2 = (sx - px) ** 2 + (sy - py) ** 2;
+          if (
+            d2 <= radioPx * radioPx &&
+            (d2 < mejorD2 || (d2 === mejorD2 && vPickA.z < mejorZ))
+          ) {
+            mejor = i;
+            mejorD2 = d2;
+            mejorZ = vPickA.z;
+          }
         }
-        return -1;
+        return mejor;
       };
       let drag: { x: number; y: number; moved: boolean; node: number | null } | null =
         null;
@@ -1202,6 +1238,7 @@ export function CerebroCanvas({
             const sh = TEMBLOR[nodes[i].estado];
             wr *= 1 + sh[0] * Math.sin(tNow * 0.004 * sh[1] + i * 1.618);
           }
+          radiosW[i] = wr;
           dummy.position.set(p.x, p.y, p.z);
           dummy.scale.setScalar(wr);
           dummy.updateMatrix();
