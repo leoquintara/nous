@@ -208,7 +208,8 @@ export default function PaginaUniverso() {
     setCargandoIA(true);
     try {
       const r = await memoria.predecirIA({
-        origen_unix: origenEnfocado ?? undefined,
+        origen_unix:
+          origenEnfocado != null ? Math.floor(origenEnfocado) : undefined,
         horizonte_dias: 30,
         candidatos: escenarios.map((e) => ({
           id: e.id,
