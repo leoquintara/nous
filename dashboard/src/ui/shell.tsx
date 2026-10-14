@@ -8,8 +8,10 @@
 import {
   Activity,
   Brain,
+  Compress,
   Cpu,
   Database,
+  Expand,
   HalfMoon,
   LogOut,
   Planet,
@@ -21,7 +23,7 @@ import {
 } from "iconoir-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import { usarApp } from "@/ui/proveedor-app";
 
@@ -49,6 +51,13 @@ export function Shell({
   const { tema, alternarTema, token, cerrarSesion } = usarApp();
   const pathname = usePathname();
   const router = useRouter();
+  const [pantalla, setPantalla] = useState(false);
+
+  useEffect(() => {
+    const alCambiar = () => setPantalla(document.fullscreenElement != null);
+    document.addEventListener("fullscreenchange", alCambiar);
+    return () => document.removeEventListener("fullscreenchange", alCambiar);
+  }, []);
 
   useEffect(() => {
     if (token === null && typeof window !== "undefined") {
@@ -61,7 +70,13 @@ export function Shell({
 
   return (
     <div className="flex min-h-dvh flex-col">
-      <header className="vidrio-fuerte sticky top-3 z-20 mx-4 mt-3 flex items-center gap-4 px-5 py-3">
+      <header
+        className="vidrio-fuerte sticky top-3 z-20 mx-4 mt-3 flex items-center gap-4 px-5 py-3"
+        style={{
+          backdropFilter: "blur(10px) saturate(1.8)",
+          WebkitBackdropFilter: "blur(10px) saturate(1.8)",
+        }}
+      >
         <Link href="/" className="flex items-center gap-2 font-semibold">
           <Brain width={22} height={22} style={{ color: "var(--primary)" }} />
           Nous
@@ -86,6 +101,24 @@ export function Shell({
             </Link>
           ))}
         </nav>
+        <button
+          onClick={() => {
+            if (document.fullscreenElement) {
+              void document.exitFullscreen();
+            } else {
+              void document.documentElement.requestFullscreen();
+            }
+          }}
+          aria-label={pantalla ? "Salir de pantalla completa" : "Pantalla completa"}
+          title={pantalla ? "Salir de pantalla completa" : "Pantalla completa"}
+          className="vidrio texto-suave rounded-xl p-2"
+        >
+          {pantalla ? (
+            <Compress width={16} height={16} />
+          ) : (
+            <Expand width={16} height={16} />
+          )}
+        </button>
         <button
           onClick={alternarTema}
           aria-label={tema === "dark" ? "Tema claro" : "Tema oscuro"}
