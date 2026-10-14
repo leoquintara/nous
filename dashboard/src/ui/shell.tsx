@@ -35,7 +35,7 @@ const ENLACES = [
   { href: "/proyeccion", etiqueta: "Proyección", Icono: Timer },
   { href: "/benchmarks", etiqueta: "Benchmarks", Icono: Refresh },
   { href: "/modelos", etiqueta: "Modelos", Icono: Cpu },
-  { href: "/trazas", etiqueta: "Trazas", Icono: Activity },
+  { href: "/trazas", etiqueta: "Logs", Icono: Activity },
   { href: "/importar", etiqueta: "Importar", Icono: Upload },
 ] as const;
 
