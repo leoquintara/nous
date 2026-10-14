@@ -359,47 +359,49 @@ export default function PaginaCerebro() {
           ) : (
             <div />
           )}
-          {iaDisponible && (
-            <button
-              type="button"
-              onClick={() => void analizarIA()}
-              disabled={cargandoIA}
-              title="Analizar el estado de la memoria con IA"
-              className="vidrio-fuerte texto-suave pointer-events-auto flex items-center gap-1.5 self-end rounded-xl px-3 py-2 text-xs transition hover:text-(--ink) disabled:opacity-50"
-            >
-              <Cpu
-                width={14}
-                height={14}
-                className={cargandoIA ? "animate-pulse" : ""}
-                style={{ color: "var(--primary)" }}
-              />
-              {cargandoIA ? "Analizando…" : "Analizar con IA"}
-            </button>
-          )}
-          <div className="vidrio-fuerte pointer-events-auto flex flex-col">
-            <button
-              type="button"
-              onClick={alternarPanel}
-              aria-label="Ajustes del grafo"
-              aria-expanded={panelAbierto}
-              className="texto-suave self-end rounded-lg p-2 transition-transform duration-200 hover:scale-110 active:scale-90 hover:text-(--ink)"
-            >
-              <Settings
-                width={18}
-                height={18}
-                className={`transition-transform duration-300 ease-out ${panelAbierto ? "rotate-180" : ""}`}
-              />
-            </button>
-            {panelAbierto && (
-              <PanelControl
-                prefs={prefs}
-                setPref={setPref}
-                coincidencias={coincidencias}
-                modoColor={prefs.modoColor}
-                fuentes={datos?.fuentes ?? []}
-                ramas={datos?.ramas ?? []}
-              />
+          <div className="flex items-start gap-2">
+            {iaDisponible && (
+              <button
+                type="button"
+                onClick={() => void analizarIA()}
+                disabled={cargandoIA}
+                title="Analizar el estado de la memoria con IA"
+                className="vidrio-fuerte texto-suave pointer-events-auto flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs transition hover:text-(--ink) disabled:opacity-50"
+              >
+                <Cpu
+                  width={14}
+                  height={14}
+                  className={cargandoIA ? "animate-pulse" : ""}
+                  style={{ color: "var(--primary)" }}
+                />
+                {cargandoIA ? "Analizando…" : "Analizar con IA"}
+              </button>
             )}
+            <div className="vidrio-fuerte pointer-events-auto flex flex-col">
+              <button
+                type="button"
+                onClick={alternarPanel}
+                aria-label="Ajustes del grafo"
+                aria-expanded={panelAbierto}
+                className="texto-suave self-end rounded-lg p-2 transition-transform duration-200 hover:scale-110 active:scale-90 hover:text-(--ink)"
+              >
+                <Settings
+                  width={18}
+                  height={18}
+                  className={`transition-transform duration-300 ease-out ${panelAbierto ? "rotate-180" : ""}`}
+                />
+              </button>
+              {panelAbierto && (
+                <PanelControl
+                  prefs={prefs}
+                  setPref={setPref}
+                  coincidencias={coincidencias}
+                  modoColor={prefs.modoColor}
+                  fuentes={datos?.fuentes ?? []}
+                  ramas={datos?.ramas ?? []}
+                />
+              )}
+            </div>
           </div>
         </div>
 
