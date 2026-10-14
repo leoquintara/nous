@@ -377,10 +377,18 @@ def _ts_iso(valor: Any) -> int | None:
 async def _leer_memlord_api(
     cli: ClienteMCP, fuente: str
 ) -> tuple[list[FilaEvento], list[tuple[int, int]], int]:
-    """Descarga memorias memlord: workspaces → tool de listado."""
+    """Descarga memorias memlord: list_memories paginado → get_memory.
+
+    ``list_memories`` devuelve registros slim (sin contenido), así que
+    el cuerpo se pide con ``get_memory(name, workspace)`` por nombre —
+    N+1 deliberado, es una migración puntual.
+    """
     from src.cli.importadores import _fila_desde_obj
 
     tools = await cli.listar_tools()
+    if "list_memories" in tools and "get_memory" in tools:
+        return await _memlord_paginas(cli, fuente)
+    # Fallback: cualquier otra tool de listado que anuncie la instancia.
     tool = next((t for t in _TOOLS_MEMORIAS if t in tools), None)
     if tool is None:
         raise ErrorRemoto(
@@ -408,6 +416,78 @@ async def _leer_memlord_api(
                 logger.warning("Memoria memlord descartada: %s", exc)
                 errores += 1
     return filas, [], errores
+
+
+async def _memlord_paginas(
+    cli: ClienteMCP,
+    fuente: str,
+) -> tuple[list[FilaEvento], list[tuple[int, int]], int]:
+    """Recorre list_memories por páginas y pide el contenido por nombre."""
+    filas: list[FilaEvento] = []
+    errores = 0
+    vistos = 0
+    pagina = 1
+    while len(filas) < _MAX_MEMORIAS:
+        datos = await cli.llamar(
+            "list_memories", {"page": pagina, "page_size": 100}
+        )
+        items = _extraer_lista(datos, ("items", "memories", "results"))
+        total = datos.get("total") if isinstance(datos, dict) else None
+        if not items:
+            break
+        vistos += len(items)
+        for item in items:
+            nombre = item.get("name")
+            if not nombre:
+                continue
+            try:
+                detalle = await cli.llamar(
+                    "get_memory",
+                    {
+                        "name": nombre,
+                        **(
+                            {"workspace": str(item["workspace"])}
+                            if item.get("workspace")
+                            else {}
+                        ),
+                    },
+                )
+                filas.append(_fila_memlord(detalle or item, fuente))
+            except (ErrorRemoto, ValueError) as exc:
+                logger.warning("Memoria memlord descartada: %s", exc)
+                errores += 1
+        if len(items) < 100 or (
+            isinstance(total, int | float) and vistos >= int(total)
+        ):
+            break
+        pagina += 1
+    return filas, [], errores
+
+
+def _fila_memlord(obj: dict[str, Any], fuente: str) -> FilaEvento:
+    """Normaliza un MemoryDetail de memlord a FilaEvento con id estable."""
+    from src.cli.importadores import _fila_base
+    nombre = str(obj.get("name") or "")
+    contenido = str(obj.get("content") or obj.get("text") or "")
+    if not contenido:
+        raise ValueError("memoria sin contenido")
+    tags = obj.get("tags")
+    lista_tags = list(tags) if isinstance(tags, list | set | tuple) else []
+    workspace = obj.get("workspace") or obj.get("workspace_name")
+    if workspace:
+        lista_tags.append(str(workspace))
+    return _fila_base(
+        f"{nombre}\n\n{contenido}".strip(),
+        fuente,
+        lista_tags or None,
+        ts=_ts_iso(obj.get("created_at")),
+        amplitud=0.6 if obj.get("memory_type") == "decision" else 0.5,
+        evento_id=str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL, f"memlord:{workspace or ''}:{nombre}"
+            )
+        ),
+    )
 
 
 async def _workspaces_memlord(

@@ -129,48 +129,46 @@ async def test_gbrain_importa_facts_globales() -> None:
 
 
 @pytest.mark.asyncio
-async def test_memlord_importa_por_workspace() -> None:
-    """memlord: list_workspaces → tool de listado con workspace como arg."""
+async def test_memlord_importa_con_paginacion_y_detalle() -> None:
+    """memlord: list_memories paginado (slim) → get_memory por nombre."""
     pedidos: list[dict[str, Any]] = []
 
-    def retrieve(args: dict[str, Any]) -> dict[str, Any]:
+    def list_memories(args: dict[str, Any]) -> dict[str, Any]:
         pedidos.append(args)
-        if args.get("workspace") == "personal":
+        if args.get("page") == 1:
             return {
-                "memories": [
+                "items": [
                     {
                         "name": "preferencia-editor",
-                        "content": "usa neovim",
                         "memory_type": "preference",
-                        "tags": ["dev"],
+                        "workspace": "personal",
                     }
-                ]
+                ],
+                "total": 1,
+                "page": 1,
+                "page_size": 100,
             }
-        return {"memories": []}
+        return {"items": [], "total": 1, "page": 2, "page_size": 100}
 
     herramientas = {
         "initialize": {"result": {}},
         "tools/list": {
             "result": {
                 "tools": [
-                    {
-                        "name": "retrieve_memory",
-                        "inputSchema": {
-                            "properties": {
-                                "workspace": {"type": "string"},
-                                "limit": {"type": "number"},
-                                "query": {"type": "string"},
-                            }
-                        },
-                    },
-                    {"name": "list_workspaces", "inputSchema": {}},
+                    {"name": "list_memories", "inputSchema": {}},
+                    {"name": "get_memory", "inputSchema": {}},
                 ]
             }
         },
-        "tool:list_workspaces": {
-            "workspaces": [{"name": "personal"}, {"name": "trabajo"}]
+        "tool:list_memories": list_memories,
+        "tool:get_memory": lambda args: {
+            "name": args["name"],
+            "content": "usa neovim",
+            "memory_type": "preference",
+            "workspace_name": "personal",
+            "tags": ["dev"],
+            "created_at": "2026-01-05T10:00:00+00:00",
         },
-        "tool:retrieve_memory": retrieve,
     }
 
     filas, _, errores = await leer_fuente_remota(
@@ -184,9 +182,9 @@ async def test_memlord_importa_por_workspace() -> None:
     assert errores == 0
     assert len(filas) == 1
     assert "usa neovim" in filas[0]["contenido"]
-    # Se pidió una vez por workspace, con limit/query rellenos del schema.
-    assert {p.get("workspace") for p in pedidos} == {"personal", "trabajo"}
-    assert all(p.get("limit") == 2000 for p in pedidos)
+    assert filas[0]["timestamp_unix"] == 1767607200
+    # "dev" + nombre del workspace como tag de procedencia.
+    assert set(filas[0]["tags"]) >= {"dev", "personal"}
 
 
 @pytest.mark.asyncio
