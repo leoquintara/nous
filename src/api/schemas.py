@@ -250,11 +250,16 @@ class ImportarRequest(BaseModel):
     """Parámetros de una migración de memoria hacia Nous.
 
     ``ruta`` es un archivo o directorio en la máquina donde corre el
-    backend — local-first: la migración no sale del equipo.
+    backend — local-first: la migración no sale del equipo. Para
+    ``gbrain``/``memlord`` se puede indicar ``url`` del servidor MCP
+    (streamable-HTTP) y ``token`` Bearer: Nous descarga las memorias
+    directamente de la instancia en vez de leer un export.
     """
 
     formato: Literal["auto", "jsonl", "json", "obsidian", "gbrain", "memlord"]
-    ruta: str = Field(min_length=1, max_length=500)
+    ruta: str | None = Field(default=None, min_length=1, max_length=500)
+    url: str | None = Field(default=None, min_length=8, max_length=500)
+    token: str | None = Field(default=None, max_length=500)
     fuente: str | None = Field(default=None, max_length=50)
     rama: str | None = Field(default=None, max_length=64)
     vista_previa: bool = False

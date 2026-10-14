@@ -41,12 +41,12 @@ const FORMATOS: { id: Formato; nombre: string; detalle: string }[] = [
   {
     id: "memlord",
     nombre: "memlord",
-    detalle: "Export JSON/JSONL de store_memory",
+    detalle: "Se conecta a la API MCP de la instancia",
   },
   {
     id: "gbrain",
     nombre: "gbrain",
-    detalle: "Páginas .md o export {fact|content}",
+    detalle: "Se conecta a la API MCP de la instancia",
   },
   {
     id: "obsidian",
@@ -79,6 +79,8 @@ export default function PaginaImportar() {
   const { memoria } = usarApp();
   const [formato, setFormato] = useState<Formato>("memlord");
   const [ruta, setRuta] = useState("");
+  const [url, setUrl] = useState("");
+  const [tokenOrigen, setTokenOrigen] = useState("");
   const [fuente, setFuente] = useState("");
   const [rama, setRama] = useState("");
   const [ejecutando, setEjecutando] = useState<"previa" | "real" | null>(null);
@@ -93,15 +95,21 @@ export default function PaginaImportar() {
 
   useEffect(cargarHistorial, [cargarHistorial]);
 
+  /** gbrain/memlord se importan conectando a la API MCP de la instancia. */
+  const esRemoto = formato === "gbrain" || formato === "memlord";
+  const origenListo = esRemoto ? url.trim() !== "" : ruta.trim() !== "";
+
   /** Ejecuta la migración o solo la vista previa de lectura. */
   async function ejecutar(soloPrevia: boolean) {
-    if (!memoria || !ruta.trim()) return;
+    if (!memoria || !origenListo) return;
     setEjecutando(soloPrevia ? "previa" : "real");
     setError(null);
     try {
       const r = await memoria.importarMemoria({
         formato,
-        ruta: ruta.trim(),
+        ruta: esRemoto ? undefined : ruta.trim(),
+        url: esRemoto ? url.trim() : undefined,
+        token: esRemoto && tokenOrigen.trim() ? tokenOrigen.trim() : undefined,
         fuente: fuente.trim() || undefined,
         rama: rama.trim() || undefined,
         vista_previa: soloPrevia,
@@ -180,33 +188,79 @@ export default function PaginaImportar() {
           <p className="texto-suave text-xs font-semibold tracking-wide uppercase">
             2 · Parámetros de conexión e importación
           </p>
-          <label className="flex flex-col gap-1 text-sm">
-            <span className="font-medium">
-              Ruta del origen{" "}
-              <span className="texto-suave font-normal">
-                — en la máquina donde corre Nous
+          {esRemoto ? (
+            <>
+              <label className="flex flex-col gap-1 text-sm">
+                <span className="font-medium">
+                  URL de la instancia{" "}
+                  <span className="texto-suave font-normal">
+                    — endpoint MCP de {formato} (local o remota)
+                  </span>
+                </span>
+                <input
+                  type="url"
+                  value={url}
+                  onChange={(e) => {
+                    setUrl(e.target.value);
+                    setPrevia(null);
+                  }}
+                  placeholder={
+                    formato === "gbrain"
+                      ? "http://127.0.0.1:3131/mcp"
+                      : "http://127.0.0.1:8477/mcp"
+                  }
+                  className="vidrio rounded-xl px-3 py-2.5 font-mono text-xs outline-none"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm">
+                <span className="font-medium">
+                  Token de la instancia{" "}
+                  <span className="texto-suave font-normal">
+                    — Bearer que la instancia acepta
+                  </span>
+                </span>
+                <input
+                  type="password"
+                  value={tokenOrigen}
+                  onChange={(e) => setTokenOrigen(e.target.value)}
+                  placeholder="Bearer token de la instancia"
+                  autoComplete="off"
+                  className="vidrio rounded-xl px-3 py-2.5 font-mono text-xs outline-none"
+                />
+                <span className="texto-suave text-[0.68rem]">
+                  {formatoInfo?.detalle}. El token viaja solo a esa URL.
+                </span>
+              </label>
+            </>
+          ) : (
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="font-medium">
+                Ruta del origen{" "}
+                <span className="texto-suave font-normal">
+                  — en la máquina donde corre Nous
+                </span>
               </span>
-            </span>
-            <input
-              type="text"
-              value={ruta}
-              onChange={(e) => {
-                setRuta(e.target.value);
-                setPrevia(null);
-              }}
-              placeholder={
-                formato === "obsidian" || formato === "gbrain"
-                  ? "C:\\Users\\tu\\vault-o-paginas"
-                  : "C:\\Users\\tu\\memlord-export.jsonl"
-              }
-              className="vidrio rounded-xl px-3 py-2.5 font-mono text-xs outline-none"
-            />
-            {formatoInfo && (
-              <span className="texto-suave text-[0.68rem]">
-                {formatoInfo.detalle}
-              </span>
-            )}
-          </label>
+              <input
+                type="text"
+                value={ruta}
+                onChange={(e) => {
+                  setRuta(e.target.value);
+                  setPrevia(null);
+                }}
+                placeholder={
+                  formato === "obsidian"
+                    ? "C:\\Users\\tu\\vault-o-paginas"
+                    : "C:\\Users\\tu\\export.jsonl"
+                }
+                className="vidrio rounded-xl px-3 py-2.5 font-mono text-xs outline-none"
+              />
+              {formatoInfo && (
+                <span className="texto-suave text-[0.68rem]">
+                  {formatoInfo.detalle}
+                </span>
+              )}
+            </label>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <label className="flex flex-col gap-1 text-sm">
               <span className="font-medium">
@@ -239,7 +293,7 @@ export default function PaginaImportar() {
             <button
               type="button"
               onClick={() => void ejecutar(true)}
-              disabled={ejecutando !== null || !ruta.trim()}
+              disabled={ejecutando !== null || !origenListo}
               className="vidrio flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold disabled:opacity-40"
               style={{ color: "var(--primary)" }}
             >
@@ -249,7 +303,7 @@ export default function PaginaImportar() {
             <button
               type="button"
               onClick={() => void ejecutar(false)}
-              disabled={ejecutando !== null || !ruta.trim()}
+              disabled={ejecutando !== null || !origenListo}
               className="flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition disabled:opacity-40"
               style={{ background: "var(--primary)" }}
             >

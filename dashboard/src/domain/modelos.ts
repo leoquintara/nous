@@ -234,7 +234,11 @@ export interface LlamadasStats {
 export interface ParametrosImportacion {
   formato: "auto" | "jsonl" | "json" | "obsidian" | "gbrain" | "memlord";
   /** Ruta del archivo/directorio en la máquina del backend. */
-  ruta: string;
+  ruta?: string;
+  /** Endpoint MCP streamable-HTTP de la instancia (gbrain/memlord). */
+  url?: string;
+  /** Bearer token de la instancia remota. */
+  token?: string;
   fuente?: string;
   rama?: string;
   /** Solo lee y anticipa contadores — no escribe nada. */

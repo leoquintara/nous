@@ -102,6 +102,22 @@ async def importar(
     from src.cli.importadores import leer_fuente
 
     filas, vinculos_idx, errores = leer_fuente(ruta, formato, fuente)
+    return await importar_filas(engine, filas, vinculos_idx, errores, rama)
+
+
+async def importar_filas(
+    engine: AsyncEngine,
+    filas: list[FilaEvento],
+    vinculos_idx: list[tuple[int, int]],
+    errores: int,
+    rama: str | None = None,
+) -> dict[str, int]:
+    """Persiste filas ya normalizadas (de cualquier origen) en eventos.
+
+    Punto común para importaciones locales y remotas (API MCP): el
+    lector produce filas validadas; aquí se filtran duplicados, se
+    regeneran embeddings y se crean los vínculos por índice.
+    """
     if rama:
         for f in filas:
             f["rama"] = rama
@@ -149,6 +165,16 @@ async def inspeccionar(
     from src.cli.importadores import leer_fuente
 
     filas, vinculos_idx, errores = leer_fuente(ruta, formato, fuente)
+    return await contar_nuevas(engine, filas, vinculos_idx, errores)
+
+
+async def contar_nuevas(
+    engine: AsyncEngine,
+    filas: list[FilaEvento],
+    vinculos_idx: list[tuple[int, int]],
+    errores: int,
+) -> dict[str, int]:
+    """Cuenta lo que una importación haría sin escribir nada."""
     nuevos = await _filtrar_nuevos(engine, filas)
     return {
         "nuevas": len(nuevos),

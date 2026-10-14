@@ -664,6 +664,13 @@ async def importar(peticion: ImportarRequest) -> ImportarResponse:
     """
     from pathlib import Path
 
+    if peticion.url:
+        return await _importar_remoto(peticion)
+    if not peticion.ruta:
+        raise HTTPException(
+            status_code=422,
+            detail="indica una ruta local o una url de instancia",
+        )
     ruta = Path(peticion.ruta).expanduser()
     if not ruta.exists():
         raise HTTPException(
@@ -709,6 +716,50 @@ async def importar(peticion: ImportarRequest) -> ImportarResponse:
 _MAX_HISTORIAL_IMPORTACIONES = 15
 
 
+async def _importar_remoto(peticion: ImportarRequest) -> ImportarResponse:
+    """Migra memoria desde una instancia MCP remota (gbrain/memlord).
+
+    El endpoint ``url`` debe ser streamable-HTTP (``/mcp``); la conexión
+    y la descarga ocurren solo por este gesto explícito del usuario.
+    """
+    from src.cli.importador_remoto import ErrorRemoto, leer_fuente_remota
+    from src.cli.transferencia import contar_nuevas, importar_filas
+
+    try:
+        filas, vinculos, errores = await leer_fuente_remota(
+            peticion.url or "",
+            peticion.token,
+            peticion.formato,
+            peticion.fuente or peticion.formato,
+        )
+    except ErrorRemoto as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if peticion.vista_previa:
+        previa = await contar_nuevas(obtener_engine(), filas, vinculos, errores)
+        return ImportarResponse(
+            importados=0,
+            omitidos=previa["omitidos"],
+            errores=previa["errores"],
+            vinculos=previa["vinculos"],
+            formato=peticion.formato,
+            fuente=peticion.fuente or peticion.formato,
+            vista_previa=True,
+            nuevas=previa["nuevas"],
+        )
+    resultado = await importar_filas(
+        obtener_engine(), filas, vinculos, errores, peticion.rama
+    )
+    await _registrar_importacion(peticion, resultado)
+    return ImportarResponse(
+        importados=resultado["importados"],
+        omitidos=resultado["omitidos"],
+        errores=resultado["errores"],
+        vinculos=resultado["vinculos"],
+        formato=peticion.formato,
+        fuente=peticion.fuente or peticion.formato,
+    )
+
+
 async def _registrar_importacion(
     peticion: ImportarRequest, resultado: dict[str, int]
 ) -> None:
@@ -719,7 +770,7 @@ async def _registrar_importacion(
         "ts": int(time.time()),
         "formato": peticion.formato,
         "fuente": peticion.fuente or peticion.formato,
-        "ruta": peticion.ruta[:300],
+        "ruta": (peticion.url or peticion.ruta or "")[:300],
         "resultado": resultado,
     }
     async with get_session(obtener_engine()) as session:
