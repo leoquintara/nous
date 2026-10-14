@@ -174,37 +174,17 @@ export default function PaginaUniverso() {
   }, [memoria]);
 
   /**
-   * Re-ponderado por LLM: cuando hay proveedor habilitado, los
-   * candidatos heurísticos se envían al motor predictivo (debounce
-   * generoso — es una llamada de red, no por cada tick del slider).
-   * Los ajustes se fusionan por id (o nombre) y el río se re-monta.
+   * Regla de control de tokens: NUNCA llamar al LLM sin gesto explícito
+   * del usuario — ni en efectos ni en debounces. La única vía al motor
+   * predictivo es el botón «Analizar con IA». Los ajustes se fusionan
+   * por id (o nombre) y el río se re-monta con ellos.
    */
   useEffect(() => {
-    if (!memoria || !iaActiva || escenarios.length === 0) {
-      setAjustesIA(new Map());
-      return;
-    }
-    const origen = origenEnfocado ?? undefined;
-    const timer = setTimeout(() => {
-      memoria
-        .predecirIA({
-          origen_unix: origen,
-          horizonte_dias: 30,
-          candidatos: escenarios.map((e) => ({
-            id: e.id,
-            nombre: e.nombre,
-            probabilidad: e.probabilidad,
-            descripcion: e.descripcion,
-          })),
-        })
-        .then((r) => {
-          if (!r.ok || !r.escenarios) return;
-          setAjustesIA(mapaDeAjustes(r));
-        })
-        .catch(() => {});
-    }, 800);
-    return () => clearTimeout(timer);
-  }, [memoria, iaActiva, escenarios, origenEnfocado]);
+    // Mover el cursor cambia el instante proyectado: los ajustes y el
+    // análisis previos eran para OTRO origen — se descartan sin red.
+    setAjustesIA(new Map());
+    setAnalisisIA(null);
+  }, [origenEnfocado]);
 
   /** Mapa de ajustes por id/nombre a partir de la respuesta del LLM. */
   function mapaDeAjustes(
