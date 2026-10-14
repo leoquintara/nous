@@ -19,6 +19,7 @@ from src.api.schemas import (
     FuenteRequest,
     FuenteResponse,
     HealthResponse,
+    HistorialImportacion,
     ImportarRequest,
     ImportarResponse,
     LlamadaOrigenStats,
@@ -650,14 +651,16 @@ async def importar(peticion: ImportarRequest) -> ImportarResponse:
     Formatos: ``obsidian`` (vault .md), ``gbrain`` (dir .md o export),
     ``memlord`` (export JSON/JSONL), ``jsonl``/``json`` nativos. La
     ruta es de la máquina donde corre este backend — nada sale del
-    equipo. Los ids ya existentes se omiten (idempotente).
+    equipo. Los ids ya existentes se omiten (idempotente). Con
+    ``vista_previa`` solo lee y anticipa contadores, sin escribir.
 
     Args:
-        peticion: Formato, ruta local y nombre de fuente opcional.
+        peticion: Formato, ruta local, fuente opcional y vista_previa.
 
     Returns:
         Contadores: importados, omitidos (duplicados), errores,
-        vínculos creados.
+        vínculos creados. En vista previa: ``nuevas`` = filas que
+        entrarían, ``importados`` = 0.
     """
     from pathlib import Path
 
@@ -666,6 +669,25 @@ async def importar(peticion: ImportarRequest) -> ImportarResponse:
         raise HTTPException(
             status_code=422, detail=f"ruta inaccesible: {peticion.ruta}"
         )
+    if peticion.vista_previa:
+        from src.cli.transferencia import inspeccionar
+
+        previa = await inspeccionar(
+            obtener_engine(),
+            ruta,
+            formato=peticion.formato,
+            fuente=peticion.fuente,
+        )
+        return ImportarResponse(
+            importados=0,
+            omitidos=previa["omitidos"],
+            errores=previa["errores"],
+            vinculos=previa["vinculos"],
+            formato=peticion.formato,
+            fuente=peticion.fuente or peticion.formato,
+            vista_previa=True,
+            nuevas=previa["nuevas"],
+        )
     resultado = await importar_memoria(
         obtener_engine(),
         ruta,
@@ -673,8 +695,55 @@ async def importar(peticion: ImportarRequest) -> ImportarResponse:
         fuente=peticion.fuente,
         rama=peticion.rama,
     )
+    await _registrar_importacion(peticion, resultado)
     return ImportarResponse(
-        **resultado,
+        importados=resultado["importados"],
+        omitidos=resultado["omitidos"],
+        errores=resultado["errores"],
+        vinculos=resultado["vinculos"],
         formato=peticion.formato,
         fuente=peticion.fuente or peticion.formato,
     )
+
+
+_MAX_HISTORIAL_IMPORTACIONES = 15
+
+
+async def _registrar_importacion(
+    peticion: ImportarRequest, resultado: dict[str, int]
+) -> None:
+    """Añade la migración al historial persistido (máx. 15 entradas)."""
+    from src.storage.repositories import ConfiguracionRepository
+
+    entrada = {
+        "ts": int(time.time()),
+        "formato": peticion.formato,
+        "fuente": peticion.fuente or peticion.formato,
+        "ruta": peticion.ruta[:300],
+        "resultado": resultado,
+    }
+    async with get_session(obtener_engine()) as session:
+        repo = ConfiguracionRepository(session)
+        valor = await repo.obtener("importaciones_historial")
+        historial: list[dict[str, Any]] = (
+            valor["items"] if isinstance(valor, dict) else []
+        )
+        historial.insert(0, entrada)
+        await repo.guardar(
+            "importaciones_historial",
+            {"items": historial[:_MAX_HISTORIAL_IMPORTACIONES]},
+        )
+        await session.commit()
+
+
+@router.get("/importar/historial", dependencies=[Depends(verificar_token)])
+async def historial_importaciones() -> list[HistorialImportacion]:
+    """Devuelve las últimas migraciones ejecutadas (máx. 15)."""
+    from src.storage.repositories import ConfiguracionRepository
+
+    async with get_session(obtener_engine()) as session:
+        valor = await ConfiguracionRepository(session).obtener(
+            "importaciones_historial"
+        )
+    items = valor["items"] if isinstance(valor, dict) else []
+    return [HistorialImportacion(**i) for i in items]

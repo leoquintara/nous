@@ -52,6 +52,8 @@ const FORM_VACIO = {
   api_key: "",
   habilitado: true,
   incluir_contenido: false,
+  predeterminado: false,
+  fallback_id: "",
 };
 
 /** Slugifica el nombre para usarlo como id de proveedor. */
@@ -103,6 +105,8 @@ export default function PaginaModelos() {
         modelo: form.modelo,
         habilitado: form.habilitado,
         incluir_contenido: form.incluir_contenido,
+        predeterminado: form.predeterminado,
+        fallback_id: form.fallback_id || null,
       };
       if (form.api_key.trim()) datos.api_key = form.api_key.trim();
       await memoria.guardarProveedorIA(id, datos);
@@ -142,7 +146,24 @@ export default function PaginaModelos() {
       api_key: "",
       habilitado: p.habilitado,
       incluir_contenido: p.incluir_contenido,
+      predeterminado: p.predeterminado,
+      fallback_id: p.fallback_id ?? "",
     });
+  }
+
+  /** Marca un proveedor como predeterminado (desmarca el resto). */
+  async function hacerPredeterminado(p: ProveedorIA) {
+    if (!memoria || p.predeterminado) return;
+    await memoria.guardarProveedorIA(p.id, {
+      nombre: p.nombre,
+      base_url: p.base_url,
+      modelo: p.modelo,
+      habilitado: p.habilitado,
+      incluir_contenido: p.incluir_contenido,
+      predeterminado: true,
+      fallback_id: p.fallback_id,
+    });
+    recargar();
   }
 
   return (
@@ -299,7 +320,43 @@ export default function PaginaModelos() {
               />
               Incluir contenido de memorias
             </label>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={form.predeterminado}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    predeterminado: e.target.checked,
+                  }))
+                }
+                className="h-4 w-4 accent-(--primary)"
+              />
+              Predeterminado
+            </label>
           </div>
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="texto-suave">
+              Fallback si este proveedor falla{" "}
+              <em className="not-italic opacity-70">(opcional)</em>
+            </span>
+            <select
+              value={form.fallback_id}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, fallback_id: e.target.value }))
+              }
+              className="vidrio rounded-xl px-3 py-2 outline-none"
+            >
+              <option value="">— el siguiente habilitado —</option>
+              {proveedores
+                .filter((p) => p.id !== (editando ?? slugDe(form.nombre)))
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.nombre} ({p.modelo})
+                  </option>
+                ))}
+            </select>
+          </label>
           {form.incluir_contenido && (
             <p
               className="text-xs"
@@ -354,6 +411,17 @@ export default function PaginaModelos() {
                 >
                   <div className="flex flex-wrap items-center gap-3">
                     <span className="font-semibold">{p.nombre}</span>
+                    {p.predeterminado && (
+                      <span
+                        className="rounded-full px-2 py-0.5 text-[0.68rem] font-semibold"
+                        style={{
+                          background: "var(--halo)",
+                          color: "var(--primary)",
+                        }}
+                      >
+                        ★ predeterminado
+                      </span>
+                    )}
                     <span className="texto-suave font-mono text-xs">
                       {p.modelo}
                     </span>
@@ -385,6 +453,13 @@ export default function PaginaModelos() {
                         + contenido
                       </span>
                     )}
+                    {p.fallback_id && (
+                      <span className="texto-suave text-[0.68rem]">
+                        → fallback:{" "}
+                        {proveedores.find((f) => f.id === p.fallback_id)
+                          ?.nombre ?? p.fallback_id}
+                      </span>
+                    )}
                   </div>
                   <span className="texto-suave font-mono text-[0.68rem] break-all">
                     {p.base_url}
@@ -398,6 +473,15 @@ export default function PaginaModelos() {
                       <Play width={12} height={12} />
                       {prueba === "cargando" ? "Probando…" : "Probar"}
                     </button>
+                    {!p.predeterminado && (
+                      <button
+                        onClick={() => void hacerPredeterminado(p)}
+                        title="Usar como predeterminado del motor predictivo"
+                        className="vidrio texto-suave rounded-lg px-2.5 py-1 text-xs hover:text-(--ink)"
+                      >
+                        ★ usar como predeterminado
+                      </button>
+                    )}
                     <button
                       onClick={() => editar(p)}
                       className="vidrio texto-suave rounded-lg px-2.5 py-1 text-xs hover:text-(--ink)"

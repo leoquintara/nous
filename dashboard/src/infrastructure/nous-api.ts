@@ -20,6 +20,7 @@ import type {
   Evento,
   EventoActividad,
   FuenteInfo,
+  HistorialImportacion,
   Llamada,
   LlamadasStats,
   NuevoProveedorIA,
@@ -207,6 +208,8 @@ export function crearClienteNous(token: string): PuertoMemoria {
         method: "POST",
         body: JSON.stringify(params),
       }),
+    historialImportaciones: () =>
+      peticion<HistorialImportacion[]>(`/api/importar/historial`, token),
   };
 }
 

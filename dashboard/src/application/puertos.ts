@@ -10,6 +10,7 @@ import type {
   Evento,
   EventoActividad,
   FuenteInfo,
+  HistorialImportacion,
   Llamada,
   LlamadasStats,
   NuevoProveedorIA,
@@ -131,6 +132,8 @@ export interface PuertoMemoria {
   importarMemoria(
     params: ParametrosImportacion,
   ): Promise<ResultadoImportacion>;
+  /** Últimas migraciones ejecutadas (máx. 15). */
+  historialImportaciones(): Promise<HistorialImportacion[]>;
 }
 
 /** Puerto de autenticación del dashboard. */

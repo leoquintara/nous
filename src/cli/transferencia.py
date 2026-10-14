@@ -128,6 +128,36 @@ async def importar(
     }
 
 
+async def inspeccionar(
+    engine: AsyncEngine,
+    ruta: Path,
+    formato: str = "auto",
+    fuente: str | None = None,
+) -> dict[str, int]:
+    """Vista previa de una importación: lee y cuenta sin escribir nada.
+
+    Args:
+        engine: Motor async de SQLAlchemy (para contar duplicados).
+        ruta: Archivo o directorio del origen.
+        formato: ``auto`` o uno de los formatos de ``importadores``.
+        fuente: Nombre de fuente a usar en el conteo de duplicados.
+
+    Returns:
+        ``{"nuevas", "omitidos", "errores", "vinculos"}`` — lo que la
+        ejecución real importaría, omitiría, fallaría y vincularía.
+    """
+    from src.cli.importadores import leer_fuente
+
+    filas, vinculos_idx, errores = leer_fuente(ruta, formato, fuente)
+    nuevos = await _filtrar_nuevos(engine, filas)
+    return {
+        "nuevas": len(nuevos),
+        "omitidos": len(filas) - len(nuevos),
+        "errores": errores,
+        "vinculos": len(vinculos_idx),
+    }
+
+
 async def _persistir_vinculos(
     engine: AsyncEngine, pares: list[tuple[uuid.UUID, uuid.UUID]]
 ) -> int:

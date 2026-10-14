@@ -179,6 +179,8 @@ class ProveedorIARequest(BaseModel):
     api_key: str | None = Field(default=None, max_length=300)
     habilitado: bool = True
     incluir_contenido: bool = False
+    predeterminado: bool = False
+    fallback_id: str | None = Field(default=None, max_length=40)
 
 
 class CandidatoPredictivo(BaseModel):
@@ -255,10 +257,15 @@ class ImportarRequest(BaseModel):
     ruta: str = Field(min_length=1, max_length=500)
     fuente: str | None = Field(default=None, max_length=50)
     rama: str | None = Field(default=None, max_length=64)
+    vista_previa: bool = False
 
 
 class ImportarResponse(BaseModel):
-    """Resultado de una migración de memoria."""
+    """Resultado de una migración de memoria.
+
+    En ``vista_previa`` no se escribe nada: ``nuevas``/``omitidos``
+    anticipan lo que haría la ejecución real.
+    """
 
     importados: int
     omitidos: int
@@ -266,3 +273,15 @@ class ImportarResponse(BaseModel):
     vinculos: int
     formato: str
     fuente: str
+    vista_previa: bool = False
+    nuevas: int | None = None
+
+
+class HistorialImportacion(BaseModel):
+    """Entrada del historial de migraciones ejecutadas."""
+
+    ts: int
+    formato: str
+    fuente: str
+    ruta: str
+    resultado: dict[str, Any]

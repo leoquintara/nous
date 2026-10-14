@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 CLAVE_PROVEEDORES = "ia_proveedores"
 MAX_PROVEEDORES = 8
 PATRON_ID_PROVEEDOR = re.compile(r"^[a-z0-9_\-]{1,40}$")
-TIMEOUT_PREDICCION = 45.0
+TIMEOUT_PREDICCION = 90.0
 TIMEOUT_PRUEBA = 12.0
 
 _PASS_DEV = "nous-dev-cifrado-local"
@@ -69,6 +69,8 @@ def _publico(proveedor: dict[str, Any]) -> dict[str, Any]:
         "modelo": proveedor["modelo"],
         "habilitado": proveedor["habilitado"],
         "incluir_contenido": proveedor.get("incluir_contenido", False),
+        "predeterminado": bool(proveedor.get("predeterminado")),
+        "fallback_id": proveedor.get("fallback_id"),
         "api_key_set": bool(proveedor.get("api_key_enc")),
         "api_key_mascara": proveedor.get("api_key_mascara"),
     }
@@ -129,8 +131,19 @@ async def guardar_proveedor(
             "modelo": str(datos["modelo"])[:120],
             "habilitado": bool(datos["habilitado"]),
             "incluir_contenido": bool(datos.get("incluir_contenido", False)),
+            "predeterminado": bool(datos.get("predeterminado", False)),
+            "fallback_id": (
+                str(datos["fallback_id"])[:40]
+                if datos.get("fallback_id")
+                else None
+            ),
         }
     )
+    # Solo puede haber un predeterminado: marcar este desmarca los demás.
+    if proveedor["predeterminado"]:
+        for p in proveedores:
+            if p["id"] != proveedor_id:
+                p["predeterminado"] = False
     api_key = datos.get("api_key")
     if api_key:
         clave = str(api_key).strip()
@@ -159,10 +172,14 @@ async def eliminar_proveedor(session: AsyncSession, proveedor_id: str) -> bool:
     return True
 
 
-async def _proveedor_activo(
+async def _proveedores_candidatos(
     session: AsyncSession, proveedor_id: str | None
-) -> dict[str, Any] | None:
-    """Devuelve el proveedor habilitado a usar (con key descifrada)."""
+) -> list[dict[str, Any]]:
+    """Devuelve proveedores utilizables ordenados: predeterminado primero.
+
+    Cada dict lleva ``api_key`` ya descifrada; los proveedores cuya key
+    no se puede leer se descartan silenciosamente.
+    """
     doc = await _doc(session)
     candidatos = [
         p
@@ -171,17 +188,22 @@ async def _proveedor_activo(
     ]
     if proveedor_id:
         candidatos = [p for p in candidatos if p["id"] == proveedor_id]
-    if not candidatos:
-        return None
-    elegido: dict[str, Any] = candidatos[0]
-    try:
-        elegido["api_key"] = await CifradoRepository(session).descifrar(
-            elegido["api_key_enc"], _passphrase()
-        )
-    except Exception as e:  # passphrase rotada o ciphertext corrupto
-        logger.warning("No se pudo descifrar la API key: %s", type(e).__name__)
-        return None
-    return elegido
+    # El predeterminado manda; el resto conserva su orden de alta.
+    candidatos.sort(key=lambda p: 0 if p.get("predeterminado") else 1)
+    utilizables: list[dict[str, Any]] = []
+    for p in candidatos:
+        try:
+            p["api_key"] = await CifradoRepository(session).descifrar(
+                p["api_key_enc"], _passphrase()
+            )
+            utilizables.append(p)
+        except Exception as e:  # passphrase rotada o ciphertext corrupto
+            logger.warning(
+                "No se pudo descifrar la key de %s: %s",
+                p.get("id"),
+                type(e).__name__,
+            )
+    return utilizables
 
 
 async def probar_proveedor(
@@ -404,10 +426,64 @@ async def predecir_escenarios(
         "motivo": str}`` — nunca propaga errores de red/LLM: el
         consumidor siempre puede caer a la heurística local.
     """
-    proveedor = await _proveedor_activo(session, proveedor_id)
-    if proveedor is None:
+    candidatos_ia = await _proveedores_candidatos(session, proveedor_id)
+    if not candidatos_ia:
         return {"ok": False, "motivo": "sin_proveedor_habilitado"}
 
+    # Orden de intento: primario → fallback declarado → siguiente
+    # habilitado. Se acota a 2 intentos para no duplicar latencia.
+    primario = candidatos_ia[0]
+    orden = [primario]
+    declarado = next(
+        (p for p in candidatos_ia if p["id"] == primario.get("fallback_id")),
+        None,
+    )
+    if declarado is not None:
+        orden.append(declarado)
+    else:
+        orden.extend(p for p in candidatos_ia[1:2])
+    motivo_final = "desconocido"
+    for indice, proveedor in enumerate(orden):
+        resultado = await _intentar_prediccion(
+            proveedor,
+            origen=origen,
+            horizonte_dias=horizonte_dias,
+            eventos=eventos,
+            metas=metas,
+            loops_abiertos=loops_abiertos,
+            candidatos=candidatos,
+        )
+        if resultado["ok"]:
+            resultado["proveedor"] = proveedor["nombre"]
+            resultado["modelo"] = proveedor["modelo"]
+            resultado["fallback"] = indice > 0
+            return resultado
+        motivo_final = str(resultado["motivo"])
+        logger.warning(
+            "Predicción con %s falló (%s)%s",
+            proveedor["id"],
+            motivo_final,
+            " — probando fallback" if indice + 1 < len(orden) else "",
+        )
+    return {"ok": False, "motivo": motivo_final}
+
+
+async def _intentar_prediccion(
+    proveedor: dict[str, Any],
+    *,
+    origen: int,
+    horizonte_dias: int,
+    eventos: list[dict[str, Any]],
+    metas: list[dict[str, Any]],
+    loops_abiertos: int,
+    candidatos: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Ejecuta una llamada de predicción contra UN proveedor.
+
+    Returns:
+        ``{"ok": True, ...}`` con escenarios parseados o
+        ``{"ok": False, "motivo"}`` sin propagar errores de red/LLM.
+    """
     contexto = _resumen_contexto(
         eventos, origen, bool(proveedor.get("incluir_contenido"))
     )
@@ -430,11 +506,9 @@ async def predecir_escenarios(
                 headers={"Authorization": f"Bearer {proveedor['api_key']}"},
             )
     except httpx.HTTPError as e:
-        logger.warning("Predicción IA falló (red): %s", type(e).__name__)
         return {"ok": False, "motivo": f"error_red: {type(e).__name__}"}
     latencia_ms = int((time.monotonic() - inicio) * 1000)
     if resp.status_code != 200:
-        logger.warning("Predicción IA HTTP %s", resp.status_code)
         return {"ok": False, "motivo": f"http_{resp.status_code}"}
     try:
         contenido = resp.json()["choices"][0]["message"]["content"]
@@ -443,10 +517,4 @@ async def predecir_escenarios(
     parseada = _parsear_prediccion(str(contenido))
     if parseada is None:
         return {"ok": False, "motivo": "json_invalido"}
-    return {
-        "ok": True,
-        **parseada,
-        "proveedor": proveedor["nombre"],
-        "modelo": proveedor["modelo"],
-        "latencia_ms": latencia_ms,
-    }
+    return {"ok": True, **parseada, "latencia_ms": latencia_ms}

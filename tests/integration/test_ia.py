@@ -61,9 +61,9 @@ async def test_actualizar_sin_key_conserva_la_cifrada(
     lista = await ia.listar_proveedores(session)
     assert lista[0]["modelo"] == "otro-modelo"
     # La key sigue descifrable: el proveedor activo la recupera.
-    activo = await ia._proveedor_activo(session, "p1")
-    assert activo is not None
-    assert activo["api_key"] == "sk-vieja-aaaa1111"
+    activos = await ia._proveedores_candidatos(session, "p1")
+    assert len(activos) == 1
+    assert activos[0]["api_key"] == "sk-vieja-aaaa1111"
 
 
 async def test_proveedor_inactivo_no_se_elige(
@@ -75,7 +75,33 @@ async def test_proveedor_inactivo_no_se_elige(
         "off",
         {**DATOS_BASE, "habilitado": False, "api_key": "sk-x-aaaa1111"},
     )
-    assert await ia._proveedor_activo(session, None) is None
+    assert await ia._proveedores_candidatos(session, None) == []
+
+
+async def test_predeterminado_va_primero_y_desmarca_otros(
+    session: AsyncSession,
+) -> None:
+    """El predeterminado encabeza candidatos; solo uno puede estarlo."""
+    await ia.guardar_proveedor(
+        session, "p-a", {**DATOS_BASE, "api_key": "sk-a-aaaa1111"}
+    )
+    await ia.guardar_proveedor(
+        session,
+        "p-b",
+        {**DATOS_BASE, "api_key": "sk-b-bbbb2222", "predeterminado": True},
+    )
+    candidatos = await ia._proveedores_candidatos(session, None)
+    assert [c["id"] for c in candidatos] == ["p-b", "p-a"]
+    # Marcar p-a desmarca p-b.
+    await ia.guardar_proveedor(
+        session,
+        "p-a",
+        {**DATOS_BASE, "predeterminado": True},
+    )
+    lista = await ia.listar_proveedores(session)
+    por_id = {p["id"]: p for p in lista}
+    assert por_id["p-a"]["predeterminado"] is True
+    assert por_id["p-b"]["predeterminado"] is False
 
 
 async def test_validaciones_de_entrada(session: AsyncSession) -> None:

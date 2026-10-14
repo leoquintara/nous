@@ -158,6 +158,10 @@ export interface ProveedorIA {
   api_key_set: boolean;
   /** Máscara visible de la key (``sk-…wxyz``); null si no hay. */
   api_key_mascara: string | null;
+  /** Es el proveedor por defecto del motor predictivo. */
+  predeterminado: boolean;
+  /** id del proveedor de reserva si este falla. */
+  fallback_id: string | null;
 }
 
 /** Datos de alta/edición de un proveedor (api_key opcional al editar). */
@@ -168,6 +172,10 @@ export interface NuevoProveedorIA {
   api_key?: string;
   habilitado: boolean;
   incluir_contenido: boolean;
+  /** Usar como proveedor por defecto (solo puede haber uno). */
+  predeterminado?: boolean;
+  /** id del proveedor de reserva si el primario falla. */
+  fallback_id?: string | null;
 }
 
 /** Resultado de la prueba de conexión con un proveedor. */
@@ -195,6 +203,8 @@ export interface PrediccionIA {
   proveedor?: string;
   modelo?: string;
   latencia_ms?: number;
+  /** True si respondió el proveedor de reserva, no el primario. */
+  fallback?: boolean;
 }
 
 /** Una llamada registrada a Nous (trazabilidad — solo metadata). */
@@ -227,6 +237,8 @@ export interface ParametrosImportacion {
   ruta: string;
   fuente?: string;
   rama?: string;
+  /** Solo lee y anticipa contadores — no escribe nada. */
+  vista_previa?: boolean;
 }
 
 /** Contadores devueltos por una migración. */
@@ -237,6 +249,24 @@ export interface ResultadoImportacion {
   vinculos: number;
   formato: string;
   fuente: string;
+  /** True si fue solo lectura — ``nuevas`` anticipa la ejecución real. */
+  vista_previa?: boolean;
+  /** Filas que entrarían al ejecutar (solo en vista previa). */
+  nuevas?: number;
+}
+
+/** Entrada del historial de migraciones persistido en el backend. */
+export interface HistorialImportacion {
+  ts: number;
+  formato: string;
+  fuente: string;
+  ruta: string;
+  resultado: {
+    importados: number;
+    omitidos: number;
+    errores: number;
+    vinculos: number;
+  };
 }
 
 /** Candidato heurístico que el LLM re-pondera en /universo. */

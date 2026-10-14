@@ -150,6 +150,10 @@ export function UniversoCanvas({
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       wrap.appendChild(renderer.domElement);
       renderer.domElement.style.display = "block";
+      // Touch: sin esto el navegador captura el gesto para scroll/zoom
+      // de página antes de que OrbitControls reciba el puntero.
+      renderer.domElement.style.touchAction = "none";
+      wrap.style.touchAction = "none";
 
       const scene = new THREE.Scene();
       const camera = new THREE.PerspectiveCamera(45, W / H, 1, 6000);

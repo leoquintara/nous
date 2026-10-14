@@ -131,6 +131,17 @@ export default function PaginaProyeccion() {
                     {prediccion.proveedor} · {prediccion.modelo}
                     {prediccion.latencia_ms != null &&
                       ` · ${prediccion.latencia_ms}ms`}
+                    {prediccion.fallback && (
+                      <span
+                        className="ml-1 rounded-full px-1.5 py-0.5 text-[0.65rem]"
+                        style={{
+                          background: "var(--halo)",
+                          color: "var(--primary)",
+                        }}
+                      >
+                        vía fallback
+                      </span>
+                    )}
                   </span>
                 </header>
                 {prediccion.razonamiento && (

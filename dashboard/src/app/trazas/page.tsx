@@ -41,6 +41,8 @@ export default function PaginaTrazas() {
   const [llamadas, setLlamadas] = useState<Llamada[]>([]);
   const [stats, setStats] = useState<LlamadasStats | null>(null);
   const [filtro, setFiltro] = useState("");
+  const [ocultarDashboard, setOcultarDashboard] = useState(false);
+  const [ocultarPings, setOcultarPings] = useState(false);
   const [cargando, setCargando] = useState(false);
 
   const recargar = useCallback(async () => {
@@ -62,7 +64,11 @@ export default function PaginaTrazas() {
 
   useEffect(() => {
     void recargar();
-    const t = setInterval(() => void recargar(), 5000);
+    // El auto-refresh se pausa con la pestaña oculta — si no, la propia
+    // página genera ruido en el registro que está mostrando.
+    const t = setInterval(() => {
+      if (!document.hidden) void recargar();
+    }, 5000);
     return () => clearInterval(t);
   }, [recargar]);
 
@@ -151,14 +157,36 @@ export default function PaginaTrazas() {
           </div>
         )}
 
-        {/* Filtro + tabla */}
-        <input
-          type="text"
-          value={filtro}
-          onChange={(e) => setFiltro(e.target.value)}
-          placeholder="Filtrar por ruta exacta (p. ej. /api/eventos)"
-          className="vidrio rounded-xl px-3 py-2 text-sm outline-none"
-        />
+        {/* Filtros + tabla */}
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="text"
+            value={filtro}
+            onChange={(e) => setFiltro(e.target.value)}
+            placeholder="Filtrar por ruta exacta (p. ej. /api/eventos)"
+            className="vidrio min-w-56 flex-1 rounded-xl px-3 py-2 text-sm outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => setOcultarDashboard((v) => !v)}
+            className={`vidrio rounded-xl px-3 py-2 text-xs ${
+              ocultarDashboard ? "font-semibold" : "texto-suave"
+            }`}
+            style={ocultarDashboard ? { color: "var(--primary)" } : undefined}
+          >
+            {ocultarDashboard ? "dashboard oculto" : "ocultar dashboard"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setOcultarPings((v) => !v)}
+            className={`vidrio rounded-xl px-3 py-2 text-xs ${
+              ocultarPings ? "font-semibold" : "texto-suave"
+            }`}
+            style={ocultarPings ? { color: "var(--primary)" } : undefined}
+          >
+            {ocultarPings ? "pings ocultos" : "ocultar pings"}
+          </button>
+        </div>
         <div className="vidrio-fuerte overflow-x-auto rounded-2xl">
           <table className="w-full text-left text-xs">
             <thead>
@@ -172,7 +200,13 @@ export default function PaginaTrazas() {
               </tr>
             </thead>
             <tbody>
-              {llamadas.map((l) => (
+              {llamadas
+                .filter(
+                  (l) =>
+                    (!ocultarDashboard || l.origen !== "dashboard") &&
+                    (!ocultarPings || !l.es_ping),
+                )
+                .map((l) => (
                 <tr key={l.id} className="border-b border-white/5">
                   <td className="texto-suave px-3 py-1.5 whitespace-nowrap tabular-nums">
                     {hora(l.ts)}
