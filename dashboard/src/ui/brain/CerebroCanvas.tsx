@@ -937,6 +937,12 @@ export function CerebroCanvas({
           coincide(i) === true
         );
       };
+      /** Nodo interactuable: existe (nacido) y su fuente no está
+       *  oculta. El corte LOD NO aplica — atenúa el render, pero un
+       *  nodo visible atenuado sigue siendo seleccionable. */
+      const seleccionable = (i: number) =>
+        nacimiento[i] > 0.01 &&
+        !ocultasRef.current?.has(nodes[i].fuente);
       /** Devuelve el índice del nodo bajo el cursor o -1. */
       const pick = (ev: PointerEvent | MouseEvent) => {
         const r = renderer.domElement.getBoundingClientRect();
@@ -947,7 +953,7 @@ export function CerebroCanvas({
         ray.setFromCamera(ndc, camera);
         for (const h of ray.intersectObject(malla)) {
           const i = h.instanceId;
-          if (i != null && lodVisible(i)) return i;
+          if (i != null && seleccionable(i)) return i;
         }
         return -1;
       };
