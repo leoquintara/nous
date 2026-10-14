@@ -40,6 +40,7 @@ import {
   materialAtomo,
   materialPuntosSuaves,
 } from "./materiales";
+import type { PrefsUniverso } from "./prefs";
 
 /** Todo lo que la escena necesita, resuelto por la página. */
 export interface DatosRio {
@@ -59,10 +60,18 @@ interface Props {
   rio: DatosRio;
   /** Cursor del observador; null = presente vivo. */
   cursor: number | null;
+  /** Apariencia configurable del universo (persistida en DB). */
+  vista: PrefsUniverso;
   /** Click en el vacío del río: viaja el playhead a ese instante. */
   alCambiarCursor?: (t: number | null) => void;
   /** Click en un orbe: abre la memoria en el inspector. */
   alSeleccionar?: (evento: Evento) => void;
+  /** Click en un afluente: muestra la ficha de la fuente. */
+  alSeleccionarFuente?: (fuente: string) => void;
+  /** Click en un cauce-fantasma: muestra el escenario del camino. */
+  alSeleccionarFantasma?: (fantasma: CauceFantasma) => void;
+  /** Click en un faro: muestra la ficha del objetivo. */
+  alSeleccionarObjetivo?: (objetivo: Objetivo) => void;
 }
 
 const RADIO_ORBE = 2.1;
@@ -74,18 +83,30 @@ const RADIO_ORBE = 2.1;
 export function UniversoCanvas({
   rio,
   cursor,
+  vista,
   alCambiarCursor,
   alSeleccionar,
+  alSeleccionarFuente,
+  alSeleccionarFantasma,
+  alSeleccionarObjetivo,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [glError, setGlError] = useState(false);
   const cursorRef = useRef<number | null>(cursor);
   const selRef = useRef(alSeleccionar);
+  const selFuenteRef = useRef(alSeleccionarFuente);
+  const selFantasmaRef = useRef(alSeleccionarFantasma);
+  const selObjetivoRef = useRef(alSeleccionarObjetivo);
   const cursorCbRef = useRef(alCambiarCursor);
+  const vistaRef = useRef(vista);
   useEffect(() => {
     cursorRef.current = cursor;
     selRef.current = alSeleccionar;
+    selFuenteRef.current = alSeleccionarFuente;
+    selFantasmaRef.current = alSeleccionarFantasma;
+    selObjetivoRef.current = alSeleccionarObjetivo;
     cursorCbRef.current = alCambiarCursor;
+    vistaRef.current = vista;
   });
 
   useEffect(() => {
@@ -198,6 +219,13 @@ export function UniversoCanvas({
           blending: THREE.AdditiveBlending,
           depthWrite: false,
         });
+      // Capas togglables: cada grupo responde a una opción de `vista`.
+      const grupoRamas = new THREE.Group();
+      const grupoAfluentes = new THREE.Group();
+      const grupoFantasmas = new THREE.Group();
+      const grupoArcos = new THREE.Group();
+      const grupoFaros = new THREE.Group();
+      scene.add(grupoRamas, grupoAfluentes, grupoFantasmas, grupoArcos, grupoFaros);
       for (const rama of rio.ramas) {
         const carril = carrilDeRama(rama, rio.ramas);
         const fork = forks.get(rama) ?? null;
@@ -218,7 +246,8 @@ export function UniversoCanvas({
           ),
           matCauce(carril === 0 ? 0x5b9ef4 : colorDeFuente(rama, rio.fuentes), carril === 0 ? 0.34 : 0.26),
         );
-        scene.add(tubo);
+        // El cauce main es estructural; las bifurcaciones se apagan.
+        (carril === 0 ? scene : grupoRamas).add(tubo);
       }
 
       // ── Afluentes por fuente ─────────────────────────────────
@@ -231,10 +260,14 @@ export function UniversoCanvas({
         }
       }
       const idsFuentes = rio.fuentes.map((f) => f.id);
+      // Afluentes seleccionables: mesh de tubo → nombre de fuente.
+      const MAX_AFUENTES = 14;
+      const mallasAfluentes: { mesh: THREE.Mesh; fuente: string }[] = [];
       // Partículas que fluyen por cada afluente hacia la confluencia.
       const SED_POR_AF = 14;
       interface Sed {
         fuente: string;
+        carril: number;
         fase: number;
         vel: number;
       }
@@ -243,7 +276,7 @@ export function UniversoCanvas({
       const afPos: number[] = [];
       const afCol: number[] = [];
       const afSize: number[] = [];
-      rio.fuentes.slice(0, 14).forEach((f, idx) => {
+      rio.fuentes.slice(0, MAX_AFUENTES).forEach((f, idx) => {
         const naci = nacimiento.get(f.id);
         if (naci === undefined) return;
         const carril = idx + 1;
@@ -257,15 +290,17 @@ export function UniversoCanvas({
           pts.push(new THREE.Vector3(p.x, p.y, p.z));
         }
         const color = colorDeFuente(f.id, rio.fuentes);
-        scene.add(
-          new THREE.Mesh(
-            new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 90, 0.45, 6),
-            matCauce(color, 0.22),
-          ),
+        const mallaAf = new THREE.Mesh(
+          new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 90, 0.45, 6),
+          matCauce(color, 0.22),
         );
+        mallaAf.userData.afluenteIdx = idx;
+        grupoAfluentes.add(mallaAf);
+        mallasAfluentes.push({ mesh: mallaAf, fuente: f.id });
+        anotar(f.id, pts[Math.floor(pts.length * 0.45)]);
         tmpC.set(color);
         for (let i = 0; i < SED_POR_AF; i++) {
-          seds.push({ fuente: f.id, fase: Math.random(), vel: 0.5 + Math.random() });
+          seds.push({ fuente: f.id, carril, fase: Math.random(), vel: 0.5 + Math.random() });
           afPos.push(0, 0, 0);
           afCol.push(tmpC.r, tmpC.g, tmpC.b);
           afSize.push(5);
@@ -276,20 +311,26 @@ export function UniversoCanvas({
       afGeo.setAttribute("aSize", new THREE.Float32BufferAttribute(afSize, 1));
       const sedPuntos = new THREE.Points(afGeo, materialPuntosSuaves(H * 0.5));
       sedPuntos.frustumCulled = false;
-      scene.add(sedPuntos);
+      grupoAfluentes.add(sedPuntos);
 
       // ── Cauces-fantasma (futuros probables) ──────────────────
-      const caucesF: { mat: THREE.MeshBasicMaterial; fantasma: CauceFantasma; pts: THREE.Vector3[]; puntosEco: THREE.Points }[] = [];
+      interface EntradaFantasma {
+        mesh: THREE.Mesh;
+        mat: THREE.MeshBasicMaterial;
+        fantasma: CauceFantasma;
+        pts: THREE.Vector3[];
+        puntosEco: THREE.Points;
+      }
+      const caucesF: EntradaFantasma[] = [];
       for (const f of rio.fantasmas) {
         const color = colorDimension(f.dimension);
         const mat = matCauce(color, 0.2);
         const pts = f.puntos.map((p) => new THREE.Vector3(p.x, p.y - 1.2, p.z));
-        scene.add(
-          new THREE.Mesh(
-            new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 70, 0.6, 6),
-            mat,
-          ),
+        const mallaF = new THREE.Mesh(
+          new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 70, 0.6, 6),
+          mat,
         );
+        grupoFantasmas.add(mallaF);
         // Ecos de eventos futuros: puntos que fluyen por el cauce.
         const geo = new THREE.BufferGeometry();
         const np = 24;
@@ -306,14 +347,20 @@ export function UniversoCanvas({
         geo.setAttribute("aSize", new THREE.BufferAttribute(szs, 1));
         const eco = new THREE.Points(geo, materialPuntosSuaves(H * 0.5));
         eco.frustumCulled = false;
-        scene.add(eco);
-        caucesF.push({ mat, fantasma: f, pts, puntosEco: eco });
+        grupoFantasmas.add(eco);
+        caucesF.push({ mesh: mallaF, mat, fantasma: f, pts, puntosEco: eco });
+        // Etiqueta del escenario: "camino cognitiva · 41%".
+        anotar(
+          `${f.dimension} · ${Math.round(f.probabilidad * 100)}%`,
+          pts[Math.floor(pts.length * 0.62)].clone().add(new THREE.Vector3(0, 8, 0)),
+        );
       }
 
       // ── Objetivos: faros pulsantes al final del futuro ───────
       interface Faro {
         ring: THREE.Mesh;
         nucleo: THREE.Mesh;
+        objetivo: Objetivo;
         fase: number;
       }
       const faros: Faro[] = [];
@@ -332,7 +379,7 @@ export function UniversoCanvas({
           }),
         );
         nucleo.position.set(a.x, a.y, a.z);
-        scene.add(nucleo);
+        grupoFaros.add(nucleo);
         const ring = new THREE.Mesh(
           new THREE.RingGeometry(5.5, 6.1, 40),
           new THREE.MeshBasicMaterial({
@@ -345,8 +392,8 @@ export function UniversoCanvas({
           }),
         );
         ring.position.copy(nucleo.position);
-        scene.add(ring);
-        faros.push({ ring, nucleo, fase: Math.random() * Math.PI * 2 });
+        grupoFaros.add(ring);
+        faros.push({ ring, nucleo, objetivo: o, fase: Math.random() * Math.PI * 2 });
         anotar(`◆ ${o.titulo}`, nucleo.position.clone().add(new THREE.Vector3(0, 10, 0)));
       }
 
@@ -373,7 +420,7 @@ export function UniversoCanvas({
         }
       }
       if (arcPts.length) {
-        scene.add(
+        grupoArcos.add(
           new THREE.LineSegments(
             new THREE.BufferGeometry().setFromPoints(arcPts),
             new THREE.LineBasicMaterial({
@@ -465,6 +512,39 @@ export function UniversoCanvas({
           selRef.current?.(nodos[hits[0].instanceId].ev);
           return;
         }
+        // Faros → fantasmas → afluentes → vacío (viaje del playhead).
+        const hitFaro = raycaster.intersectObjects(
+          faros.map((f) => f.nucleo),
+        );
+        if (hitFaro.length) {
+          const faro = faros.find((f) => f.nucleo === hitFaro[0].object);
+          if (faro) {
+            selObjetivoRef.current?.(faro.objetivo);
+            return;
+          }
+        }
+        const hitFantasma = raycaster.intersectObjects(
+          caucesF.filter((c) => c.mesh.visible).map((c) => c.mesh),
+        );
+        if (hitFantasma.length) {
+          const c = caucesF.find((x) => x.mesh === hitFantasma[0].object);
+          if (c) {
+            selFantasmaRef.current?.(c.fantasma);
+            return;
+          }
+        }
+        const hitAfluente = raycaster.intersectObjects(
+          mallasAfluentes.filter((m) => m.mesh.visible).map((m) => m.mesh),
+        );
+        if (hitAfluente.length) {
+          const a = mallasAfluentes.find(
+            (m) => m.mesh === hitAfluente[0].object,
+          );
+          if (a) {
+            selFuenteRef.current?.(a.fuente);
+            return;
+          }
+        }
         if (raycaster.ray.intersectPlane(planoRio, hit)) {
           const fin = ctx.tMax + rio.horizonte;
           const t =
@@ -495,10 +575,47 @@ export function UniversoCanvas({
       ro.observe(wrap);
 
       const v3 = new THREE.Vector3();
+      // Colores por dimensión resolubles en caliente (vista.colores).
+      let coloresKey = "";
+      let colDims = new Map<string, number>();
+      const afSizeAttr = afGeo.getAttribute("aSize") as THREE.BufferAttribute;
+      let ultimoMaxAf = -1;
       let raf = 0;
       const animar = (tNow: number) => {
         raf = requestAnimationFrame(animar);
         controls.update();
+        const v = vistaRef.current;
+
+        // ── Vista: capas, intensidades y color ────────────────
+        grupoRamas.visible = v.ramas;
+        grupoArcos.visible = v.arcos;
+        grupoFaros.visible = v.objetivos;
+        grupoAfluentes.visible = v.afluentes;
+        grupoAfluentes.scale.z = v.separacion;
+        polvo.visible = v.polvo;
+        bloom.strength = v.bloom;
+        capaEtiquetas.style.display = v.etiquetas ? "" : "none";
+        const ck = JSON.stringify(v.colores);
+        if (ck !== coloresKey) {
+          coloresKey = ck;
+          colDims = new Map(
+            Object.entries(v.colores).map(([d, hex]) => [
+              d,
+              new THREE.Color(hex).getHex(),
+            ]),
+          );
+        }
+        // Cantidad de afluentes: tubos ocultos y seds apagados.
+        if (v.maxAfluentes !== ultimoMaxAf) {
+          ultimoMaxAf = v.maxAfluentes;
+          mallasAfluentes.forEach((m, i) => {
+            m.mesh.visible = i < ultimoMaxAf;
+          });
+          seds.forEach((s, i) =>
+            afSizeAttr.setX(i, s.carril <= ultimoMaxAf ? 5 : 0),
+          );
+          afSizeAttr.needsUpdate = true;
+        }
 
         const cur = cursorRef.current;
         const tCur = cur ?? ctx.tMax + rio.horizonte;
@@ -515,7 +632,12 @@ export function UniversoCanvas({
           dummy.scale.setScalar(Math.max(0.0001, n.escala * latido * Math.max(nac, 0.12)));
           dummy.updateMatrix();
           malla.setMatrixAt(i, dummy.matrix);
-          malla.setColorAt(i, tmpC.set(n.color).multiplyScalar(0.35 + 0.65 * nac));
+          malla.setColorAt(
+            i,
+            tmpC
+              .set(colDims.get(n.ev.dimension) ?? n.color)
+              .multiplyScalar(0.35 + 0.65 * nac),
+          );
         }
         malla.instanceMatrix.needsUpdate = true;
         if (malla.instanceColor) malla.instanceColor.needsUpdate = true;
@@ -550,8 +672,18 @@ export function UniversoCanvas({
         // fluyen por la curva como sedimentos del futuro.
         for (const c of caucesF) {
           const prob = c.fantasma.probabilidad;
+          const activo =
+            v.fantasmas && v.fantasmaDims.includes(c.fantasma.dimension);
+          c.mesh.visible = activo;
+          c.puntosEco.visible = activo;
+          if (!activo) continue;
+          c.mat.color.setHex(
+            colDims.get(c.fantasma.dimension) ??
+              colorDimension(c.fantasma.dimension),
+          );
           c.mat.opacity =
-            prob * (0.16 + gp * 0.4) + 0.04 * Math.sin(tNow * 0.002);
+            (prob * (0.16 + gp * 0.4) + 0.04 * Math.sin(tNow * 0.002)) *
+            v.intensidadFantasma;
           const g = c.puntosEco.geometry.getAttribute("position") as THREE.BufferAttribute;
           const npts = g.count;
           for (let i = 0; i < npts; i++) {
@@ -564,6 +696,13 @@ export function UniversoCanvas({
 
         // Faros de objetivos: anillo expandiéndose + pulso del núcleo.
         for (const f of faros) {
+          const base =
+            f.objetivo.dimension != null
+              ? (colDims.get(f.objetivo.dimension) ??
+                colorDimension(f.objetivo.dimension))
+              : 0xffd66b;
+          (f.nucleo.material as THREE.MeshBasicMaterial).color.setHex(base);
+          (f.ring.material as THREE.MeshBasicMaterial).color.setHex(base);
           const k = (tNow * 0.0012 + f.fase) % 1;
           f.ring.scale.setScalar(1 + k * 1.8);
           (f.ring.material as THREE.MeshBasicMaterial).opacity = 0.55 * (1 - k);

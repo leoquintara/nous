@@ -292,6 +292,45 @@ export function desfaseAfluente(
   return cauce * (1 - f);
 }
 
+/** Estadísticas de una dimensión para la tarjeta de escenario. */
+export interface StatsDimension {
+  /** Eventos totales de la dimensión en la ventana cargada. */
+  total: number;
+  /** Eventos de los últimos `diasRecientes` — el "impulso" del camino. */
+  recientes: number;
+  /** Amplitud media 0..1 — intensidad emocional del camino. */
+  amplitudMedia: number;
+}
+
+/**
+ * Resume el soporte de una dimensión en el historial: cuántos
+ * eventos la alimentan, cuántos son recientes (impulso) y su
+ * amplitud media. Puro — alimenta la tarjeta "qué pasa si el
+ * cauce va por este camino".
+ */
+export function statsDimension(
+  dimension: Dimension,
+  eventos: EventoRio[],
+  ahora: number,
+  diasRecientes = 30,
+): StatsDimension {
+  const corte = ahora - diasRecientes * 86_400;
+  let total = 0;
+  let recientes = 0;
+  let sumaAmp = 0;
+  for (const e of eventos) {
+    if (e.dimension !== dimension) continue;
+    total += 1;
+    sumaAmp += e.amplitud;
+    if (e.ts >= corte) recientes += 1;
+  }
+  return {
+    total,
+    recientes,
+    amplitudMedia: total ? sumaAmp / total : 0,
+  };
+}
+
 /**
  * Ticks de fecha legibles sobre el río: instantes aproximadamente
  * equiespaciados redondeados al día, con etiqueta corta.

@@ -21,6 +21,7 @@ import {
   posEnRio,
   RIO,
   smoothstep,
+  statsDimension,
   ticksDeFecha,
   xEnTiempo,
   type EventoRio,
@@ -257,5 +258,31 @@ describe("ticksDeFecha", () => {
     expect(ticks[0].t).toBe(T_MIN);
     expect(ticks[ticks.length - 1].t).toBe(T_MAX);
     for (const tk of ticks) expect(tk.etiqueta.length).toBeGreaterThan(0);
+  });
+});
+
+describe("statsDimension", () => {
+  const eventos: EventoRio[] = [
+    ev({ id: "a", ts: T_MAX - 2 * DIA, dimension: "cognitiva", amplitud: 0.8 }),
+    ev({ id: "b", ts: T_MAX - 10 * DIA, dimension: "cognitiva", amplitud: 0.4 }),
+    ev({ id: "c", ts: T_MIN + DIA, dimension: "cognitiva", amplitud: 0.6 }),
+    ev({ id: "d", ts: T_MAX - DIA, dimension: "conductual", amplitud: 1 }),
+  ];
+
+  it("cuenta totales, recientes y amplitud media por dimensión", () => {
+    const s = statsDimension("cognitiva", eventos, T_MAX);
+    expect(s.total).toBe(3);
+    expect(s.recientes).toBe(2); // solo a y b están dentro de 30d
+    expect(s.amplitudMedia).toBeCloseTo(0.6, 5);
+  });
+
+  it("devuelve ceros para una dimensión sin eventos", () => {
+    const s = statsDimension("somatica", eventos, T_MAX);
+    expect(s).toEqual({ total: 0, recientes: 0, amplitudMedia: 0 });
+  });
+
+  it("respeta la ventana de días recientes configurada", () => {
+    const s = statsDimension("cognitiva", eventos, T_MAX, 5);
+    expect(s.recientes).toBe(1); // solo "a" entra en 5 días
   });
 });
