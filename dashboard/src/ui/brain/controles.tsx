@@ -478,7 +478,7 @@ interface PanelFuentesProps {
   alCambiarCap: (cap: number) => void;
 }
 
-/** Panel de procedencia: chips por fuente con conteo y visibilidad. */
+/** Panel de procedencia: lista vertical colapsable de fuentes con conteo y visibilidad. */
 export function PanelFuentes({
   fuentes,
   ocultas,
@@ -486,59 +486,86 @@ export function PanelFuentes({
   cap,
   alCambiarCap,
 }: PanelFuentesProps) {
+  // Con muchas fuentes arranca colapsado para no tapar el grafo.
+  const [abierto, setAbierto] = useState(fuentes.length <= 8);
   if (fuentes.length === 0) return null;
+  const visibles = fuentes.length - [...ocultas].filter((o) =>
+    fuentes.some((f) => f.id === o),
+  ).length;
   return (
-    <div className="pointer-events-auto flex w-52 flex-col gap-2 p-3">
-      <p className="texto-suave text-[0.65rem] font-semibold tracking-wide uppercase">
-        Procedencia
-      </p>
-      <div className="sin-scrollbar flex max-h-56 flex-col gap-1 overflow-y-auto pr-0.5">
-        {fuentes.map((f) => {
-          const oculta = ocultas.has(f.id);
-          return (
-            <button
-              key={f.id}
-              type="button"
-              onClick={() => alAlternar(f.id)}
-              title={oculta ? "Mostrar fuente" : "Ocultar fuente"}
-              className={`flex items-center gap-2 rounded-xl px-2 py-1.5 text-left text-xs transition-opacity ${oculta ? "opacity-40" : ""}`}
-            >
-              <span
-                className="h-2.5 w-2.5 shrink-0 rounded-full"
-                style={{ background: colorFuente(f.id, fuentes) }}
-              />
-              <span className="min-w-0 flex-1 truncate">{f.id}</span>
-              <span className="texto-suave tabular-nums">{f.count}</span>
-              {oculta ? (
-                <EyeClosed width={13} height={13} className="texto-suave" />
-              ) : (
-                <Eye width={13} height={13} className="texto-suave" />
-              )}
-            </button>
-          );
-        })}
-      </div>
-      <label className="texto-suave flex items-center justify-between gap-2 border-t pt-2 text-[0.65rem]" style={{ borderColor: "var(--linea-vidrio)" }}>
-        Tope de eventos
-        <input
-          type="range"
-          min={50}
-          max={1000}
-          step={50}
-          value={cap}
-          onChange={(e) => alCambiarCap(Number(e.target.value))}
-          className="w-24 accent-(--primary)"
-          aria-label="Tope de eventos"
-        />
-        <span className="w-8 text-right tabular-nums">{cap}</span>
-      </label>
-      <Link
-        href="/fuentes"
-        className="texto-suave border-t pt-2 text-left text-[0.65rem] transition-colors hover:text-(--ink)"
-        style={{ borderColor: "var(--linea-vidrio)" }}
+    <div className="pointer-events-auto flex w-[min(300px,74vw)] flex-col p-2">
+      <button
+        type="button"
+        onClick={() => setAbierto((a) => !a)}
+        aria-expanded={abierto}
+        aria-label="Alternar panel de procedencia"
+        className="flex items-center gap-2 rounded-lg px-1.5 py-1 transition-colors hover:text-(--ink)"
       >
-        Gestionar catálogo →
-      </Link>
+        <span className="texto-suave text-[0.65rem] font-semibold tracking-wide uppercase">
+          Procedencia
+        </span>
+        <span className="texto-suave ml-auto text-[0.65rem] tabular-nums">
+          {visibles}/{fuentes.length}
+        </span>
+        <span className="texto-suave">
+          {abierto ? (
+            <NavArrowUp width={13} height={13} />
+          ) : (
+            <NavArrowDown width={13} height={13} />
+          )}
+        </span>
+      </button>
+      {abierto && (
+        <div className="flex flex-col gap-2 pt-1.5">
+          <div className="sin-scrollbar flex max-h-64 flex-col gap-1 overflow-y-auto pr-0.5">
+            {fuentes.map((f) => {
+              const oculta = ocultas.has(f.id);
+              return (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => alAlternar(f.id)}
+                  title={oculta ? "Mostrar fuente" : "Ocultar fuente"}
+                  className={`flex items-center gap-2 rounded-xl px-2 py-1.5 text-left text-xs transition-opacity ${oculta ? "opacity-40" : ""}`}
+                >
+                  <span
+                    className="h-2.5 w-2.5 shrink-0 rounded-full"
+                    style={{ background: colorFuente(f.id, fuentes) }}
+                  />
+                  <span className="min-w-0 flex-1 truncate">{f.id}</span>
+                  <span className="texto-suave tabular-nums">{f.count}</span>
+                  {oculta ? (
+                    <EyeClosed width={13} height={13} className="texto-suave" />
+                  ) : (
+                    <Eye width={13} height={13} className="texto-suave" />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          <label className="texto-suave flex items-center justify-between gap-2 border-t pt-2 text-[0.65rem]" style={{ borderColor: "var(--linea-vidrio)" }}>
+            Tope de eventos
+            <input
+              type="range"
+              min={50}
+              max={1000}
+              step={50}
+              value={cap}
+              onChange={(e) => alCambiarCap(Number(e.target.value))}
+              className="w-24 accent-(--primary)"
+              aria-label="Tope de eventos"
+            />
+            <span className="w-8 text-right tabular-nums">{cap}</span>
+          </label>
+          <Link
+            href="/fuentes"
+            className="texto-suave border-t pt-2 text-left text-[0.65rem] transition-colors hover:text-(--ink)"
+            style={{ borderColor: "var(--linea-vidrio)" }}
+          >
+            Gestionar catálogo →
+          </Link>
+        </div>
+      )}
     </div>
   );
 }
