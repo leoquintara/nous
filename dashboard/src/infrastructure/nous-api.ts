@@ -9,12 +9,18 @@ import type {
   PuertoAuth,
   PuertoMemoria,
 } from "@/application/puertos";
-import { NuevaFuente, NuevoEvento } from "@/application/puertos";
+import {
+  NuevaFuente,
+  NuevoEvento,
+  NuevoObjetivo,
+  ParcheObjetivo,
+} from "@/application/puertos";
 import type {
   BenchmarkRun,
   Evento,
   EventoActividad,
   FuenteInfo,
+  Objetivo,
   Preferencias,
   Proyeccion,
   Relacion,
@@ -102,6 +108,31 @@ export function crearClienteNous(token: string): PuertoMemoria {
       ),
     proyeccionActual: () =>
       peticion<Proyeccion>(`/api/proyeccion/actual`, token),
+    listarObjetivos: (estado = "activo", rama = "main") =>
+      peticion<Objetivo[]>(
+        `/api/objetivos?estado=${encodeURIComponent(estado)}&rama=${encodeURIComponent(rama)}`,
+        token,
+      ),
+    crearObjetivo: (objetivo: NuevoObjetivo) =>
+      peticion<Objetivo>(`/api/objetivos`, token, {
+        method: "POST",
+        body: JSON.stringify(objetivo),
+      }),
+    actualizarObjetivo: (id, parche: ParcheObjetivo) =>
+      peticion<Objetivo>(
+        `/api/objetivos/${encodeURIComponent(id)}`,
+        token,
+        { method: "PATCH", body: JSON.stringify(parche) },
+      ),
+    cerrarObjetivo: (id, estado, resolucion) =>
+      peticion<Objetivo>(
+        `/api/objetivos/${encodeURIComponent(id)}/cerrar`,
+        token,
+        {
+          method: "POST",
+          body: JSON.stringify({ estado, resolucion }),
+        },
+      ),
     benchmarks: (nombre, limite = 50) => {
       const params = new URLSearchParams({ limite: String(limite) });
       if (nombre) params.set("nombre", nombre);

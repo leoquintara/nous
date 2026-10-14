@@ -110,6 +110,23 @@ export interface Relacion {
   peso: number;
 }
 
+/** Meta del usuario que ancla una proyección futura del río temporal. */
+export interface Objetivo {
+  id: string;
+  titulo: string;
+  descripcion: string | null;
+  /** Dimensión a la que converge; null = objetivo transversal. */
+  dimension: Dimension | null;
+  /** Fecha límite (Unix epoch, segundos). */
+  fecha_objetivo: number;
+  /** Ciclo de vida auditable — nunca se borra en duro salvo petición. */
+  estado: "activo" | "cumplido" | "abandonado";
+  /** Línea de universo donde vive el objetivo. */
+  rama: string;
+  /** Evento conductual que registró el cierre (auditoría). */
+  evento_cierre_id: string | null;
+}
+
 /** Documento de preferencias persistido en PostgreSQL (clave-valor JSON). */
 export type Preferencias = Record<string, unknown>;
 

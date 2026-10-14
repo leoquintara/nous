@@ -10,6 +10,7 @@ import {
   Database,
   HalfMoon,
   LogOut,
+  Planet,
   Refresh,
   Search,
   SunLight,
@@ -23,6 +24,7 @@ import { usarApp } from "@/ui/proveedor-app";
 
 const ENLACES = [
   { href: "/", etiqueta: "Cerebro", Icono: Brain },
+  { href: "/universo", etiqueta: "Universo", Icono: Planet },
   { href: "/memoria", etiqueta: "Memoria", Icono: Search },
   { href: "/fuentes", etiqueta: "Fuentes", Icono: Database },
   { href: "/proyeccion", etiqueta: "Proyección", Icono: Timer },

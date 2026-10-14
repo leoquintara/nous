@@ -9,6 +9,7 @@ import type {
   Evento,
   EventoActividad,
   FuenteInfo,
+  Objetivo,
   Preferencias,
   Proyeccion,
   Relacion,
@@ -34,6 +35,24 @@ export interface NuevaFuente {
   namespace?: string;
   rama_origen?: string;
   metadata?: Record<string, unknown>;
+}
+
+/** Petición de creación de objetivo sobre la línea de universo. */
+export interface NuevoObjetivo {
+  titulo: string;
+  fecha_objetivo: number;
+  dimension?: Dimension | null;
+  descripcion?: string | null;
+  rama?: string;
+}
+
+/** Cambios parciales sobre un objetivo existente. */
+export interface ParcheObjetivo {
+  titulo?: string;
+  descripcion?: string | null;
+  fecha_objetivo?: number;
+  dimension?: Dimension | null;
+  estado?: Objetivo["estado"];
 }
 
 /** Puerto de acceso a la memoria Nous. */
@@ -62,6 +81,14 @@ export interface PuertoMemoria {
   proyectar(horizonteDias: number, diasHistorial: number): Promise<Proyeccion>;
   /** Devuelve la última proyección persistida sin recalcular. */
   proyeccionActual(): Promise<Proyeccion | { estado: "sin_proyecciones" }>;
+  /** Lista los objetivos del usuario (metas que anclan el futuro). */
+  listarObjetivos(estado?: string, rama?: string): Promise<Objetivo[]>;
+  /** Fija una meta en la línea de universo. */
+  crearObjetivo(objetivo: NuevoObjetivo): Promise<Objetivo>;
+  /** Aplica cambios parciales a un objetivo existente. */
+  actualizarObjetivo(id: string, parche: ParcheObjetivo): Promise<Objetivo>;
+  /** Cierra un objetivo (cumplido/abandonado) con resolución opcional. */
+  cerrarObjetivo(id: string, estado: "cumplido" | "abandonado", resolucion?: string): Promise<Objetivo>;
   /** Lista corridas de benchmark persistidas. */
   benchmarks(nombre?: string, limite?: number): Promise<BenchmarkRun[]>;
   /** Actividad cerebral reciente (store/recall) para el grafo vivo. */

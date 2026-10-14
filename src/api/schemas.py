@@ -64,6 +64,34 @@ class CerrarLoopRequest(BaseModel):
     fuente: str = Field(default="dashboard", min_length=1, max_length=50)
 
 
+class ObjetivoRequest(BaseModel):
+    """Cuerpo para fijar una meta en la línea de universo."""
+
+    titulo: str = Field(min_length=1, max_length=200)
+    fecha_objetivo: int = Field(ge=0)
+    dimension: Literal["cognitiva", "somatica", "conductual"] | None = None
+    descripcion: str | None = Field(default=None, max_length=10_000)
+    rama: str = Field(default="main", min_length=1, max_length=64)
+
+
+class ObjetivoPatch(BaseModel):
+    """Cambios parciales sobre un objetivo existente."""
+
+    titulo: str | None = Field(default=None, min_length=1, max_length=200)
+    descripcion: str | None = Field(default=None, max_length=10_000)
+    fecha_objetivo: int | None = Field(default=None, ge=0)
+    dimension: Literal["cognitiva", "somatica", "conductual"] | None = None
+    estado: Literal["activo", "cumplido", "abandonado"] | None = None
+
+
+class CerrarObjetivoRequest(BaseModel):
+    """Cuerpo para cerrar un objetivo (cumplido/abandonado)."""
+
+    estado: Literal["cumplido", "abandonado"]
+    resolucion: str | None = Field(default=None, max_length=10_000)
+    fuente: str = Field(default="dashboard", min_length=1, max_length=50)
+
+
 class RelacionResponse(BaseModel):
     """Vínculo entre dos eventos de la línea de universo."""
 

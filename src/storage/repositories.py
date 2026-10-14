@@ -19,6 +19,7 @@ from src.storage.models import (
     ConfiguracionModel,
     EventoModel,
     FuenteModel,
+    ObjetivoModel,
     ProyeccionModel,
     RelacionModel,
 )
@@ -795,3 +796,103 @@ class ProyeccionRepository:
         stmt = select(ProyeccionModel).order_by(ProyeccionModel.creado_en.desc()).limit(1)
         resultado = await self._session.execute(stmt)
         return resultado.scalars().first()
+
+
+class ObjetivoRepository:
+    """Acceso a datos de los objetivos administrables del usuario.
+
+    Un objetivo ancla una proyección futura: los cauces-fantasma del
+    río temporal convergen hacia él. Ciclo de vida auditable —
+    cumplido/abandonado son transiciones persistidas, no borrados.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Inicializa el repositorio con una sesión async.
+
+        Args:
+            session: Sesión async de SQLAlchemy.
+        """
+        self._session = session
+
+    async def crear(self, objetivo: ObjetivoModel) -> ObjetivoModel:
+        """Persiste un objetivo y lo retorna con su id asignado.
+
+        Args:
+            objetivo: Instancia de ObjetivoModel a persistir.
+
+        Returns:
+            El objetivo persistido con id y timestamps poblados.
+        """
+        self._session.add(objetivo)
+        await self._session.flush()
+        await self._session.refresh(objetivo)
+        return objetivo
+
+    async def listar(
+        self,
+        estado: str | None = None,
+        rama: str = "main",
+    ) -> Sequence[ObjetivoModel]:
+        """Lista objetivos filtrados por estado y línea de universo.
+
+        Args:
+            estado: Filtro de ciclo de vida; None = todos los estados.
+            rama: Línea de universo a consultar.
+
+        Returns:
+            Objetivos ordenados por fecha límite ascendente — primero
+            el más próximo, el ancla más cercana del futuro.
+        """
+        filtros = [ObjetivoModel.rama == rama]
+        if estado is not None:
+            filtros.append(ObjetivoModel.estado == estado)
+        stmt = (
+            select(ObjetivoModel)
+            .where(*filtros)
+            .order_by(ObjetivoModel.fecha_objetivo)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
+
+    async def obtener(self, objetivo_id: uuid.UUID) -> ObjetivoModel | None:
+        """Retorna el objetivo por id, o None si no existe."""
+        stmt = select(ObjetivoModel).where(ObjetivoModel.id == objetivo_id)
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().first()
+
+    async def actualizar(
+        self,
+        objetivo_id: uuid.UUID,
+        cambios: dict[str, Any],
+    ) -> ObjetivoModel | None:
+        """Aplica cambios parciales sobre un objetivo.
+
+        Args:
+            objetivo_id: UUID del objetivo.
+            cambios: Campos a actualizar (titulo, descripcion,
+                dimension, fecha_objetivo, estado, evento_cierre_id).
+
+        Returns:
+            El objetivo actualizado, o None si no existe.
+        """
+        stmt = (
+            update(ObjetivoModel)
+            .where(ObjetivoModel.id == objetivo_id)
+            .values(**cambios)
+            .returning(ObjetivoModel)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().first()
+
+    async def eliminar(self, objetivo_id: uuid.UUID) -> bool:
+        """Borra un objetivo en duro (petición explícita del usuario).
+
+        Args:
+            objetivo_id: UUID del objetivo.
+
+        Returns:
+            True si existía y se eliminó.
+        """
+        stmt = delete(ObjetivoModel).where(ObjetivoModel.id == objetivo_id)
+        resultado = await self._session.execute(stmt)
+        return (cast(CursorResult[ObjetivoModel], resultado).rowcount or 0) > 0

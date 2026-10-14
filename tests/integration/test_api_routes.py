@@ -59,6 +59,7 @@ async def cliente(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[AsyncClient]
             {"patron": f"{FUENTE_TEST}%"},
         )
         await conn.execute(text("DELETE FROM proyecciones"))
+        await conn.execute(text("DELETE FROM objetivos"))
     await engine.dispose()
 
 
@@ -541,3 +542,74 @@ async def test_contexto_inicial_devuelve_pack(cliente: AsyncClient) -> None:
     assert any(
         lp["con_quien"] == "Maria" for lp in pack["loops"]
     )
+
+
+@pytest.mark.asyncio
+async def test_objetivos_ciclo_de_vida(cliente: AsyncClient) -> None:
+    """Crear, listar activos y cerrar un objetivo con auditoría."""
+    futuro = 1_800_000_000 + 30 * 86_400
+    r = await cliente.post(
+        "/api/objetivos",
+        json={
+            "titulo": "Lanzar beta de nous",
+            "fecha_objetivo": futuro,
+            "dimension": "cognitiva",
+            "descripcion": "beta pública self-hosted",
+        },
+    )
+    assert r.status_code == 200
+    objetivo = r.json()
+    assert objetivo["estado"] == "activo"
+    assert objetivo["dimension"] == "cognitiva"
+
+    r = await cliente.get("/api/objetivos", params={"estado": "activo"})
+    assert any(o["id"] == objetivo["id"] for o in r.json())
+
+    r = await cliente.post(
+        f"/api/objetivos/{objetivo['id']}/cerrar",
+        json={
+            "estado": "cumplido",
+            "resolucion": "se lanzó la beta",
+            "fuente": FUENTE_TEST,
+        },
+    )
+    assert r.status_code == 200
+    cerrado = r.json()
+    assert cerrado["estado"] == "cumplido"
+    # La resolución queda enlazada como evento conductual.
+    assert cerrado["evento_cierre_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_objetivos_patch_actualiza_fecha(cliente: AsyncClient) -> None:
+    """PATCH modifica campos sueltos sin tocar el resto."""
+    r = await cliente.post(
+        "/api/objetivos",
+        json={"titulo": "meditar 30 días", "fecha_objetivo": 1_800_000_000},
+    )
+    oid = r.json()["id"]
+    nueva_fecha = 1_800_000_000 + 60 * 86_400
+    r = await cliente.patch(
+        f"/api/objetivos/{oid}", json={"fecha_objetivo": nueva_fecha}
+    )
+    assert r.status_code == 200
+    assert r.json()["fecha_objetivo"] == nueva_fecha
+    assert r.json()["titulo"] == "meditar 30 días"
+
+
+@pytest.mark.asyncio
+async def test_objetivos_validacion(cliente: AsyncClient) -> None:
+    """UUID inválido y dimension inválida se rechazan con 422."""
+    r = await cliente.patch(
+        "/api/objetivos/no-es-uuid", json={"titulo": "x"}
+    )
+    assert r.status_code == 422
+    r = await cliente.post(
+        "/api/objetivos",
+        json={
+            "titulo": "meta mala",
+            "fecha_objetivo": 1,
+            "dimension": "inexistente",
+        },
+    )
+    assert r.status_code == 422

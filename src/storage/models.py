@@ -251,6 +251,53 @@ class BenchmarkRunModel(Base):
     )
 
 
+class ObjetivoModel(Base):
+    """Meta del usuario que ancla una proyección futura.
+
+    Los cauces-fantasma del río temporal convergen hacia objetivos
+    activos. ``dimension`` None = objetivo transversal; ``estado`` es
+    un ciclo de vida auditable (activo → cumplido/abandonado) —
+    cerrar registra ``evento_cierre_id``, nunca se borra en duro.
+    """
+
+    __tablename__ = "objetivos"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    titulo: Mapped[str] = mapped_column(String(200), nullable=False)
+    descripcion: Mapped[str | None] = mapped_column(Text)
+    dimension: Mapped[str | None] = mapped_column(String(20))
+    fecha_objetivo: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    estado: Mapped[str] = mapped_column(String(20), server_default="activo")
+    rama: Mapped[str] = mapped_column(String(64), server_default="main")
+    evento_cierre_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("eventos.id", ondelete="SET NULL")
+    )
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    actualizado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "dimension IS NULL OR dimension IN "
+            "('cognitiva','somatica','conductual')",
+            name="ck_objetivos_dimension",
+        ),
+        CheckConstraint(
+            "estado IN ('activo','cumplido','abandonado')",
+            name="ck_objetivos_estado",
+        ),
+        Index("ix_objetivos_estado", "estado"),
+        Index("ix_objetivos_fecha", "fecha_objetivo"),
+    )
+
+
 class ConfiguracionModel(Base):
     """Configuración persistente del usuario (clave-valor)."""
 

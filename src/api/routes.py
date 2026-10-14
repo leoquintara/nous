@@ -11,6 +11,7 @@ from src.api.rate_limit import LimitadorIntentos
 from src.api.schemas import (
     BenchmarkResponse,
     CerrarLoopRequest,
+    CerrarObjetivoRequest,
     EventoRequest,
     EventoResponse,
     FuentePatch,
@@ -19,6 +20,8 @@ from src.api.schemas import (
     HealthResponse,
     LoginRequest,
     LoginResponse,
+    ObjetivoPatch,
+    ObjetivoRequest,
     RamificarRequest,
     RelacionResponse,
     TagResponse,
@@ -105,7 +108,7 @@ async def listar_eventos(
     Args:
         desde_unix: Inicio del rango, Unix epoch en segundos.
         hasta_unix: Fin del rango, Unix epoch en segundos.
-        limite: Máximo de eventos (1-500).
+        limite: Máximo de eventos (1-4000).
         rama: Línea de universo a listar ("main" por defecto,
             "*" para todas las ramas).
         repartir: Si es true, el límite se reparte por fuente —
@@ -178,6 +181,63 @@ async def cerrar_loop(
     """
     return await tools_impl._cerrar_loop(
         compromiso_id, peticion.resolucion, peticion.fuente
+    )
+
+
+@router.get("/objetivos", dependencies=[Depends(verificar_token)])
+async def listar_objetivos(
+    estado: str | None = "activo", rama: str = "main"
+) -> list[dict[str, Any]]:
+    """Lista los objetivos del usuario — metas que anclan el futuro.
+
+    Args:
+        estado: Filtro de ciclo de vida ("activo" default, "cumplido",
+            "abandonado", "*" para todos).
+        rama: Línea de universo a consultar.
+
+    Returns:
+        Objetivos ordenados por fecha límite, el más próximo primero.
+    """
+    return await tools_impl._objetivos(
+        None if estado == "*" else estado, rama
+    )
+
+
+@router.post("/objetivos", dependencies=[Depends(verificar_token)])
+async def crear_objetivo(peticion: ObjetivoRequest) -> dict[str, Any]:
+    """Fija una meta: las proyecciones fantasma convergen hacia ella."""
+    return await tools_impl._crear_objetivo(
+        peticion.titulo,
+        peticion.fecha_objetivo,
+        peticion.dimension,
+        peticion.descripcion,
+        peticion.rama,
+    )
+
+
+@router.patch("/objetivos/{objetivo_id}", dependencies=[Depends(verificar_token)])
+async def actualizar_objetivo(
+    objetivo_id: str, peticion: ObjetivoPatch
+) -> dict[str, Any]:
+    """Aplica cambios parciales a un objetivo existente."""
+    cambios = peticion.model_dump(exclude_none=True)
+    return await tools_impl._actualizar_objetivo(objetivo_id, cambios)
+
+
+@router.post("/objetivos/{objetivo_id}/cerrar", dependencies=[Depends(verificar_token)])
+async def cerrar_objetivo(
+    objetivo_id: str, peticion: CerrarObjetivoRequest
+) -> dict[str, Any]:
+    """Cierra un objetivo (cumplido/abandonado) con auditoría.
+
+    Si hay resolución, se registra como evento conductual enlazado —
+    el cierre es transición persistida, nunca un borrado.
+    """
+    return await tools_impl._cumplir_objetivo(
+        objetivo_id,
+        peticion.estado,
+        peticion.resolucion,
+        peticion.fuente,
     )
 
 

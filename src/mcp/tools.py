@@ -30,11 +30,12 @@ from src.core.reranker import ReordenadorLocal
 from src.core.temporal import detectar_trayectorias, proyectar
 from src.mcp.server import mcp_server
 from src.storage.database import crear_engine, get_session, obtener_engine
-from src.storage.models import EventoModel, ProyeccionModel
+from src.storage.models import EventoModel, ObjetivoModel, ProyeccionModel
 from src.storage.repositories import (
     ConfiguracionRepository,
     EventoRepository,
     FuenteRepository,
+    ObjetivoRepository,
     ProyeccionRepository,
     RelacionRepository,
 )
@@ -630,7 +631,7 @@ async def _linea(
         raise ErrorValidacion("desde_unix debe ser <= hasta_unix")
     async with get_session(obtener_engine()) as session:
         eventos = await EventoRepository(session).listar_por_rango(
-            desde_unix, hasta_unix, min(max(limite, 1), 500), rama, repartir
+            desde_unix, hasta_unix, min(max(limite, 1), 4000), rama, repartir
         )
     return [_modelo_a_dict(e) for e in eventos]
 
@@ -694,6 +695,109 @@ async def _cerrar_loop(
         "cierre_id": str(cierre_id),
         "estado": "cerrado",
     }
+
+
+def _objetivo_a_dict(o: ObjetivoModel) -> dict[str, Any]:
+    """Serializa un objetivo a dict JSON-friendly."""
+    return {
+        "id": str(o.id),
+        "titulo": o.titulo,
+        "descripcion": o.descripcion,
+        "dimension": o.dimension,
+        "fecha_objetivo": o.fecha_objetivo,
+        "estado": o.estado,
+        "rama": o.rama,
+        "evento_cierre_id": (
+            str(o.evento_cierre_id) if o.evento_cierre_id else None
+        ),
+    }
+
+
+async def _objetivos(
+    estado: str | None = "activo", rama: str = "main"
+) -> list[dict[str, Any]]:
+    """Lista objetivos del usuario filtrados por estado y rama."""
+    async with get_session(obtener_engine()) as session:
+        filas = await ObjetivoRepository(session).listar(estado, rama)
+    return [_objetivo_a_dict(o) for o in filas]
+
+
+async def _crear_objetivo(
+    titulo: str,
+    fecha_objetivo: int,
+    dimension: str | None,
+    descripcion: str | None,
+    rama: str,
+) -> dict[str, Any]:
+    """Persiste un objetivo que ancla una proyección futura."""
+    titulo = titulo.strip()
+    if not titulo:
+        raise ErrorValidacion("el titulo del objetivo no puede estar vacío")
+    if dimension is not None and dimension not in (
+        "cognitiva", "somatica", "conductual",
+    ):
+        raise ErrorValidacion(
+            f"dimension inválida: {dimension!r} "
+            "(cognitiva|somatica|conductual)"
+        )
+    async with get_session(obtener_engine()) as session:
+        objetivo = await ObjetivoRepository(session).crear(
+            ObjetivoModel(
+                titulo=titulo,
+                descripcion=descripcion,
+                dimension=dimension,
+                fecha_objetivo=fecha_objetivo,
+                rama=rama,
+            )
+        )
+        await session.commit()
+    return _objetivo_a_dict(objetivo)
+
+
+async def _actualizar_objetivo(
+    objetivo_id: str, cambios: dict[str, Any]
+) -> dict[str, Any]:
+    """Aplica cambios parciales a un objetivo existente."""
+    try:
+        oid = uuid.UUID(str(objetivo_id))
+    except (ValueError, AttributeError) as e:
+        raise ErrorValidacion(
+            f"objetivo_id no es un UUID válido: {objetivo_id!r}"
+        ) from e
+    async with get_session(obtener_engine()) as session:
+        objetivo = await ObjetivoRepository(session).actualizar(oid, cambios)
+        if objetivo is None:
+            raise ErrorValidacion(f"objetivo no encontrado: {objetivo_id}")
+        await session.commit()
+    return _objetivo_a_dict(objetivo)
+
+
+async def _cumplir_objetivo(
+    objetivo_id: str, estado: str, resolucion: str | None, fuente: str
+) -> dict[str, Any]:
+    """Cierra un objetivo (cumplido/abandonado) con auditoría opcional.
+
+    Si hay resolución, se registra como evento conductual enlazado al
+    objetivo vía ``evento_cierre_id`` — el cierre es transición
+    persistida, nunca borrado.
+    """
+    if estado not in ("cumplido", "abandonado"):
+        raise ErrorValidacion(
+            f"estado de cierre inválido: {estado!r} (cumplido|abandonado)"
+        )
+    cambios: dict[str, Any] = {"estado": estado}
+    if resolucion:
+        cierre = await _recordar(
+            resolucion,
+            "conductual",
+            fuente,
+            0.7,
+            None,
+            None,
+            tags=["objetivo", estado],
+        )
+        cambios["evento_cierre_id"] = uuid.UUID(str(cierre["id"]))
+    return await _actualizar_objetivo(objetivo_id, cambios)
 
 
 async def _contexto_inicial(top_n: int = 8) -> dict[str, Any]:
@@ -944,6 +1048,86 @@ async def contexto_inicial(
         "calientes" (más reforzados de la semana) y "stats" globales.
     """
     return await _contexto_inicial(top_n)
+
+
+@mcp_server.tool()
+async def listar_objetivos(
+    estado: str = "activo",
+    rama: str = "main",
+) -> list[dict[str, Any]]:
+    """Lista los objetivos del usuario — las metas que anclan el futuro.
+
+    USAR CUANDO: preguntes "qué metas tengo", "para cuándo es X" o
+    quieras ver hacia qué convergen las proyecciones. Un objetivo
+    tiene fecha límite y dimensión opcional; su ciclo de vida es
+    auditable (activo → cumplido/abandonado).
+
+    Args:
+        estado: Filtro de ciclo de vida ("activo" default,
+            "cumplido", "abandonado", "*" para todos).
+        rama: Línea de universo a consultar ("main" por defecto).
+
+    Returns:
+        Objetivos con id, titulo, dimension, fecha_objetivo, estado —
+        ordenados por fecha límite, el más próximo primero.
+    """
+    return await _objetivos(None if estado == "*" else estado, rama)
+
+
+@mcp_server.tool()
+async def crear_objetivo(
+    titulo: str,
+    fecha_objetivo: int,
+    dimension: str | None = None,
+    descripcion: str | None = None,
+    rama: str = "main",
+) -> dict[str, Any]:
+    """Fija una meta en la línea de universo — las proyecciones
+    fantasma convergen hacia ella.
+
+    USAR CUANDO: el usuario declare una meta con plazo ("quiero
+    lanzar nous en junio", "meditar 30 días"). El timestamp es Unix
+    epoch en SEGUNDOS. Sin dimensión = objetivo transversal.
+
+    Args:
+        titulo: Nombre corto de la meta.
+        fecha_objetivo: Fecha límite, Unix epoch en segundos.
+        dimension: cognitiva|somatica|conductual, o None transversal.
+        descripcion: Detalle opcional de la meta.
+        rama: Línea de universo donde vive ("main" por defecto).
+
+    Returns:
+        El objetivo creado con su id.
+    """
+    return await _crear_objetivo(
+        titulo, fecha_objetivo, dimension, descripcion, rama
+    )
+
+
+@mcp_server.tool()
+async def cerrar_objetivo(
+    objetivo_id: str,
+    estado: str,
+    resolucion: str | None = None,
+    fuente: str = "agente",
+) -> dict[str, Any]:
+    """Cierra un objetivo como cumplido o abandonado — transición
+    auditable, nunca borrado.
+
+    USAR CUANDO: el usuario logró o descartó una meta. Si pasas
+    ``resolucion`` se registra como evento conductual enlazado al
+    objetivo — la línea conserva cómo se resolvió.
+
+    Args:
+        objetivo_id: UUID del objetivo (de listar_objetivos).
+        estado: "cumplido" o "abandonado".
+        resolucion: Texto opcional del cierre ("lancé la beta").
+        fuente: Origen del cierre (default "agente").
+
+    Returns:
+        El objetivo actualizado con su nuevo estado.
+    """
+    return await _cumplir_objetivo(objetivo_id, estado, resolucion, fuente)
 
 
 @mcp_server.tool()
