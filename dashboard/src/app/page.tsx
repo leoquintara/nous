@@ -9,13 +9,14 @@
  * Las preferencias y los pins se persisten en PostgreSQL.
  */
 
-import { Settings } from "iconoir-react";
+import { Cpu, Settings } from "iconoir-react";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { usarApp } from "@/ui/proveedor-app";
 import { Shell } from "@/ui/shell";
-import type { EventoActividad } from "@/domain/modelos";
+import type { EventoActividad, PrediccionIA } from "@/domain/modelos";
+import { PanelIA } from "@/ui/panel-ia";
 import type { CerebroHandle } from "@/ui/brain/CerebroCanvas";
 import {
   CursorTemporal,
@@ -57,6 +58,9 @@ export default function PaginaCerebro() {
   const [cargando, setCargando] = useState(false);
   const [panelAbierto, setPanelAbierto] = useState(false);
   const [historial, setHistorial] = useState<EventoActividad[]>([]);
+  const [iaDisponible, setIaDisponible] = useState(false);
+  const [analisisIA, setAnalisisIA] = useState<PrediccionIA | null>(null);
+  const [cargandoIA, setCargandoIA] = useState(false);
   // Cursor del observador 4D: null = presente vivo.
   const [cursor, setCursor] = useState<number | null>(null);
   const [reproduciendo, setReproduciendo] = useState(false);
@@ -96,6 +100,32 @@ export default function PaginaCerebro() {
     const id = setTimeout(recargar, 0);
     return () => clearTimeout(id);
   }, [recargar]);
+
+  // ¿Hay un proveedor de IA configurado? El botón solo aparece entonces.
+  useEffect(() => {
+    memoria
+      ?.listarProveedoresIA()
+      .then((ps) =>
+        setIaDisponible(ps.some((p) => p.habilitado && p.api_key_set)),
+      )
+      .catch(() => {});
+  }, [memoria]);
+
+  /** Analiza el estado actual de la memoria con el LLM configurado. */
+  const analizarIA = useCallback(async () => {
+    if (!memoria || cargandoIA) return;
+    setCargandoIA(true);
+    try {
+      setAnalisisIA(await memoria.predecirIA({ horizonte_dias: 30 }));
+    } catch (e) {
+      setAnalisisIA({
+        ok: false,
+        motivo: e instanceof Error ? e.message : "Error de red",
+      });
+    } finally {
+      setCargandoIA(false);
+    }
+  }, [memoria, cargandoIA]);
 
   // Fuentes ocultas: srcFilter nulo = todas visibles.
   const ocultas = useMemo(() => {
@@ -329,6 +359,23 @@ export default function PaginaCerebro() {
           ) : (
             <div />
           )}
+          {iaDisponible && (
+            <button
+              type="button"
+              onClick={() => void analizarIA()}
+              disabled={cargandoIA}
+              title="Analizar el estado de la memoria con IA"
+              className="vidrio-fuerte texto-suave pointer-events-auto flex items-center gap-1.5 self-end rounded-xl px-3 py-2 text-xs transition hover:text-(--ink) disabled:opacity-50"
+            >
+              <Cpu
+                width={14}
+                height={14}
+                className={cargandoIA ? "animate-pulse" : ""}
+                style={{ color: "var(--primary)" }}
+              />
+              {cargandoIA ? "Analizando…" : "Analizar con IA"}
+            </button>
+          )}
           <div className="vidrio-fuerte pointer-events-auto flex flex-col">
             <button
               type="button"
@@ -355,6 +402,15 @@ export default function PaginaCerebro() {
             )}
           </div>
         </div>
+
+        {analisisIA && !panelAbierto && (
+          <div className="absolute top-14 right-3 z-10 w-80">
+            <PanelIA
+              prediccion={analisisIA}
+              alCerrar={() => setAnalisisIA(null)}
+            />
+          </div>
+        )}
 
         <div className="pointer-events-none absolute bottom-3 left-3 z-10">
           <div className="vidrio-fuerte">

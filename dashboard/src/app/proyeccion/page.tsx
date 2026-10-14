@@ -11,6 +11,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { usarApp } from "@/ui/proveedor-app";
+import { PanelIA } from "@/ui/panel-ia";
 import { Shell } from "@/ui/shell";
 import type { PrediccionIA, Proyeccion } from "@/domain/modelos";
 
@@ -122,77 +123,10 @@ export default function PaginaProyeccion() {
         )}
 
         {prediccion && (
-          <div className="vidrio flex flex-col gap-3 rounded-2xl p-5">
-            {prediccion.ok ? (
-              <>
-                <header className="flex items-baseline justify-between">
-                  <h2 className="font-semibold">Análisis del modelo</h2>
-                  <span className="texto-suave text-xs">
-                    {prediccion.proveedor} · {prediccion.modelo}
-                    {prediccion.latencia_ms != null &&
-                      ` · ${prediccion.latencia_ms}ms`}
-                    {prediccion.fallback && (
-                      <span
-                        className="ml-1 rounded-full px-1.5 py-0.5 text-[0.65rem]"
-                        style={{
-                          background: "var(--halo)",
-                          color: "var(--primary)",
-                        }}
-                      >
-                        vía fallback
-                      </span>
-                    )}
-                  </span>
-                </header>
-                {prediccion.razonamiento && (
-                  <p className="texto-suave text-sm italic">
-                    {prediccion.razonamiento}
-                  </p>
-                )}
-                <ul className="flex flex-col gap-2">
-                  {(prediccion.escenarios ?? []).map((e, i) => (
-                    <li
-                      key={i}
-                      className="vidrio flex flex-col gap-1 rounded-xl p-3"
-                    >
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="font-medium">{e.nombre}</span>
-                        <span
-                          className="tabular-nums"
-                          style={{ color: "var(--primary)" }}
-                        >
-                          {(e.probabilidad * 100).toFixed(0)}%
-                        </span>
-                      </div>
-                      <div
-                        className="vidrio h-1.5 overflow-hidden rounded-full"
-                        role="progressbar"
-                        aria-valuenow={Math.round(e.probabilidad * 100)}
-                        aria-valuemin={0}
-                        aria-valuemax={100}
-                        aria-label={`Probabilidad ${e.nombre}`}
-                      >
-                        <motion.div
-                          className="h-full rounded-full"
-                          style={{ background: "var(--primary)" }}
-                          initial={{ width: 0 }}
-                          animate={{ width: `${e.probabilidad * 100}%` }}
-                          transition={{ delay: i * 0.08 }}
-                        />
-                      </div>
-                      {e.descripcion && (
-                        <p className="texto-suave text-xs">{e.descripcion}</p>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </>
-            ) : (
-              <p className="texto-suave text-sm">
-                El motor predictivo no respondió: {prediccion.motivo}
-              </p>
-            )}
-          </div>
+          <PanelIA
+            prediccion={prediccion}
+            alCerrar={() => setPrediccion(null)}
+          />
         )}
 
         {error && (

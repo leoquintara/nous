@@ -14,6 +14,7 @@
 import { motion } from "motion/react";
 import {
   Check,
+  Cpu,
   TriangleFlag,
   NavArrowDown,
   NavArrowUp,
@@ -32,8 +33,10 @@ import type {
   Evento,
   FuenteInfo,
   Objetivo,
+  PrediccionIA,
   Trayectoria,
 } from "@/domain/modelos";
+import { PanelIA } from "@/ui/panel-ia";
 import { CursorTemporal } from "@/ui/brain/controles";
 import {
   construirEscenarios,
@@ -157,6 +160,9 @@ export default function PaginaUniverso() {
     Map<string, { probabilidad: number; descripcion: string }>
   >(new Map());
   const [iaActiva, setIaActiva] = useState(false);
+  /** Última respuesta completa del motor (para el panel visible). */
+  const [analisisIA, setAnalisisIA] = useState<PrediccionIA | null>(null);
+  const [cargandoIA, setCargandoIA] = useState(false);
 
   useEffect(() => {
     memoria
@@ -193,20 +199,55 @@ export default function PaginaUniverso() {
         })
         .then((r) => {
           if (!r.ok || !r.escenarios) return;
-          const mapa = new Map<
-            string,
-            { probabilidad: number; descripcion: string }
-          >();
-          for (const e of r.escenarios) {
-            if (e.id) mapa.set(e.id, e);
-            mapa.set(`nombre:${e.nombre}`, e);
-          }
-          setAjustesIA(mapa);
+          setAjustesIA(mapaDeAjustes(r));
         })
         .catch(() => {});
     }, 800);
     return () => clearTimeout(timer);
   }, [memoria, iaActiva, escenarios, origenEnfocado]);
+
+  /** Mapa de ajustes por id/nombre a partir de la respuesta del LLM. */
+  function mapaDeAjustes(
+    r: PrediccionIA,
+  ): Map<string, { probabilidad: number; descripcion: string }> {
+    const mapa = new Map<
+      string,
+      { probabilidad: number; descripcion: string }
+    >();
+    for (const e of r.escenarios ?? []) {
+      if (e.id) mapa.set(e.id, e);
+      mapa.set(`nombre:${e.nombre}`, e);
+    }
+    return mapa;
+  }
+
+  /** Análisis explícito desde el punto enfocado: re-pondera y muestra
+   *  la respuesta completa (proveedor, latencia, razonamiento). */
+  async function analizarIA() {
+    if (!memoria || cargandoIA) return;
+    setCargandoIA(true);
+    try {
+      const r = await memoria.predecirIA({
+        origen_unix: origenEnfocado ?? undefined,
+        horizonte_dias: 30,
+        candidatos: escenarios.map((e) => ({
+          id: e.id,
+          nombre: e.nombre,
+          probabilidad: e.probabilidad,
+          descripcion: e.descripcion,
+        })),
+      });
+      setAnalisisIA(r);
+      if (r.ok) setAjustesIA(mapaDeAjustes(r));
+    } catch (e) {
+      setAnalisisIA({
+        ok: false,
+        motivo: e instanceof Error ? e.message : "Error de red",
+      });
+    } finally {
+      setCargandoIA(false);
+    }
+  }
 
   /** Escenarios con los ajustes del LLM fusionados (si los hay). */
   const escenariosFinal = useMemo(
@@ -392,6 +433,23 @@ export default function PaginaUniverso() {
             )}
           </div>
           <div className="pointer-events-auto flex items-start gap-2">
+            {iaActiva && (
+              <button
+                type="button"
+                onClick={() => void analizarIA()}
+                disabled={cargandoIA}
+                title="Analizar con IA desde el punto enfocado"
+                className="vidrio-fuerte texto-suave flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs transition hover:text-(--ink) disabled:opacity-50"
+              >
+                <Cpu
+                  width={14}
+                  height={14}
+                  className={cargandoIA ? "animate-pulse" : ""}
+                  style={{ color: "var(--primary)" }}
+                />
+                {cargandoIA ? "Analizando…" : "Analizar con IA"}
+              </button>
+            )}
             <div className="vidrio-fuerte flex flex-col rounded-2xl">
               <button
                 type="button"
@@ -517,6 +575,17 @@ export default function PaginaUniverso() {
             }
             alCerrar={() => setSelFantasma(null)}
           />
+        )}
+
+        {/* Análisis IA desde el punto enfocado. */}
+        {analisisIA && (
+          <div className="absolute right-3 bottom-3 z-10 w-80">
+            <PanelIA
+              prediccion={analisisIA}
+              alCerrar={() => setAnalisisIA(null)}
+              titulo="Análisis desde el punto enfocado"
+            />
+          </div>
         )}
 
         {/* Ficha del objetivo (faro) seleccionado. */}
