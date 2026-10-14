@@ -2,6 +2,7 @@
 
 import hmac
 import re
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -22,11 +23,14 @@ from src.api.schemas import (
     LoginResponse,
     ObjetivoPatch,
     ObjetivoRequest,
+    PredecirRequest,
+    ProveedorIARequest,
     RamificarRequest,
     RelacionResponse,
     TagResponse,
 )
 from src.config import get_settings
+from src.core import ia
 from src.mcp import tools as tools_impl
 from src.storage.database import get_session, obtener_engine
 from src.storage.repositories import (
@@ -431,6 +435,100 @@ async def guardar_preferencia(clave: str, valor: dict[str, Any]) -> dict[str, An
     """
     await tools_impl._preferencia_guardar(_validar_clave(clave), valor)
     return {"clave": clave, "guardado": True}
+
+
+# ── Proveedores de IA y motor predictivo ─────────────────────────
+# Local-first: sin proveedor habilitado Nous funciona completo. Las
+# API keys se guardan cifradas (pgcrypto) y la API solo expone la
+# máscara; ``incluir_contenido`` autoriza enviar fragmentos de
+# memorias — por defecto solo viajan agregados estadísticos.
+
+
+@router.get("/ia/proveedores", dependencies=[Depends(verificar_token)])
+async def listar_proveedores_ia() -> list[dict[str, Any]]:
+    """Lista los proveedores de IA configurados (keys enmascaradas)."""
+    async with get_session(obtener_engine()) as session:
+        return await ia.listar_proveedores(session)
+
+
+@router.put("/ia/proveedores/{pid}", dependencies=[Depends(verificar_token)])
+async def guardar_proveedor_ia(
+    pid: str, peticion: ProveedorIARequest
+) -> dict[str, Any]:
+    """Crea o actualiza un proveedor de IA (key cifrada en PostgreSQL).
+
+    Si ``api_key`` no viene en el cuerpo, se conserva la existente.
+    """
+    async with get_session(obtener_engine()) as session:
+        try:
+            publico = await ia.guardar_proveedor(
+                session, pid, peticion.model_dump()
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        await session.commit()
+    return publico
+
+
+@router.delete("/ia/proveedores/{pid}", dependencies=[Depends(verificar_token)])
+async def eliminar_proveedor_ia(pid: str) -> dict[str, Any]:
+    """Elimina un proveedor de IA y su key cifrada."""
+    async with get_session(obtener_engine()) as session:
+        ok = await ia.eliminar_proveedor(session, pid)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Proveedor no encontrado")
+        await session.commit()
+    return {"id": pid, "eliminado": True}
+
+
+@router.post("/ia/proveedores/{pid}/probar", dependencies=[Depends(verificar_token)])
+async def probar_proveedor_ia(pid: str) -> dict[str, Any]:
+    """Prueba conectividad con el endpoint (GET /models)."""
+    async with get_session(obtener_engine()) as session:
+        return await ia.probar_proveedor(session, pid)
+
+
+@router.post("/ia/predecir", dependencies=[Depends(verificar_token)])
+async def predecir_ia(peticion: PredecirRequest) -> dict[str, Any]:
+    """Genera escenarios de futuro con el proveedor de IA habilitado.
+
+    El LLM recibe el resumen estadístico de la línea hasta ``origen``
+    (más fragmentos de memorias solo si el proveedor tiene
+    ``incluir_contenido``) y devuelve escenarios con probabilidad y
+    narrativa. Con ``candidatos`` se re-ponderan los futuros
+    heurísticos del río. Sin proveedor, ``ok=false`` y el consumidor
+    cae a la heurística local.
+    """
+    origen = peticion.origen_unix or int(time.time())
+    eventos = [
+        {
+            "ts": e["timestamp_unix"],
+            "dimension": e["dimension"],
+            "amplitud": e["amplitud"],
+            "contenido": e["contenido"],
+        }
+        for e in await tools_impl._linea(0, origen, 800, None, True)
+    ]
+    metas = [
+        {"titulo": o["titulo"], "fecha_objetivo": o["fecha_objetivo"]}
+        for o in await tools_impl._objetivos("activo", "main")
+    ]
+    loops = len(await tools_impl._open_loops("main"))
+    async with get_session(obtener_engine()) as session:
+        return await ia.predecir_escenarios(
+            session,
+            origen=origen,
+            horizonte_dias=peticion.horizonte_dias,
+            eventos=eventos,
+            metas=metas,
+            loops_abiertos=loops,
+            candidatos=(
+                [c.model_dump() for c in peticion.candidatos]
+                if peticion.candidatos
+                else None
+            ),
+            proveedor_id=peticion.proveedor_id,
+        )
 
 
 @router.get("/actividad", dependencies=[Depends(verificar_token)])

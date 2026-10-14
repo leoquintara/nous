@@ -162,3 +162,38 @@ class FuenteResponse(BaseModel):
     rama_origen: str
     metadata: dict[str, Any]
     eventos: int
+
+
+class ProveedorIARequest(BaseModel):
+    """Cuerpo para configurar un proveedor de IA externo.
+
+    ``api_key`` es opcional en actualizaciones: si no viene, se
+    conserva la ya cifrada. ``incluir_contenido`` autoriza enviar
+    fragmentos de memorias al endpoint — por defecto solo viajan
+    agregados estadísticos.
+    """
+
+    nombre: str = Field(min_length=1, max_length=80)
+    base_url: str = Field(min_length=8, max_length=300)
+    modelo: str = Field(min_length=1, max_length=120)
+    api_key: str | None = Field(default=None, max_length=300)
+    habilitado: bool = True
+    incluir_contenido: bool = False
+
+
+class CandidatoPredictivo(BaseModel):
+    """Candidato heurístico que el LLM puede re-ponderar."""
+
+    id: str = Field(max_length=80)
+    nombre: str = Field(max_length=80)
+    probabilidad: float = Field(ge=0.0, le=1.0)
+    descripcion: str = Field(default="", max_length=400)
+
+
+class PredecirRequest(BaseModel):
+    """Cuerpo de la petición de predicción con IA."""
+
+    origen_unix: int | None = Field(default=None, ge=0)
+    horizonte_dias: int = Field(default=30, ge=1, le=365)
+    candidatos: list[CandidatoPredictivo] | None = Field(default=None, max_length=12)
+    proveedor_id: str | None = Field(default=None, max_length=40)

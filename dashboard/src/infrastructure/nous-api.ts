@@ -20,9 +20,13 @@ import type {
   Evento,
   EventoActividad,
   FuenteInfo,
+  NuevoProveedorIA,
   Objetivo,
+  PrediccionIA,
   Preferencias,
+  ProveedorIA,
   Proyeccion,
+  PruebaProveedor,
   Relacion,
   ResultadoBusqueda,
   TagConteo,
@@ -155,6 +159,32 @@ export function crearClienteNous(token: string): PuertoMemoria {
         { method: "PUT", body: JSON.stringify(valor) },
       );
     },
+    listarProveedoresIA: () =>
+      peticion<ProveedorIA[]>(`/api/ia/proveedores`, token),
+    guardarProveedorIA: (id, datos: NuevoProveedorIA) =>
+      peticion<ProveedorIA>(
+        `/api/ia/proveedores/${encodeURIComponent(id)}`,
+        token,
+        { method: "PUT", body: JSON.stringify(datos) },
+      ),
+    eliminarProveedorIA: async (id) => {
+      await peticion<{ eliminado: boolean }>(
+        `/api/ia/proveedores/${encodeURIComponent(id)}`,
+        token,
+        { method: "DELETE" },
+      );
+    },
+    probarProveedorIA: (id) =>
+      peticion<PruebaProveedor>(
+        `/api/ia/proveedores/${encodeURIComponent(id)}/probar`,
+        token,
+        { method: "POST" },
+      ),
+    predecirIA: (entrada) =>
+      peticion<PrediccionIA>(`/api/ia/predecir`, token, {
+        method: "POST",
+        body: JSON.stringify(entrada),
+      }),
   };
 }
 

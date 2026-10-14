@@ -104,6 +104,14 @@ export default function PaginaUniverso() {
     [rio],
   );
 
+  /** Instante desde el que se proyecta el futuro (cursor o ahora). */
+  const origenEnfocado = useMemo(() => {
+    if (!rio) return null;
+    return cursor == null
+      ? rio.ctx.tMax
+      : Math.min(Math.max(cursor, rio.ctx.tMin), rio.ctx.tMax);
+  }, [rio, cursor]);
+
   /**
    * Escenarios de futuro proyectados desde el punto enfocado:
    * brotan del cursor (o del "ahora" si no hay viaje) y se
@@ -111,11 +119,8 @@ export default function PaginaUniverso() {
    * así el usuario explora futuros contrafácticos en cualquier t.
    */
   const escenarios = useMemo(() => {
-    if (!rio) return [];
-    const origen =
-      cursor == null
-        ? rio.ctx.tMax
-        : Math.min(Math.max(cursor, rio.ctx.tMin), rio.ctx.tMax);
+    if (!rio || origenEnfocado == null) return [];
+    const origen = origenEnfocado;
     // Loops abiertos *en el origen*: el cierre cuenta solo si su
     // evento de cierre ya existía en ese instante.
     const tsPorId = new Map(rio.eventos.map((e) => [e.id, e.timestamp_unix]));
@@ -145,7 +150,80 @@ export default function PaginaUniverso() {
       ctx: rio.ctx,
       maxEscenarios: prefs.maxEscenarios,
     });
-  }, [rio, eventosRio, cursor, objetivos, prefs.maxEscenarios]);
+  }, [rio, eventosRio, origenEnfocado, objetivos, prefs.maxEscenarios]);
+
+  /** Ajustes de probabilidad/narrativa devueltos por el LLM. */
+  const [ajustesIA, setAjustesIA] = useState<
+    Map<string, { probabilidad: number; descripcion: string }>
+  >(new Map());
+  const [iaActiva, setIaActiva] = useState(false);
+
+  useEffect(() => {
+    memoria
+      ?.listarProveedoresIA()
+      .then((ps) =>
+        setIaActiva(ps.some((p) => p.habilitado && p.api_key_set)),
+      )
+      .catch(() => {});
+  }, [memoria]);
+
+  /**
+   * Re-ponderado por LLM: cuando hay proveedor habilitado, los
+   * candidatos heurísticos se envían al motor predictivo (debounce
+   * generoso — es una llamada de red, no por cada tick del slider).
+   * Los ajustes se fusionan por id (o nombre) y el río se re-monta.
+   */
+  useEffect(() => {
+    if (!memoria || !iaActiva || escenarios.length === 0) {
+      setAjustesIA(new Map());
+      return;
+    }
+    const origen = origenEnfocado ?? undefined;
+    const timer = setTimeout(() => {
+      memoria
+        .predecirIA({
+          origen_unix: origen,
+          horizonte_dias: 30,
+          candidatos: escenarios.map((e) => ({
+            id: e.id,
+            nombre: e.nombre,
+            probabilidad: e.probabilidad,
+            descripcion: e.descripcion,
+          })),
+        })
+        .then((r) => {
+          if (!r.ok || !r.escenarios) return;
+          const mapa = new Map<
+            string,
+            { probabilidad: number; descripcion: string }
+          >();
+          for (const e of r.escenarios) {
+            if (e.id) mapa.set(e.id, e);
+            mapa.set(`nombre:${e.nombre}`, e);
+          }
+          setAjustesIA(mapa);
+        })
+        .catch(() => {});
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [memoria, iaActiva, escenarios, origenEnfocado]);
+
+  /** Escenarios con los ajustes del LLM fusionados (si los hay). */
+  const escenariosFinal = useMemo(
+    () =>
+      escenarios.map((e) => {
+        const ajuste =
+          ajustesIA.get(e.id) ?? ajustesIA.get(`nombre:${e.nombre}`);
+        return ajuste
+          ? {
+              ...e,
+              probabilidad: ajuste.probabilidad,
+              descripcion: ajuste.descripcion || e.descripcion,
+            }
+          : e;
+      }),
+    [escenarios, ajustesIA],
+  );
 
   /** Reconstruye el río con eventos + relaciones + proyección + metas. */
   const recargar = useCallback(
@@ -270,7 +348,7 @@ export default function PaginaUniverso() {
         {rio && (
           <UniversoCanvas
             rio={rio}
-            escenarios={escenarios}
+            escenarios={escenariosFinal}
             cursor={cursor}
             vista={prefs}
             alCambiarCursor={setCursor}

@@ -896,3 +896,49 @@ class ObjetivoRepository:
         stmt = delete(ObjetivoModel).where(ObjetivoModel.id == objetivo_id)
         resultado = await self._session.execute(stmt)
         return (cast(CursorResult[ObjetivoModel], resultado).rowcount or 0) > 0
+
+
+class CifradoRepository:
+    """Cifrado simétrico server-side vía pgcrypto.
+
+    Las claves de proveedores externos se guardan cifradas dentro del
+    JSONB de ``configuracion``; la passphrase nunca sale del proceso.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Inicializa el repositorio con una sesión async.
+
+        Args:
+            session: Sesión async de SQLAlchemy.
+        """
+        self._session = session
+
+    async def cifrar(self, texto: str, passphrase: str) -> str:
+        """Cifra un texto con ``pgp_sym_encrypt`` y lo devuelve en base64.
+
+        Args:
+            texto: Secreto en claro (p. ej. una API key).
+            passphrase: Frase de cifrado simétrico.
+
+        Returns:
+            Ciphertext codificado en base64, apto para guardar en JSONB.
+        """
+        stmt = select(
+            func.encode(func.pgp_sym_encrypt(texto, passphrase), "base64")
+        )
+        return str((await self._session.execute(stmt)).scalar_one())
+
+    async def descifrar(self, b64: str, passphrase: str) -> str:
+        """Descifra un ciphertext base64 con ``pgp_sym_decrypt``.
+
+        Args:
+            b64: Ciphertext base64 producido por ``cifrar``.
+            passphrase: Frase de cifrado simétrico.
+
+        Returns:
+            El texto original en claro.
+        """
+        stmt = select(
+            func.pgp_sym_decrypt(func.decode(b64, "base64"), passphrase)
+        )
+        return str((await self._session.execute(stmt)).scalar_one())

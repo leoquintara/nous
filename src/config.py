@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     api_port: int = 8720
     dashboard_usuario: str | None = None
     dashboard_password: str | None = None
+    clave_cifrado: str | None = None
     log_level: str = "INFO"
 
     @field_validator("api_token")

@@ -5,13 +5,18 @@
 
 import type {
   BenchmarkRun,
+  CandidatoPredictivo,
   Dimension,
   Evento,
   EventoActividad,
   FuenteInfo,
+  NuevoProveedorIA,
   Objetivo,
+  PrediccionIA,
   Preferencias,
+  ProveedorIA,
   Proyeccion,
+  PruebaProveedor,
   Relacion,
   ResultadoBusqueda,
   TagConteo,
@@ -97,6 +102,21 @@ export interface PuertoMemoria {
   leerPreferencias(clave: string): Promise<Preferencias>;
   /** Persiste un documento de preferencias en PostgreSQL. */
   guardarPreferencias(clave: string, valor: Preferencias): Promise<void>;
+  /** Lista los proveedores de IA configurados (keys enmascaradas). */
+  listarProveedoresIA(): Promise<ProveedorIA[]>;
+  /** Crea o actualiza un proveedor de IA. */
+  guardarProveedorIA(id: string, datos: NuevoProveedorIA): Promise<ProveedorIA>;
+  /** Elimina un proveedor de IA y su key cifrada. */
+  eliminarProveedorIA(id: string): Promise<void>;
+  /** Prueba conectividad con el endpoint del proveedor. */
+  probarProveedorIA(id: string): Promise<PruebaProveedor>;
+  /** Pide escenarios de futuro al motor predictivo (degrada a ok=false). */
+  predecirIA(entrada: {
+    origen_unix?: number;
+    horizonte_dias?: number;
+    candidatos?: CandidatoPredictivo[];
+    proveedor_id?: string;
+  }): Promise<PrediccionIA>;
 }
 
 /** Puerto de autenticación del dashboard. */

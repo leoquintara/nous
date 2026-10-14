@@ -7,6 +7,7 @@
 
 import {
   Brain,
+  Cpu,
   Database,
   HalfMoon,
   LogOut,
@@ -29,6 +30,7 @@ const ENLACES = [
   { href: "/fuentes", etiqueta: "Fuentes", Icono: Database },
   { href: "/proyeccion", etiqueta: "Proyección", Icono: Timer },
   { href: "/benchmarks", etiqueta: "Benchmarks", Icono: Refresh },
+  { href: "/modelos", etiqueta: "Modelos", Icono: Cpu },
 ] as const;
 
 /** Estructura autenticada con navegación liquid glass. */

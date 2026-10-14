@@ -6,12 +6,13 @@
  */
 
 import { motion } from "motion/react";
-import { Timer } from "iconoir-react";
+import { Cpu, Timer } from "iconoir-react";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { usarApp } from "@/ui/proveedor-app";
 import { Shell } from "@/ui/shell";
-import type { Proyeccion } from "@/domain/modelos";
+import type { PrediccionIA, Proyeccion } from "@/domain/modelos";
 
 export default function PaginaProyeccion() {
   const { memoria } = usarApp();
@@ -19,6 +20,9 @@ export default function PaginaProyeccion() {
   const [horizonte, setHorizonte] = useState(30);
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [iaDisponible, setIaDisponible] = useState(false);
+  const [prediccion, setPrediccion] = useState<PrediccionIA | null>(null);
+  const [cargandoIA, setCargandoIA] = useState(false);
 
   useEffect(() => {
     memoria
@@ -27,7 +31,29 @@ export default function PaginaProyeccion() {
         if ("dimension_probable" in p) setProy(p);
       })
       .catch(() => {});
+    memoria
+      ?.listarProveedoresIA()
+      .then((ps) => setIaDisponible(ps.some((p) => p.habilitado && p.api_key_set)))
+      .catch(() => {});
   }, [memoria]);
+
+  /** Pide al LLM habilitado un análisis predictivo del horizonte. */
+  async function analizarIA() {
+    if (!memoria) return;
+    setCargandoIA(true);
+    try {
+      setPrediccion(
+        await memoria.predecirIA({ horizonte_dias: horizonte }),
+      );
+    } catch (e) {
+      setPrediccion({
+        ok: false,
+        motivo: e instanceof Error ? e.message : "Error de red",
+      });
+    } finally {
+      setCargandoIA(false);
+    }
+  }
 
   /** Genera una proyección nueva con el horizonte elegido. */
   async function generar() {
@@ -67,7 +93,96 @@ export default function PaginaProyeccion() {
             <Timer width={16} height={16} />
             {cargando ? "Proyectando…" : "Proyectar"}
           </button>
+          {iaDisponible && (
+            <button
+              onClick={analizarIA}
+              disabled={cargandoIA}
+              className="vidrio flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-semibold disabled:opacity-50"
+              style={{ color: "var(--primary)" }}
+            >
+              <Cpu width={16} height={16} />
+              {cargandoIA ? "Analizando…" : "Analizar con IA"}
+            </button>
+          )}
         </div>
+
+        {!iaDisponible && (
+          <p className="texto-suave text-sm">
+            El motor predictivo usa heurística local. Configura un
+            proveedor en{" "}
+            <Link
+              href="/modelos"
+              className="underline"
+              style={{ color: "var(--primary)" }}
+            >
+              Modelos
+            </Link>{" "}
+            para análisis con tu LLM.
+          </p>
+        )}
+
+        {prediccion && (
+          <div className="vidrio flex flex-col gap-3 rounded-2xl p-5">
+            {prediccion.ok ? (
+              <>
+                <header className="flex items-baseline justify-between">
+                  <h2 className="font-semibold">Análisis del modelo</h2>
+                  <span className="texto-suave text-xs">
+                    {prediccion.proveedor} · {prediccion.modelo}
+                    {prediccion.latencia_ms != null &&
+                      ` · ${prediccion.latencia_ms}ms`}
+                  </span>
+                </header>
+                {prediccion.razonamiento && (
+                  <p className="texto-suave text-sm italic">
+                    {prediccion.razonamiento}
+                  </p>
+                )}
+                <ul className="flex flex-col gap-2">
+                  {(prediccion.escenarios ?? []).map((e, i) => (
+                    <li
+                      key={i}
+                      className="vidrio flex flex-col gap-1 rounded-xl p-3"
+                    >
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="font-medium">{e.nombre}</span>
+                        <span
+                          className="tabular-nums"
+                          style={{ color: "var(--primary)" }}
+                        >
+                          {(e.probabilidad * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                      <div
+                        className="vidrio h-1.5 overflow-hidden rounded-full"
+                        role="progressbar"
+                        aria-valuenow={Math.round(e.probabilidad * 100)}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-label={`Probabilidad ${e.nombre}`}
+                      >
+                        <motion.div
+                          className="h-full rounded-full"
+                          style={{ background: "var(--primary)" }}
+                          initial={{ width: 0 }}
+                          animate={{ width: `${e.probabilidad * 100}%` }}
+                          transition={{ delay: i * 0.08 }}
+                        />
+                      </div>
+                      {e.descripcion && (
+                        <p className="texto-suave text-xs">{e.descripcion}</p>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : (
+              <p className="texto-suave text-sm">
+                El motor predictivo no respondió: {prediccion.motivo}
+              </p>
+            )}
+          </div>
+        )}
 
         {error && (
           <p role="alert" className="text-sm" style={{ color: "var(--danger)" }}>

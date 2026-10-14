@@ -140,3 +140,67 @@ export interface BenchmarkRun {
   git_commit: string | null;
   creado_en: string;
 }
+
+/**
+ * Proveedor de IA externo configurado (endpoint OpenAI-compatible).
+ * La API key nunca sale del backend — solo su máscara.
+ */
+export interface ProveedorIA {
+  id: string;
+  nombre: string;
+  base_url: string;
+  modelo: string;
+  /** Si participa en el motor predictivo. */
+  habilitado: boolean;
+  /** Opt-in: enviar fragmentos de memorias además de agregados. */
+  incluir_contenido: boolean;
+  /** Hay key cifrada almacenada. */
+  api_key_set: boolean;
+  /** Máscara visible de la key (``sk-…wxyz``); null si no hay. */
+  api_key_mascara: string | null;
+}
+
+/** Datos de alta/edición de un proveedor (api_key opcional al editar). */
+export interface NuevoProveedorIA {
+  nombre: string;
+  base_url: string;
+  modelo: string;
+  api_key?: string;
+  habilitado: boolean;
+  incluir_contenido: boolean;
+}
+
+/** Resultado de la prueba de conexión con un proveedor. */
+export interface PruebaProveedor {
+  ok: boolean;
+  modelos?: string[];
+  detalle?: string;
+}
+
+/** Escenario de futuro devuelto por el motor predictivo. */
+export interface EscenarioIA {
+  id: string | null;
+  nombre: string;
+  probabilidad: number;
+  descripcion: string;
+  sustrato: Dimension | null;
+}
+
+/** Respuesta del motor predictivo (degrada con ok=false + motivo). */
+export interface PrediccionIA {
+  ok: boolean;
+  motivo?: string;
+  escenarios?: EscenarioIA[];
+  razonamiento?: string;
+  proveedor?: string;
+  modelo?: string;
+  latencia_ms?: number;
+}
+
+/** Candidato heurístico que el LLM re-pondera en /universo. */
+export interface CandidatoPredictivo {
+  id: string;
+  nombre: string;
+  probabilidad: number;
+  descripcion: string;
+}
