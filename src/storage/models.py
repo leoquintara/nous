@@ -7,6 +7,7 @@ from typing import Any
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Computed,
     DateTime,
@@ -14,6 +15,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -309,4 +311,31 @@ class ConfiguracionModel(Base):
     )
     actualizado_en: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class LlamadaModel(Base):
+    """Una llamada HTTP a Nous: metadata de trazabilidad, nunca contenido."""
+
+    __tablename__ = "llamadas"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    ts: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    metodo: Mapped[str] = mapped_column(String(10), nullable=False)
+    ruta: Mapped[str] = mapped_column(String(160), nullable=False)
+    origen: Mapped[str] = mapped_column(String(80), server_default="")
+    agente: Mapped[str] = mapped_column(String(200), server_default="")
+    latencia_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    es_ping: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_llamadas_ts", "ts"),
+        Index("ix_llamadas_ruta", "ruta"),
+        Index("ix_llamadas_ping", "es_ping"),
     )

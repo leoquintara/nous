@@ -212,11 +212,26 @@ async def probar_proveedor(
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT_PRUEBA) as cliente:
             resp = await cliente.get(f"{proveedor['base_url']}/models", headers=headers)
+            if resp.status_code == 200:
+                datos = resp.json()
+                modelos = [
+                    str(m.get("id", "?")) for m in datos.get("data", [])
+                ][:20]
+                return {"ok": True, "modelos": modelos}
+            # Algunos endpoints OpenAI-compatible no exponen /models
+            # (p. ej. Gemini): la prueba de verdad es un completion mínimo.
+            resp = await cliente.post(
+                f"{proveedor['base_url']}/chat/completions",
+                headers=headers,
+                json={
+                    "model": proveedor["modelo"],
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 1,
+                },
+            )
         if resp.status_code != 200:
             return {"ok": False, "detalle": f"HTTP {resp.status_code}"}
-        datos = resp.json()
-        modelos = [str(m.get("id", "?")) for m in datos.get("data", [])][:20]
-        return {"ok": True, "modelos": modelos}
+        return {"ok": True, "modelos": [proveedor["modelo"]]}
     except (httpx.HTTPError, ValueError) as e:
         return {"ok": False, "detalle": str(e)[:200]}
 

@@ -20,8 +20,11 @@ import type {
   Evento,
   EventoActividad,
   FuenteInfo,
+  Llamada,
+  LlamadasStats,
   NuevoProveedorIA,
   Objetivo,
+  ParametrosImportacion,
   PrediccionIA,
   Preferencias,
   ProveedorIA,
@@ -29,6 +32,7 @@ import type {
   PruebaProveedor,
   Relacion,
   ResultadoBusqueda,
+  ResultadoImportacion,
   TagConteo,
 } from "@/domain/modelos";
 
@@ -45,6 +49,7 @@ async function peticion<T>(
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
+      "x-nous-origen": "dashboard",
       ...(init?.headers ?? {}),
     },
   });
@@ -184,6 +189,23 @@ export function crearClienteNous(token: string): PuertoMemoria {
       peticion<PrediccionIA>(`/api/ia/predecir`, token, {
         method: "POST",
         body: JSON.stringify(entrada),
+      }),
+    listarLlamadas: (limite = 200, ruta) =>
+      peticion<Llamada[]>(
+        `/api/llamadas?limite=${limite}` +
+          (ruta ? `&ruta=${encodeURIComponent(ruta)}` : ""),
+        token,
+      ),
+    statsLlamadas: () =>
+      peticion<LlamadasStats>(`/api/llamadas/stats`, token),
+    ping: () =>
+      peticion<{ status: string; ts: number }>(`/api/ping`, token, {
+        method: "POST",
+      }),
+    importarMemoria: (params) =>
+      peticion<ResultadoImportacion>(`/api/importar`, token, {
+        method: "POST",
+        body: JSON.stringify(params),
       }),
   };
 }

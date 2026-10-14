@@ -6,6 +6,7 @@
  */
 
 import {
+  Activity,
   Brain,
   Cpu,
   Database,
@@ -16,6 +17,7 @@ import {
   Search,
   SunLight,
   Timer,
+  Upload,
 } from "iconoir-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -31,6 +33,8 @@ const ENLACES = [
   { href: "/proyeccion", etiqueta: "Proyección", Icono: Timer },
   { href: "/benchmarks", etiqueta: "Benchmarks", Icono: Refresh },
   { href: "/modelos", etiqueta: "Modelos", Icono: Cpu },
+  { href: "/trazas", etiqueta: "Trazas", Icono: Activity },
+  { href: "/importar", etiqueta: "Importar", Icono: Upload },
 ] as const;
 
 /** Estructura autenticada con navegación liquid glass. */

@@ -197,6 +197,48 @@ export interface PrediccionIA {
   latencia_ms?: number;
 }
 
+/** Una llamada registrada a Nous (trazabilidad — solo metadata). */
+export interface Llamada {
+  id: string;
+  ts: number;
+  metodo: string;
+  ruta: string;
+  /** Quién llama: dashboard, agente:cursor, usuario:navegador… */
+  origen: string;
+  /** User-Agent crudo truncado. */
+  agente: string;
+  latencia_ms: number;
+  status: number;
+  es_ping: boolean;
+}
+
+/** Agregados del registro de llamadas para el panel de trazabilidad. */
+export interface LlamadasStats {
+  total: number;
+  por_ruta: { ruta: string; llamadas: number; latencia_media: number }[];
+  por_origen: { origen: string; llamadas: number }[];
+  pings: { total: number; ultimo: number | null };
+}
+
+/** Parámetros de una migración de memoria hacia Nous. */
+export interface ParametrosImportacion {
+  formato: "auto" | "jsonl" | "json" | "obsidian" | "gbrain" | "memlord";
+  /** Ruta del archivo/directorio en la máquina del backend. */
+  ruta: string;
+  fuente?: string;
+  rama?: string;
+}
+
+/** Contadores devueltos por una migración. */
+export interface ResultadoImportacion {
+  importados: number;
+  omitidos: number;
+  errores: number;
+  vinculos: number;
+  formato: string;
+  fuente: string;
+}
+
 /** Candidato heurístico que el LLM re-pondera en /universo. */
 export interface CandidatoPredictivo {
   id: string;

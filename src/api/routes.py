@@ -19,22 +19,31 @@ from src.api.schemas import (
     FuenteRequest,
     FuenteResponse,
     HealthResponse,
+    ImportarRequest,
+    ImportarResponse,
+    LlamadaOrigenStats,
+    LlamadaResponse,
+    LlamadaRutaStats,
+    LlamadasStatsResponse,
     LoginRequest,
     LoginResponse,
     ObjetivoPatch,
     ObjetivoRequest,
+    PingsStats,
     PredecirRequest,
     ProveedorIARequest,
     RamificarRequest,
     RelacionResponse,
     TagResponse,
 )
+from src.cli.transferencia import importar as importar_memoria
 from src.config import get_settings
 from src.core import ia
 from src.mcp import tools as tools_impl
 from src.storage.database import get_session, obtener_engine
 from src.storage.repositories import (
     BenchmarkRepository,
+    LlamadaRepository,
     ProyeccionRepository,
 )
 
@@ -572,3 +581,100 @@ async def listar_benchmarks(nombre: str | None = None, limite: int = 50) -> list
         )
         for c in corridas
     ]
+
+
+@router.get("/llamadas", dependencies=[Depends(verificar_token)])
+async def listar_llamadas(
+    limite: int = 200, ruta: str | None = None
+) -> list[LlamadaResponse]:
+    """Lista llamadas registradas a Nous, más recientes primero.
+
+    Args:
+        limite: Máximo de filas (tope 1000).
+        ruta: Filtro exacto de ruta; None = todas.
+
+    Returns:
+        Registro de trazabilidad: método, ruta, origen, latencia,
+        status. Solo metadata — nunca contenido.
+    """
+    async with get_session(obtener_engine()) as session:
+        filas = await LlamadaRepository(session).listar(limite, ruta)
+    return [
+        LlamadaResponse(
+            id=str(f.id),
+            ts=f.ts,
+            metodo=f.metodo,
+            ruta=f.ruta,
+            origen=f.origen,
+            agente=f.agente,
+            latencia_ms=f.latencia_ms,
+            status=f.status,
+            es_ping=f.es_ping,
+        )
+        for f in filas
+    ]
+
+
+@router.get("/llamadas/stats", dependencies=[Depends(verificar_token)])
+async def stats_llamadas() -> LlamadasStatsResponse:
+    """Agregados del registro: por ruta, por origen y pings.
+
+    Returns:
+        Total, top rutas con latencia media, orígenes y resumen de
+        pings (total + último timestamp).
+    """
+    async with get_session(obtener_engine()) as session:
+        stats = await LlamadaRepository(session).stats()
+    return LlamadasStatsResponse(
+        total=stats["total"],
+        por_ruta=[LlamadaRutaStats(**r) for r in stats["por_ruta"]],
+        por_origen=[LlamadaOrigenStats(**r) for r in stats["por_origen"]],
+        pings=PingsStats(**stats["pings"]),
+    )
+
+
+@router.post("/ping", dependencies=[Depends(verificar_token)])
+async def ping() -> dict[str, Any]:
+    """Registra un ping explícito — queda marcado en el log de llamadas.
+
+    Returns:
+        ``{"status": "ok", "ts": ...}`` para medir conectividad.
+    """
+    return {"status": "ok", "ts": int(time.time())}
+
+
+@router.post("/importar", dependencies=[Depends(verificar_token)])
+async def importar(peticion: ImportarRequest) -> ImportarResponse:
+    """Migra memoria externa a Nous desde un archivo/directorio local.
+
+    Formatos: ``obsidian`` (vault .md), ``gbrain`` (dir .md o export),
+    ``memlord`` (export JSON/JSONL), ``jsonl``/``json`` nativos. La
+    ruta es de la máquina donde corre este backend — nada sale del
+    equipo. Los ids ya existentes se omiten (idempotente).
+
+    Args:
+        peticion: Formato, ruta local y nombre de fuente opcional.
+
+    Returns:
+        Contadores: importados, omitidos (duplicados), errores,
+        vínculos creados.
+    """
+    from pathlib import Path
+
+    ruta = Path(peticion.ruta).expanduser()
+    if not ruta.exists():
+        raise HTTPException(
+            status_code=422, detail=f"ruta inaccesible: {peticion.ruta}"
+        )
+    resultado = await importar_memoria(
+        obtener_engine(),
+        ruta,
+        formato=peticion.formato,
+        fuente=peticion.fuente,
+        rama=peticion.rama,
+    )
+    return ImportarResponse(
+        **resultado,
+        formato=peticion.formato,
+        fuente=peticion.fuente or peticion.formato,
+    )

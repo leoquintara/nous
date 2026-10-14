@@ -197,3 +197,72 @@ class PredecirRequest(BaseModel):
     horizonte_dias: int = Field(default=30, ge=1, le=365)
     candidatos: list[CandidatoPredictivo] | None = Field(default=None, max_length=12)
     proveedor_id: str | None = Field(default=None, max_length=40)
+
+
+class LlamadaResponse(BaseModel):
+    """Una llamada registrada a Nous (metadata, nunca contenido)."""
+
+    id: str
+    ts: int
+    metodo: str
+    ruta: str
+    origen: str
+    agente: str
+    latencia_ms: int
+    status: int
+    es_ping: bool
+
+
+class LlamadaRutaStats(BaseModel):
+    """Conteo y latencia media agregados por ruta."""
+
+    ruta: str
+    llamadas: int
+    latencia_media: int
+
+
+class LlamadaOrigenStats(BaseModel):
+    """Conteo de llamadas agregado por origen."""
+
+    origen: str
+    llamadas: int
+
+
+class PingsStats(BaseModel):
+    """Resumen del registro de pings/sondas de vida."""
+
+    total: int
+    ultimo: int | None
+
+
+class LlamadasStatsResponse(BaseModel):
+    """Agregados del registro de llamadas para el panel."""
+
+    total: int
+    por_ruta: list[LlamadaRutaStats]
+    por_origen: list[LlamadaOrigenStats]
+    pings: PingsStats
+
+
+class ImportarRequest(BaseModel):
+    """Parámetros de una migración de memoria hacia Nous.
+
+    ``ruta`` es un archivo o directorio en la máquina donde corre el
+    backend — local-first: la migración no sale del equipo.
+    """
+
+    formato: Literal["auto", "jsonl", "json", "obsidian", "gbrain", "memlord"]
+    ruta: str = Field(min_length=1, max_length=500)
+    fuente: str | None = Field(default=None, max_length=50)
+    rama: str | None = Field(default=None, max_length=64)
+
+
+class ImportarResponse(BaseModel):
+    """Resultado de una migración de memoria."""
+
+    importados: int
+    omitidos: int
+    errores: int
+    vinculos: int
+    formato: str
+    fuente: str

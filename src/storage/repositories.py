@@ -19,6 +19,7 @@ from src.storage.models import (
     ConfiguracionModel,
     EventoModel,
     FuenteModel,
+    LlamadaModel,
     ObjetivoModel,
     ProyeccionModel,
     RelacionModel,
@@ -942,3 +943,117 @@ class CifradoRepository:
             func.pgp_sym_decrypt(func.decode(b64, "base64"), passphrase)
         )
         return str((await self._session.execute(stmt)).scalar_one())
+
+
+class LlamadaRepository:
+    """Acceso a datos del registro de llamadas (trazabilidad)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        """Inicializa el repositorio con una sesión async.
+
+        Args:
+            session: Sesión async de SQLAlchemy.
+        """
+        self._session = session
+
+    async def insertar_lote(self, filas: list[dict[str, Any]]) -> int:
+        """Inserta un lote de llamadas en una sola consulta.
+
+        Args:
+            filas: Dicts con ts, metodo, ruta, origen, agente,
+                latencia_ms, status, es_ping.
+
+        Returns:
+            Número de filas insertadas.
+        """
+        if not filas:
+            return 0
+        await self._session.execute(pg_insert(LlamadaModel).values(filas))
+        return len(filas)
+
+    async def listar(
+        self, limite: int = 200, ruta: str | None = None
+    ) -> Sequence[LlamadaModel]:
+        """Lista llamadas recientes primero, con filtro opcional de ruta.
+
+        Args:
+            limite: Máximo de filas (1-1000).
+            ruta: Filtro exacto de ruta; None = todas.
+
+        Returns:
+            Llamadas ordenadas por ts descendente.
+        """
+        filtros = [] if ruta is None else [LlamadaModel.ruta == ruta]
+        stmt = (
+            select(LlamadaModel)
+            .where(*filtros)
+            .order_by(LlamadaModel.ts.desc())
+            .limit(max(1, min(limite, 1000)))
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
+
+    async def stats(self) -> dict[str, Any]:
+        """Agrega conteos y latencias para el panel de trazabilidad.
+
+        Returns:
+            total, por_ruta (conteo+latencia media), por_origen, pings
+            (total y último) — todo en una sola pasada de consultas.
+        """
+        total = int(
+            (
+                await self._session.execute(
+                    select(func.count()).select_from(LlamadaModel)
+                )
+            ).scalar_one()
+        )
+        por_ruta_rows = (
+            await self._session.execute(
+                select(
+                    LlamadaModel.ruta,
+                    func.count().label("n"),
+                    func.round(func.avg(LlamadaModel.latencia_ms)).label(
+                        "latencia_media"
+                    ),
+                )
+                .where(LlamadaModel.es_ping.is_(False))
+                .group_by(LlamadaModel.ruta)
+                .order_by(func.count().desc())
+                .limit(25)
+            )
+        ).all()
+        por_origen_rows = (
+            await self._session.execute(
+                select(
+                    LlamadaModel.origen,
+                    func.count().label("n"),
+                )
+                .group_by(LlamadaModel.origen)
+                .order_by(func.count().desc())
+                .limit(15)
+            )
+        ).all()
+        ping_rows = (
+            await self._session.execute(
+                select(
+                    func.count().label("n"),
+                    func.max(LlamadaModel.ts).label("ultimo"),
+                ).where(LlamadaModel.es_ping.is_(True))
+            )
+        ).one()
+        return {
+            "total": total,
+            "por_ruta": [
+                {
+                    "ruta": r.ruta,
+                    "llamadas": r.n,
+                    "latencia_media": int(r.latencia_media or 0),
+                }
+                for r in por_ruta_rows
+            ],
+            "por_origen": [
+                {"origen": r.origen or "desconocido", "llamadas": r.n}
+                for r in por_origen_rows
+            ],
+            "pings": {"total": ping_rows.n, "ultimo": ping_rows.ultimo},
+        }

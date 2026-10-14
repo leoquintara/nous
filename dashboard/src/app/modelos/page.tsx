@@ -4,10 +4,10 @@
  * Configuración de modelos de IA externos.
  *
  * Local-first por defecto: Nous funciona completo sin proveedor. Si el
- * dev conecta un endpoint OpenAI-compatible (OpenAI, Groq, OpenRouter,
- * Ollama, LM Studio…), el motor predictivo pasa de heurística local a
- * escenarios generados por LLM. La API key se cifra con pgcrypto en
- * PostgreSQL y nunca vuelve a viajar en claro — la UI solo ve máscaras.
+ * dev conecta un endpoint OpenAI-compatible (OpenAI, Gemini, Groq,
+ * OpenRouter, Ollama, LM Studio…), el motor predictivo pasa de
+ * heurística local a escenarios generados por LLM. La API key se cifra
+ * en PostgreSQL y nunca vuelve a viajar en claro — la UI solo ve máscaras.
  */
 
 import {
@@ -34,6 +34,10 @@ import type {
 /** Presets de endpoints OpenAI-compatible comunes. */
 const PRESETS = [
   { nombre: "OpenAI", url: "https://api.openai.com/v1" },
+  {
+    nombre: "Gemini",
+    url: "https://generativelanguage.googleapis.com/v1beta/openai",
+  },
   { nombre: "Groq", url: "https://api.groq.com/openai/v1" },
   { nombre: "OpenRouter", url: "https://openrouter.ai/api/v1" },
   { nombre: "Ollama", url: "http://localhost:11434/v1" },
@@ -174,7 +178,7 @@ export default function PaginaModelos() {
             de tu línea temporal sale de tu máquina hacia ese endpoint. El
             contenido de tus memorias solo viaja si activas{" "}
             <em>incluir contenido</em> por proveedor. La API key se cifra
-            con pgcrypto en PostgreSQL y nunca se muestra completa.
+            en PostgreSQL y nunca se muestra completa.
           </p>
         </div>
 

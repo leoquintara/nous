@@ -21,7 +21,9 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from src.api.auth import BearerTokenMiddleware
 from src.api.routes import router
+from src.api.trazabilidad import TrazabilidadMiddleware
 from src.config import get_settings
+from src.core import trazas
 from src.core.embeddings import activar_offline_hf
 from src.core.exceptions import NousError
 from src.mcp.server import mcp_server
@@ -72,7 +74,7 @@ class SecurityHeadersMiddleware:
         await self._app(scope, receive, _send_con_headers)
 
 
-def crear_app_http() -> SecurityHeadersMiddleware:
+def crear_app_http() -> ASGIApp:
     """Compone la app ASGI combinada: REST bajo /api y MCP en /mcp.
 
     El lifespan del transporte MCP se propaga manualmente porque
@@ -154,7 +156,15 @@ def crear_app_http() -> SecurityHeadersMiddleware:
             # Umbrales altos: el GC casi nunca dispara dentro de una
             # request; el worker de fondo recolecta en la quietud.
             gc.set_threshold(50_000, 50, 50)
-            yield
+            parar_trazas = asyncio.Event()
+            tarea_trazas = asyncio.create_task(
+                trazas.vaciador(engine, parar_trazas)
+            )
+            try:
+                yield
+            finally:
+                parar_trazas.set()
+                await tarea_trazas
 
     app = Starlette(
         routes=[
@@ -164,7 +174,9 @@ def crear_app_http() -> SecurityHeadersMiddleware:
         ],
         lifespan=_lifespan,
     )
-    return SecurityHeadersMiddleware(BearerTokenMiddleware(app))
+    return TrazabilidadMiddleware(
+        SecurityHeadersMiddleware(BearerTokenMiddleware(app))
+    )
 
 
 def _precalentar() -> None:

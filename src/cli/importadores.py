@@ -89,7 +89,12 @@ def _fila_base(
     """Construye una fila válida de importación con defaults sanos."""
     return _validar_fila(
         {
-            "id": evento_id or str(uuid.uuid4()),
+            # Sin id explícito se deriva uno determinista de fuente+
+            # contenido: reimportar el mismo origen no duplica.
+            "id": evento_id
+            or str(
+                uuid.uuid5(uuid.NAMESPACE_URL, f"{fuente}:{contenido}")
+            ),
             "timestamp_unix": ts or int(time.time()),
             "dimension": dimension,
             "fuente": fuente[:50],

@@ -10,8 +10,11 @@ import type {
   Evento,
   EventoActividad,
   FuenteInfo,
+  Llamada,
+  LlamadasStats,
   NuevoProveedorIA,
   Objetivo,
+  ParametrosImportacion,
   PrediccionIA,
   Preferencias,
   ProveedorIA,
@@ -19,6 +22,7 @@ import type {
   PruebaProveedor,
   Relacion,
   ResultadoBusqueda,
+  ResultadoImportacion,
   TagConteo,
 } from "@/domain/modelos";
 
@@ -117,6 +121,16 @@ export interface PuertoMemoria {
     candidatos?: CandidatoPredictivo[];
     proveedor_id?: string;
   }): Promise<PrediccionIA>;
+  /** Lista llamadas registradas a Nous (trazabilidad). */
+  listarLlamadas(limite?: number, ruta?: string): Promise<Llamada[]>;
+  /** Agregados del registro: por ruta, por origen y pings. */
+  statsLlamadas(): Promise<LlamadasStats>;
+  /** Registra un ping explícito de conectividad. */
+  ping(): Promise<{ status: string; ts: number }>;
+  /** Migra memoria externa (memlord, gbrain, obsidian…) a Nous. */
+  importarMemoria(
+    params: ParametrosImportacion,
+  ): Promise<ResultadoImportacion>;
 }
 
 /** Puerto de autenticación del dashboard. */
