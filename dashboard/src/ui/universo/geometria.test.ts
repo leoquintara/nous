@@ -239,6 +239,31 @@ describe("escenarios de futuro", () => {
     expect(ultimo.z).toBeCloseTo(ancla.z, 6);
   });
 
+  it("todos los escenarios apuntan al objetivo, solo florecer llega", () => {
+    const meta = obj({ id: "m1", fecha_objetivo: T_MAX + 20 * DIA });
+    const con = construirEscenarios(
+      entradaBase({ objetivos: [meta], horizonte: 60 * DIA }),
+    );
+    const sin = construirEscenarios(
+      entradaBase({ objetivos: [], horizonte: 60 * DIA }),
+    );
+    const ancla = anclaDeObjetivo(meta, ctx);
+    const dist = (e: { puntos: { x: number; y: number; z: number }[] }) => {
+      const f = e.puntos[e.puntos.length - 1];
+      return Math.hypot(f.x - ancla.x, f.y - ancla.y, f.z - ancla.z);
+    };
+    // Todos pretenden llegar: terminan más cerca del ancla que sin meta.
+    for (const e of con) {
+      expect(e.objetivoAncla?.id).toBe("m1");
+      const libre = sin.find((s) => s.id === e.id)!;
+      expect(dist(e)).toBeLessThan(dist(libre));
+    }
+    // Pero solo florecer la alcanza de verdad.
+    expect(dist(con.find((e) => e.id === "florecer")!)).toBeCloseTo(0, 5);
+    expect(dist(con.find((e) => e.id === "continuidad")!)).toBeGreaterThan(5);
+    expect(dist(con.find((e) => e.id === "riesgo")!)).toBeGreaterThan(5);
+  });
+
   it("florecer sin metas queda tenue y sin ancla", () => {
     const es = construirEscenarios(entradaBase());
     const flor = es.find((e) => e.id === "florecer")!;

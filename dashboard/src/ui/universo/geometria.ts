@@ -213,6 +213,12 @@ export type IdEscenario = "continuidad" | "riesgo" | "florecer";
  * Cada escenario responde "qué pasa si el cauce va por aquí":
  * continuidad (tu patrón sigue igual), riesgo (las señales de
  * desgaste ganan) y florecer (converge hacia tus objetivos).
+ *
+ * Regla de la metáfora: un objetivo es el punto donde TODOS los
+ * cauces-fantasma pretenden llegar — la diferencia entre caminos
+ * es si llegan o no. Con meta activa, los tres curvan hacia el
+ * ancla: florecer la alcanza, continuidad se acerca sin llegar,
+ * declive apunta pero erra y se hunde.
  */
 export interface Escenario {
   id: IdEscenario;
@@ -226,7 +232,7 @@ export interface Escenario {
   sustrato: Dimension | null;
   /** Curva muestreada desde el "ahora" hasta el destino. */
   puntos: Punto3[];
-  /** Objetivo al que converge el camino "florecer", si existe. */
+  /** Objetivo al que este cauce pretende llegar, si existe. */
   objetivoAncla: Objetivo | null;
 }
 
@@ -308,43 +314,67 @@ export function construirEscenarios(
       : 0.08,
   };
 
+  const destinoAncla = ancla ? anclaDeObjetivo(ancla, ctx) : null;
   const descripciones: Record<IdEscenario, string> = {
     continuidad:
       `Si tu patrón sigue igual: "${dominante}" domina tu línea ` +
       `(${pct(shareDom)}) con ${stats[dominante].recientes} eventos ` +
-      `recientes sosteniendo el rumbo.`,
+      `recientes sosteniendo el rumbo.` +
+      (ancla
+        ? ` Apunta a ◆ "${ancla.titulo}" pero no llega — el hábito pesa más que la meta.`
+        : ""),
     riesgo:
       `Camino de desgaste: ${stats.somatica.recientes} señales ` +
       `somáticas recientes y ${loopsAbiertos} compromisos abiertos ` +
-      `presionan el cauce hacia abajo.`,
+      `presionan el cauce hacia abajo.` +
+      (ancla
+        ? ` Apunta a ◆ "${ancla.titulo}" pero erra — las señales actuales no lo sostienen.`
+        : ""),
     florecer: ancla
-      ? `Converge hacia ◆ "${ancla.titulo}". Impulso ` +
+      ? `Converge a ◆ "${ancla.titulo}". Impulso ` +
         `${sustratoFlor}: ${stats[sustratoFlor].recientes} eventos ` +
         `recientes amigan esta meta.`
       : "Sin metas fijadas — crea un objetivo para darle destino a este cauce.",
   };
 
+  /**
+   * Destinos naturales de cada escenario. Con meta activa, todos
+   * apuntan al ancla: florecer llega (1.0), continuidad se acerca
+   * sin llegar (0.45) y declive falla quedándose bajo (0.22).
+   */
+  const tirarHacia = (p: Punto3, f: number): Punto3 =>
+    destinoAncla
+      ? {
+          x: p.x + (destinoAncla.x - p.x) * f,
+          y: p.y + (destinoAncla.y - p.y) * f,
+          z: p.z + (destinoAncla.z - p.z) * f,
+        }
+      : p;
+
   const destinos: Record<IdEscenario, Punto3> = {
-    // El cauce sigue su meandro natural, apenas desviado.
-    continuidad: {
-      x: xFin,
-      y: Math.sin(xFin * 0.012) * ctx.cfg.meandroY + 10,
-      z: Math.sin(xFin * 0.008 + 1.3) * ctx.cfg.meandroZ + 16,
-    },
-    // El declive se hunde y diverge a la izquierda.
-    riesgo: {
-      x: xEnTiempo(ctx.tMax + horizonte * 0.85, ctx),
-      y: -52,
-      z: -ctx.cfg.separacionRama * 0.95,
-    },
-    // Florecer asciende; con meta, converge exactamente a su ancla.
-    florecer: ancla
-      ? anclaDeObjetivo(ancla, ctx)
-      : {
-          x: xFin,
-          y: 58,
-          z: ctx.cfg.separacionRama * 0.95,
-        },
+    continuidad: tirarHacia(
+      {
+        x: xFin,
+        y: Math.sin(xFin * 0.012) * ctx.cfg.meandroY + 10,
+        z: Math.sin(xFin * 0.008 + 1.3) * ctx.cfg.meandroZ + 16,
+      },
+      0.45,
+    ),
+    riesgo: tirarHacia(
+      {
+        x: xEnTiempo(ctx.tMax + horizonte * 0.85, ctx),
+        y: -52,
+        z: -ctx.cfg.separacionRama * 0.95,
+      },
+      0.22,
+    ),
+    // Florecer es el único que llega exactamente al ancla.
+    florecer:
+      destinoAncla ?? {
+        x: xFin,
+        y: 58,
+        z: ctx.cfg.separacionRama * 0.95,
+      },
   };
 
   const def: { id: IdEscenario; nombre: string; sustrato: Dimension | null }[] = [
@@ -373,7 +403,8 @@ export function construirEscenarios(
       probabilidad: probs[id],
       sustrato,
       puntos,
-      objetivoAncla: id === "florecer" ? ancla : null,
+      // Todos los cauces pretenden llegar al objetivo.
+      objetivoAncla: ancla,
     };
   });
 }

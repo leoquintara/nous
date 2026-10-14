@@ -205,12 +205,12 @@ export default function PaginaUniverso() {
 
   /** Fija una meta nueva y refresca el río (los cauces convergen). */
   const crearMeta = useCallback(
-    async (titulo: string, fecha: number, dimension: Dimension | null) => {
+    async (titulo: string, fecha: number) => {
       if (!memoria) return;
       await memoria.crearObjetivo({
         titulo,
         fecha_objetivo: fecha,
-        dimension,
+        dimension: null,
       });
       await recargar(await memoria.listarObjetivos("activo", "main"));
     },
@@ -467,8 +467,9 @@ export default function PaginaUniverso() {
 
 /**
  * Panel de objetivos: lista las metas activas con su fecha límite y
- * permite fijar una nueva (título + fecha + dimensión). Cada cambio
- * re-encamina los cauces-fantasma del río hacia la nueva ancla.
+ * permite fijar una nueva (título + fecha). Las metas son el punto
+ * al que TODOS los cauces-fantasma pretenden llegar — se crean sin
+ * pedir dimensión: el sustrato lo calcula el motor, no el usuario.
  */
 function PanelMetas({
   objetivos,
@@ -476,12 +477,11 @@ function PanelMetas({
   alCerrar,
 }: {
   objetivos: Objetivo[];
-  alCrear: (titulo: string, fecha: number, dimension: Dimension | null) => Promise<void>;
+  alCrear: (titulo: string, fecha: number) => Promise<void>;
   alCerrar: (id: string, estado: "cumplido" | "abandonado") => Promise<void>;
 }) {
   const [titulo, setTitulo] = useState("");
   const [fecha, setFecha] = useState("");
-  const [dimension, setDimension] = useState<Dimension | "">("");
   const [creando, setCreando] = useState(false);
   const activos = useMemo(
     () => objetivos.filter((o) => o.estado === "activo"),
@@ -494,10 +494,9 @@ function PanelMetas({
     if (!titulo.trim() || !fecha || !Number.isFinite(ts)) return;
     setCreando(true);
     try {
-      await alCrear(titulo.trim(), Math.round(ts), dimension || null);
+      await alCrear(titulo.trim(), Math.round(ts));
       setTitulo("");
       setFecha("");
-      setDimension("");
     } finally {
       setCreando(false);
     }
@@ -527,9 +526,8 @@ function PanelMetas({
             <div className="min-w-0 flex-1">
               <p className="truncate text-[0.72rem] font-medium">{o.titulo}</p>
               <p className="texto-suave text-[0.62rem]">
-                {fechaCorta(o.fecha_objetivo)}
-                {o.dimension ? ` · ${o.dimension}` : " · transversal"}
-              </p>
+              {fechaCorta(o.fecha_objetivo)}
+            </p>
             </div>
             <button
               type="button"
@@ -574,19 +572,6 @@ function PanelMetas({
             aria-label="Fecha límite"
             className="vidrio min-w-0 flex-1 rounded-lg px-2 py-1.5 text-[0.72rem] outline-none"
           />
-          <select
-            value={dimension}
-            onChange={(e) => setDimension(e.target.value as Dimension | "")}
-            aria-label="Dimensión del objetivo"
-            className="vidrio rounded-lg px-1.5 py-1.5 text-[0.72rem] outline-none"
-          >
-            <option value="">transversal</option>
-            {DIMENSIONES.map((d) => (
-              <option key={d} value={d}>
-                {d}
-              </option>
-            ))}
-          </select>
           <button
             type="submit"
             disabled={creando || !titulo.trim() || !fecha}
@@ -758,8 +743,7 @@ function TarjetaObjetivo({
   return (
     <Tarjeta titulo={`◆ ${objetivo.titulo}`} color="var(--warning)" alCerrar={alCerrar}>
       <p className="texto-suave mt-2 text-[0.68rem]">
-        Meta: {fechaCorta(objetivo.fecha_objetivo)} ·{" "}
-        {objetivo.dimension ?? "transversal"} · rama {objetivo.rama}
+        Meta: {fechaCorta(objetivo.fecha_objetivo)} · rama {objetivo.rama}
       </p>
       {objetivo.descripcion && (
         <p className="mt-2 text-sm leading-snug">{objetivo.descripcion}</p>
