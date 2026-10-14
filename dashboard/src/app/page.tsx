@@ -18,6 +18,7 @@ import { Shell } from "@/ui/shell";
 import type { EventoActividad } from "@/domain/modelos";
 import type { CerebroHandle } from "@/ui/brain/CerebroCanvas";
 import {
+  CursorTemporal,
   PanelControl,
   PanelFuentes,
   TarjetaVidrio,
@@ -56,6 +57,9 @@ export default function PaginaCerebro() {
   const [cargando, setCargando] = useState(false);
   const [panelAbierto, setPanelAbierto] = useState(false);
   const [historial, setHistorial] = useState<EventoActividad[]>([]);
+  // Cursor del observador 4D: null = presente vivo.
+  const [cursor, setCursor] = useState<number | null>(null);
+  const [reproduciendo, setReproduciendo] = useState(false);
   const pensarRef = useRef<CerebroHandle | null>(null);
   const pinsRef = useRef(prefs.pins);
   const datosRef = useRef(datos);
@@ -212,6 +216,34 @@ export default function PaginaCerebro() {
     [sel, datos],
   );
 
+  // Línea de universo: dominio del cursor = [tMin, tMax + horizonte].
+  const temporal = useMemo(() => {
+    if (!datos || datos.status !== "ready") return null;
+    const span = Math.max(1, datos.tMax - datos.tMin);
+    return {
+      tMin: datos.tMin,
+      tMax: datos.tMax,
+      horizonte: Math.max(span * 0.15, 3 * DIA),
+    };
+  }, [datos]);
+
+  // Recorrido automático: nace en tMin si el cursor está en el
+  // presente y avanza ~12 pasos/s hasta el borde del horizonte.
+  useEffect(() => {
+    if (!reproduciendo || !temporal) return;
+    const fin = temporal.tMax + temporal.horizonte;
+    const paso = Math.max(1, (fin - temporal.tMin) / 600);
+    let t = cursor ?? temporal.tMin;
+    const id = setInterval(() => {
+      t = Math.min(fin, t + paso * 4);
+      setCursor(t);
+      if (t >= fin) setReproduciendo(false);
+    }, 50);
+    return () => clearInterval(id);
+    // cursor se captura una vez al arrancar el recorrido.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reproduciendo, temporal]);
+
   /**
    * Las 5 memorias conectadas más relevantes: primero los vínculos
    * persistidos (explícitos > semánticos por peso), luego vecinos
@@ -278,6 +310,7 @@ export default function PaginaCerebro() {
             modoColor={prefs.modoColor}
             ocultas={ocultas}
             alCambiarPin={alCambiarPin}
+            cursor={cursor}
             onPensarRef={pensarRef}
           />
         )}
@@ -333,6 +366,23 @@ export default function PaginaCerebro() {
             />
           </div>
         </div>
+
+        {temporal && (
+          <div className="pointer-events-none absolute bottom-3 left-1/2 z-10 w-[min(34rem,42%)] -translate-x-1/2">
+            <CursorTemporal
+              tMin={temporal.tMin}
+              tMax={temporal.tMax}
+              horizonte={temporal.horizonte}
+              cursor={cursor}
+              reproduciendo={reproduciendo}
+              alCambiarCursor={(t) => {
+                setCursor(t);
+                if (t != null) setReproduciendo(false);
+              }}
+              alReproducir={() => setReproduciendo((r) => !r)}
+            />
+          </div>
+        )}
 
         {!panelAbierto && (
           <div className="pointer-events-none absolute right-3 bottom-3 z-10">

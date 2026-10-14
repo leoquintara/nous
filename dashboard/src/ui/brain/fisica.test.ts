@@ -31,6 +31,7 @@ function nodo(parcial: Partial<Nodo> = {}): Nodo {
     amplitud: 0.5,
     refuerzos: 0,
     timestamp_unix: 0,
+    expira_en: null,
     pinned: false,
     deg: 0,
     tags: parcial.tags ?? [],

@@ -23,6 +23,8 @@ import type { Membrana } from "./geometria";
 import { pasoFisica, TEMBLOR } from "./fisica";
 import {
   colorNodo,
+  estadoEn,
+  factorNacimiento,
   PREFS_DEFAULT,
 } from "./tipos";
 import type {
@@ -53,6 +55,12 @@ interface Props {
     eventoId: string,
     pos: [number, number, number] | null,
   ) => void;
+  /**
+   * Cursor temporal del observador (epoch s). null = presente vivo;
+   * al retroceder los nodos futuros se desvanecen y los estados se
+   * recalculan a la edad que tenían en ese instante.
+   */
+  cursor?: number | null;
   onPensarRef?: React.MutableRefObject<CerebroHandle | null>;
 }
 
@@ -86,6 +94,7 @@ export function CerebroCanvas({
   modoColor = "dimension",
   ocultas,
   alCambiarPin,
+  cursor,
   onPensarRef,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -94,6 +103,7 @@ export function CerebroCanvas({
   const modoRef = useRef(modoColor);
   const ocultasRef = useRef(ocultas);
   const pinRef = useRef(alCambiarPin);
+  const cursorRef = useRef<number | null>(cursor ?? null);
   /**
    * Pensamientos cuyos ids aún no existen en el grafo (un store llega
    * antes que el recargado). Viven fuera del efecto: cada nueva
@@ -106,6 +116,7 @@ export function CerebroCanvas({
     modoRef.current = modoColor;
     ocultasRef.current = ocultas;
     pinRef.current = alCambiarPin;
+    cursorRef.current = cursor ?? null;
   });
   const [glError, setGlError] = useState(false);
 
@@ -520,6 +531,105 @@ export function CerebroCanvas({
       motas.visible = focos.length > 0;
       scene.add(motas);
 
+      // ── Cursor del observador 4D ────────────────────────────
+      // El grafo lleva el "ahora" en datos.tMax: al retroceder el
+      // cursor cada nodo se desmaterializa (factorNacimiento) y su
+      // estado se recalcula a la edad que tenía en ese instante.
+      const tMinD = datos.tMin;
+      const tMaxD = datos.tMax;
+      const spanD = Math.max(1, tMaxD - tMinD);
+      const ventanaNacimiento = Math.max(spanD * 0.02, 3_600);
+      const horizonteD = Math.max(spanD * 0.15, 3 * 86_400);
+      const estadoBase = nodes.map((n) => n.estado);
+      const nacimiento = new Float32Array(N).fill(1);
+      /** Altura en la hélice temporal para un instante (ft ∈ ℝ). */
+      const yEnTiempo = (t: number) =>
+        (((t - tMinD) / spanD) - 0.5) * 320;
+
+      // Anillo del observador: plano luminoso que barre la hélice
+      // en Y marcando "aquí está tu ahora" mientras el usuario viaja.
+      const anillo = new THREE.Mesh(
+        new THREE.RingGeometry(0.97, 1.0, 72),
+        new THREE.MeshBasicMaterial({
+          color: 0x86c5ff,
+          transparent: true,
+          opacity: 0,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+        }),
+      );
+      anillo.rotation.x = -Math.PI / 2;
+      anillo.scale.set(mem.x * 1.05, mem.z * 1.05, 1);
+      anillo.visible = false;
+      scene.add(anillo);
+
+      // Fantasmas de proyección: ecos de los nodos más evocados,
+      // extrapolando la hélice más allá del presente. Su alpha es
+      // la "probabilidad" del futuro — solo aparecen cuando el
+      // cursor cruza hacia adelante del ahora.
+      const NF = 36;
+      const SECTOR_F: Record<string, number> = {
+        cognitiva: 0,
+        somatica: (Math.PI * 2) / 3,
+        conductual: (Math.PI * 4) / 3,
+      };
+      const semillas = [...nodes]
+        .sort(
+          (a, b) =>
+            b.refuerzos + b.amplitud - (a.refuerzos + a.amplitud),
+        )
+        .slice(0, NF);
+      const refMax = Math.max(
+        0.001,
+        ...semillas.map((n) => n.refuerzos + n.amplitud),
+      );
+      interface Fantasma {
+        pos: THREE.Vector3;
+        col: THREE.Color;
+        prob: number;
+        fase: number;
+        tam: number;
+      }
+      const fantasmasDatos: Fantasma[] = semillas.map((n, j) => {
+        const ft = 1.04 + (j / Math.max(1, NF - 1)) * 0.22;
+        const ang = (SECTOR_F[n.dimension] ?? 0) + (N + j) * 0.35;
+        const radio = 60 + (1 - n.amplitud) * 260;
+        return {
+          pos: new THREE.Vector3(
+            Math.cos(ang) * radio,
+            (ft - 0.5) * 320 + (Math.random() - 0.5) * 26,
+            Math.sin(ang) * radio,
+          ),
+          col: new THREE.Color(
+            colorNodo(n, modoRef.current, datos, livePrefs.current),
+          ),
+          prob:
+            0.15 +
+            0.85 * ((n.refuerzos + n.amplitud) / refMax),
+          fase: Math.random() * Math.PI * 2,
+          tam: 3.2 + n.amplitud * 4,
+        };
+      });
+      const matFantasma = new THREE.MeshBasicMaterial({
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        toneMapped: false,
+      });
+      const fantasmas = new THREE.InstancedMesh(
+        new THREE.SphereGeometry(1, 10, 8),
+        matFantasma,
+        NF,
+      );
+      fantasmas.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      fantasmas.frustumCulled = false;
+      fantasmas.count = fantasmasDatos.length;
+      scene.add(fantasmas);
+      for (let i = 0; i < fantasmasDatos.length; i++) {
+        fantasmas.setColorAt(i, tmpC.set(0x000000));
+      }
+
       // Cascadas de impulso al seleccionar un nodo.
       const NCASC = 64;
       const cascadas: { a: number; b: number; t0: number; dur: number }[] = [];
@@ -816,6 +926,7 @@ export function CerebroCanvas({
       const lodVisible = (i: number) => {
         const P = livePrefs.current;
         if (ocultasRef.current?.has(nodes[i].fuente)) return false;
+        if (nacimiento[i] <= 0.01) return false;
         if (!P.lod) return true;
         const dist = camera.position.length();
         const corte = Math.max(25, Math.round(N * Math.min(1, (dist - 90) / 900)));
@@ -943,13 +1054,39 @@ export function CerebroCanvas({
           if (s2 < 0.02) flashes.delete(k);
           else f.s = s2;
         }
+        // ── Cursor temporal: posición del observador en la línea ──
+        const cur = cursorRef.current;
+        const viajando = cur != null;
+        const tCur = cur ?? tMaxD;
+        for (let i = 0; i < N; i++) {
+          nacimiento[i] = viajando
+            ? factorNacimiento(
+                nodes[i].timestamp_unix,
+                tCur,
+                ventanaNacimiento,
+              )
+            : 1;
+          // El estado se recalcula a la edad del instante observado;
+          // sin cursor se conserva el estado construido al "ahora".
+          nodes[i].estado = viajando
+            ? estadoEn(nodes[i], tCur)
+            : estadoBase[i];
+        }
+        // Fracción de entrada a la zona de proyección (0 → 1 en el
+        // horizonte): sólo > 0 cuando el cursor cruza el presente.
+        const gp = viajando
+          ? Math.min(1, Math.max(0, (tCur - tMaxD) / horizonteD))
+          : 0;
+
         // Onda lenta que barre la corteza en Y (~6s) — actividad basal viva.
         const yOnda = (((tNow * 0.00016) % 1) * 2 - 1) * mem.y * 1.15;
         let nHalo = 0;
         for (let i = 0; i < N; i++) {
           const p = pts[i];
           const det = lodVisible(i);
+          const nac = nacimiento[i];
           let wr = Math.max(2.2, (5.5 + Math.min(4, nodes[i].deg * 0.35)) * P.nodeSize);
+          wr *= Math.max(0.0001, nac);
           if (ocultasRef.current?.has(nodes[i].fuente)) wr = 0.0001;
           else if (!det) wr *= 0.4;
           if (P.ambient) {
@@ -966,6 +1103,9 @@ export function CerebroCanvas({
           const ajeno = sel != null && i !== sel && !relacionado;
           const sg = P.selGlow;
           let boost = det ? 0.92 : 0.42;
+          // Flash de nacimiento: la memoria recién materializada
+          // irradia mientras se asienta en su forma final.
+          if (nac < 1) boost += nac * (1 - nac) * 4;
           // Brillo por consolidación: las memorias muy evocadas lucen.
           boost += Math.min(0.4, nodes[i].refuerzos * 0.05);
           if (P.ambient)
@@ -1012,7 +1152,14 @@ export function CerebroCanvas({
           for (const e of grp.list) {
             const a = pts[e.a];
             const b = pts[e.b];
-            if (cull && !lodVisible(e.a) && !lodVisible(e.b)) {
+            // Sinapsis aún no formada: uno de los extremos no había
+            // nacido en el instante observado.
+            const sinapsisViva =
+              nacimiento[e.a] > 0.4 && nacimiento[e.b] > 0.4;
+            if (
+              !sinapsisViva ||
+              (cull && !lodVisible(e.a) && !lodVisible(e.b))
+            ) {
               grp.pos[o++] = a.x;
               grp.pos[o++] = a.y;
               grp.pos[o++] = a.z;
@@ -1052,6 +1199,39 @@ export function CerebroCanvas({
         hlGeo.setDrawRange(0, ho / 3);
         hlGeo.attributes.position.needsUpdate = true;
         hlLineas.material.opacity = Math.min(1, 0.7 * P.selGlow);
+
+        // Anillo del observador: barre la hélice con el cursor y
+        // pulsa suave — tu "ahora" viajando por la línea de universo.
+        if (viajando) {
+          anillo.visible = true;
+          anillo.position.y = yEnTiempo(tCur);
+          (anillo.material as THREE.MeshBasicMaterial).opacity =
+            0.3 + 0.12 * Math.sin(tNow * 0.004);
+        } else anillo.visible = false;
+
+        // Fantasmas de proyección: ecos translúcidos que aparecen
+        // al cruzar el presente — el futuro probable, sin certeza.
+        if (gp > 0) {
+          fantasmas.visible = true;
+          for (let i = 0; i < fantasmasDatos.length; i++) {
+            const f = fantasmasDatos[i];
+            const latidoF = 0.75 + 0.25 * Math.sin(tNow * 0.003 + f.fase);
+            dummy.position.copy(f.pos);
+            dummy.scale.setScalar(
+              Math.max(0.0001, f.tam * gp * latidoF),
+            );
+            dummy.updateMatrix();
+            fantasmas.setMatrixAt(i, dummy.matrix);
+            fantasmas.setColorAt(
+              i,
+              tmpC
+                .copy(f.col)
+                .multiplyScalar(gp * f.prob * latidoF * 0.8),
+            );
+          }
+          fantasmas.instanceMatrix.needsUpdate = true;
+          if (fantasmas.instanceColor) fantasmas.instanceColor.needsUpdate = true;
+        } else fantasmas.visible = false;
 
         if (P.flow && NP) {
           for (let i = 0; i < NP; i++) {

@@ -7,11 +7,14 @@
  */
 
 import {
+  ClockRotateRight,
   Eye,
   EyeClosed,
   NavArrowDown,
   NavArrowUp,
   Palette,
+  Pause,
+  Play,
   Plus,
   Refresh,
   Trash,
@@ -636,3 +639,108 @@ export function TarjetaVidrio({
   );
 }
 
+
+/**
+ * Cursor del observador 4D — la barra temporal de la línea de universo.
+ *
+ * Al retroceder, el cerebro se desmaterializa: los nodos que aún no
+ * existían se desvanecen y su estado se recalcula a la edad del
+ * instante observado. Al cruzar el presente, aparecen fantasmas de
+ * proyección (futuros probables cuya opacidad = probabilidad).
+ * Play recorre la línea automáticamente; el tope tras el "ahora" es
+ * el horizonte de proyección.
+ */
+export function CursorTemporal({
+  tMin,
+  tMax,
+  horizonte,
+  cursor,
+  reproduciendo,
+  alCambiarCursor,
+  alReproducir,
+}: {
+  /** Epoch del evento más antiguo. */
+  tMin: number;
+  /** Epoch del evento más reciente ("ahora" del grafo). */
+  tMax: number;
+  /** Segundos de zona de proyección después de tMax. */
+  horizonte: number;
+  /** Cursor actual; null = presente vivo. */
+  cursor: number | null;
+  reproduciendo: boolean;
+  /** null vuelve al presente vivo. */
+  alCambiarCursor: (t: number | null) => void;
+  /** Alterna el recorrido automático play/pausa. */
+  alReproducir: () => void;
+}) {
+  const fin = tMax + horizonte;
+  const span = Math.max(1, fin - tMin);
+  const valor = Math.min(Math.max(cursor ?? tMax, tMin), fin);
+  // "Ahora" = presente vivo o cursor pegado al borde del presente.
+  const enAhora = cursor == null || cursor >= tMax - span * 0.002;
+  const enFuturo = cursor != null && cursor > tMax;
+  const fecha = (t: number) =>
+    new Date(t * 1000).toLocaleDateString("es-MX", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
+  return (
+    <div className="vidrio-fuerte pointer-events-auto flex items-center gap-2.5 rounded-full px-3.5 py-2">
+      <button
+        type="button"
+        onClick={alReproducir}
+        aria-label={reproduciendo ? "Pausar recorrido temporal" : "Reproducir línea de universo"}
+        title={reproduciendo ? "Pausar" : "Reproducir"}
+        className="texto-suave rounded-lg p-1.5 transition-transform duration-200 hover:scale-110 hover:text-(--ink) active:scale-90"
+      >
+        {reproduciendo ? <Pause width={15} height={15} /> : <Play width={15} height={15} />}
+      </button>
+      <span
+        className="texto-suave w-[4.6rem] text-right text-[0.65rem] leading-none"
+        title={fecha(tMin)}
+      >
+        {fecha(tMin)}
+      </span>
+      <div className="relative flex-1">
+        <input
+          type="range"
+          min={tMin}
+          max={fin}
+          step={Math.max(1, span / 600)}
+          value={valor}
+          aria-label="Cursor temporal de la línea de universo"
+          onChange={(e) => alCambiarCursor(Number(e.target.value))}
+          className="w-full accent-(--primary)"
+        />
+        {/* Marcador del "ahora": separa pasado sólido de proyección. */}
+        <span
+          aria-hidden
+          className="pointer-events-none absolute top-1/2 h-3 w-px -translate-x-1/2 -translate-y-1/2 bg-(--ink) opacity-40"
+          style={{ left: `${((tMax - tMin) / span) * 100}%` }}
+        />
+      </div>
+      <span className="texto-suave min-w-[4.6rem] text-[0.65rem] leading-none">
+        {enFuturo
+          ? `+${((valor - tMax) / 86400).toFixed(1)}d`
+          : enAhora
+            ? "ahora"
+            : fecha(valor)}
+      </span>
+      <span
+        aria-hidden
+        className={`h-1.5 w-1.5 rounded-full ${enAhora ? "bg-(--success)" : "bg-(--primary)"}`}
+      />
+      <button
+        type="button"
+        onClick={() => alCambiarCursor(null)}
+        aria-label="Volver al presente"
+        title="Volver al presente"
+        disabled={cursor == null}
+        className="texto-suave rounded-lg p-1.5 transition-transform duration-200 hover:scale-110 hover:text-(--ink) active:scale-90 disabled:opacity-30"
+      >
+        <ClockRotateRight width={15} height={15} />
+      </button>
+    </div>
+  );
+}

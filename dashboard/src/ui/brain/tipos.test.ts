@@ -10,7 +10,12 @@ import { describe, expect, it } from "vitest";
 import type { Evento } from "@/domain/modelos";
 
 import { REGLAS_DEFAULT } from "./reglas";
-import { colorNodo, eventosAGrafo } from "./tipos";
+import {
+  colorNodo,
+  estadoEn,
+  eventosAGrafo,
+  factorNacimiento,
+} from "./tipos";
 
 const AHORA = 1_800_000_000;
 const DIA = 86_400;
@@ -366,5 +371,71 @@ describe("eventosAGrafo", () => {
     );
     expect(g.ramas).toContain("main");
     expect(g.ramas).toContain("espejo");
+  });
+});
+
+describe("cursor temporal del observador", () => {
+  it("tMin/tMax del grafo cubren el span de eventos", () => {
+    const g = eventosAGrafo(
+      [
+        evento({ timestamp_unix: AHORA - 10 * DIA }),
+        evento({ timestamp_unix: AHORA }),
+      ],
+      AHORA,
+    );
+    expect(g.tMin).toBe(AHORA - 10 * DIA);
+    expect(g.tMax).toBe(AHORA);
+  });
+
+  it("factorNacimiento es 0 antes de nacer el evento", () => {
+    expect(factorNacimiento(AHORA, AHORA - 1, 3600)).toBe(0);
+  });
+
+  it("factorNacimiento es 1 cuando el cursor ya superó la ventana", () => {
+    expect(factorNacimiento(AHORA - 10 * DIA, AHORA, 3600)).toBe(1);
+  });
+
+  it("factorNacimiento interpola suave dentro de la ventana", () => {
+    const medio = factorNacimiento(AHORA - 1800, AHORA, 3600);
+    expect(medio).toBeGreaterThan(0);
+    expect(medio).toBeLessThan(1);
+    // Smoothstep en el centro de la ventana ≈ 0.5.
+    expect(medio).toBeCloseTo(0.5, 5);
+  });
+
+  it("factorNacimiento nunca excede [0,1] en los bordes", () => {
+    expect(factorNacimiento(0, -100, 3600)).toBe(0);
+    expect(factorNacimiento(0, 10 * DIA, 3600)).toBe(1);
+  });
+
+  it("estadoEn evalúa la edad al instante observado", () => {
+    const g = eventosAGrafo(
+      [evento({ timestamp_unix: AHORA - 10 * DIA })],
+      AHORA,
+    );
+    const nodo = g.nodes[0];
+    // 10 días atrás: decayed hoy, pero working a los 5 días de vida.
+    expect(nodo.estado).toBe("decayed");
+    expect(estadoEn(nodo, AHORA - 5 * DIA)).toBe("working");
+    // Al momento de nacer era fresh.
+    expect(estadoEn(nodo, nodo.timestamp_unix)).toBe("fresh");
+  });
+
+  it("estadoEn marca dead sólo después de su expira_en", () => {
+    const g = eventosAGrafo(
+      [
+        evento({
+          timestamp_unix: AHORA - DIA,
+          expira_en: AHORA - 60,
+          amplitud: 0.9,
+          refuerzos: 5,
+        }),
+      ],
+      AHORA,
+    );
+    const nodo = g.nodes[0];
+    // Antes de expirar era una memoria viva consolidada.
+    expect(estadoEn(nodo, AHORA - 120)).toBe("consolidated");
+    expect(estadoEn(nodo, AHORA)).toBe("dead");
   });
 });

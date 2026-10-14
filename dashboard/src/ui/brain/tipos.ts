@@ -40,6 +40,8 @@ export interface Nodo {
   /** Consolidación por evocación — alimenta el brillo persistente. */
   refuerzos: number;
   timestamp_unix: number;
+  /** Caducidad (TTL); null = el recuerdo no vence. */
+  expira_en: number | null;
   /** Fijado por arrastre del usuario (persistido). */
   pinned: boolean;
   /** Grado (nº de aristas) — engorda el nodo. */
@@ -92,6 +94,10 @@ export interface DatosCerebro {
   vinculos: Map<number, { idx: number; tipo: string; peso: number }[]>;
   /** Ramas de línea de universo presentes en los datos. */
   ramas: string[];
+  /** Unix del evento más antiguo cargado (0 si no hay datos). */
+  tMin: number;
+  /** Unix del evento más reciente cargado — el "presente" del grafo. */
+  tMax: number;
 }
 
 /** Posición fijada de un nodo, persistida por el usuario. */
@@ -312,6 +318,8 @@ export function eventosAGrafo(
     },
     vinculos: new Map(),
     ramas: [],
+    tMin: 0,
+    tMax: 0,
   };
   if (eventos.length === 0) return vacio;
 
@@ -328,6 +336,7 @@ export function eventosAGrafo(
     amplitud: e.amplitud,
     refuerzos: e.refuerzos ?? 0,
     timestamp_unix: e.timestamp_unix,
+    expira_en: e.expira_en ?? null,
     pinned: pins?.[e.id] !== undefined,
     deg: 0,
     rank: i,
@@ -455,5 +464,39 @@ export function eventosAGrafo(
     stateCounts,
     vinculos,
     ramas,
+    tMin,
+    tMax,
   };
+}
+
+/**
+ * Estado de tejido que tenía (o tendrá) un nodo en el instante `t`:
+ * es `estadoDe` evaluado sobre la edad que el evento tenía en ese
+ * momento — permite rebobinar el grafo y ver estados ya pasados.
+ * Los refuerzos se aproximan con el valor actual (no hay histórico).
+ */
+export function estadoEn(n: Nodo, t: number): EstadoNodo {
+  if (n.expira_en != null && n.expira_en <= t) return "dead";
+  const edad = Math.max(0, t - n.timestamp_unix);
+  if (n.refuerzos >= 3 || n.amplitud >= 0.9) return "consolidated";
+  if (edad < 2 * DIA) return "fresh";
+  if (edad < 7 * DIA) return "working";
+  if (edad > 45 * DIA && n.refuerzos === 0 && n.amplitud < 0.3) {
+    return "dead";
+  }
+  return edad < 30 * DIA && n.amplitud >= 0.6 ? "consolidated" : "decayed";
+}
+
+/**
+ * Factor de materialización del nodo en el cursor temporal:
+ * 0 antes de nacer, 1 una vez consolidado en la línea, y en medio
+ * un smoothstep — la memoria "nace" expandiéndose al scrubbear.
+ */
+export function factorNacimiento(
+  ts: number,
+  cursor: number,
+  ventana: number,
+): number {
+  const f = Math.min(1, Math.max(0, (cursor - ts) / Math.max(1, ventana)));
+  return f * f * (3 - 2 * f);
 }
