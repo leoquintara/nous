@@ -723,13 +723,26 @@ export function CerebroCanvas({
         glow: THREE.Sprite;
         delay: number;
         col: THREE.Color;
+        /** Relaciones del nodo destino: reciben un pulso al llegar la chispa. */
+        vecinos: number[];
         /** true tras la llegada — la chispa ya recogió el color del nodo. */
+        fired: boolean;
+      }
+      /** Arco de segunda ola: nodo alcanzado → una de sus relaciones. */
+      interface ArcoRelacion {
+        b: number;
+        line: THREE.Line;
+        spark: THREE.Mesh;
+        curve: THREE.QuadraticBezierCurve3;
+        t0: number;
+        col: THREE.Color;
         fired: boolean;
       }
       interface Pensamiento {
         group: THREE.Group;
         seed: THREE.Mesh;
         lines: LineaPensamiento[];
+        relaciones: ArcoRelacion[];
         lab: HTMLDivElement;
         t0: number;
       }
@@ -750,6 +763,30 @@ export function CerebroCanvas({
         texGlow = new THREE.CanvasTexture(c);
         return texGlow;
       };
+      const MAX_VECINOS_REPLAY = 6;
+      const MAX_REPLAY_REL = 48;
+      /**
+       * Top de relaciones de un nodo: vínculos persistidos (explícitos
+       * > semánticos por peso) y, si faltan, vecinos estructurales.
+       */
+      const vecinosDe = (idx: number): number[] => {
+        const vinculos = datos.vinculos.get(idx) ?? [];
+        const porPeso = [...vinculos].sort(
+          (a, b) =>
+            (b.tipo === "explicita" ? 1 : 0) - (a.tipo === "explicita" ? 1 : 0) ||
+            b.peso - a.peso,
+        );
+        const top = porPeso.map((v) => v.idx);
+        const ya = new Set(top);
+        for (const v of datos.nbrs.get(idx) ?? []) {
+          if (top.length >= MAX_VECINOS_REPLAY) break;
+          if (!ya.has(v)) {
+            top.push(v);
+            ya.add(v);
+          }
+        }
+        return top.slice(0, MAX_VECINOS_REPLAY);
+      };
       /** Elimina un pensamiento y libera sus recursos WebGL. */
       const matarPensamiento = (th: Pensamiento) => {
         scene.remove(th.group);
@@ -763,6 +800,12 @@ export function CerebroCanvas({
           l.trail.geometry.dispose();
           (l.trail.material as THREE.Material).dispose();
           l.glow.material.dispose();
+        }
+        for (const r of th.relaciones) {
+          r.line.geometry.dispose();
+          (r.line.material as THREE.Material).dispose();
+          r.spark.geometry.dispose();
+          (r.spark.material as THREE.Material).dispose();
         }
         th.seed.geometry.dispose();
         (th.seed.material as THREE.Material).dispose();
@@ -855,6 +898,7 @@ export function CerebroCanvas({
             col: new THREE.Color(
               colorNodo(nodes[idx], modoRef.current, datos, livePrefs.current),
             ),
+            vecinos: vecinosDe(idx),
             fired: false,
           };
         });
@@ -876,7 +920,66 @@ export function CerebroCanvas({
         lab.textContent = `◌ ${ev.q.slice(0, 46)}`;
         capaEtiquetas.appendChild(lab);
         scene.add(group);
-        pensamientos.push({ group, seed, lines, lab, t0: performance.now() });
+        pensamientos.push({
+          group,
+          seed,
+          lines,
+          relaciones: [],
+          lab,
+          t0: performance.now(),
+        });
+      };
+      /**
+       * Arco de segunda ola: al llegar la chispa, el nodo destella y
+       * envía pulsos a sus relaciones — el detalle que faltaba en el
+       * replay del historial.
+       */
+      const spawnRelacion = (
+        th: Pensamiento,
+        a: number,
+        b: number,
+        col: THREE.Color,
+        t0: number,
+      ) => {
+        const pa = new THREE.Vector3(pts[a].x, pts[a].y, pts[a].z);
+        const pb = new THREE.Vector3(pts[b].x, pts[b].y, pts[b].z);
+        const mid = pa.clone().lerp(pb, 0.5);
+        mid.multiplyScalar(1.07);
+        const curve = new THREE.QuadraticBezierCurve3(pa, mid, pb);
+        const line = new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints(curve.getPoints(20)),
+          new THREE.LineBasicMaterial({
+            color: col,
+            transparent: true,
+            opacity: 0,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+          }),
+        );
+        const spark = new THREE.Mesh(
+          new THREE.SphereGeometry(2.4, 8, 6),
+          new THREE.MeshBasicMaterial({
+            color: new THREE.Color(
+              colorNodo(nodes[b], modoRef.current, datos, livePrefs.current),
+            ),
+            transparent: true,
+            opacity: 0,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+          }),
+        );
+        th.group.add(line, spark);
+        th.relaciones.push({
+          b,
+          line,
+          spark,
+          curve,
+          t0,
+          col: new THREE.Color(
+            colorNodo(nodes[b], modoRef.current, datos, livePrefs.current),
+          ),
+          fired: false,
+        });
       };
       /**
        * Drena los pensamientos pendientes: los ids que ya existen se
@@ -1394,8 +1497,9 @@ export function CerebroCanvas({
         // hubs (los de mayor grado) o all (todos los del nivel de
         // detalle, con tope por rendimiento).
         etiquetados.clear();
-        const anotar = (i: number) => {
-          if (i < 0 || !lodVisible(i)) return;
+        const anotar = (i: number, forzar = false) => {
+          const existe = forzar ? seleccionable(i) : lodVisible(i);
+          if (i < 0 || !existe) return;
           v3.set(pts[i].x, pts[i].y, pts[i].z).project(camera);
           if (v3.z > 1) return;
           const el = etiqueta(i);
@@ -1407,6 +1511,12 @@ export function CerebroCanvas({
         };
         anotar(sel ?? -1);
         anotar(hover);
+        // Nodos tocados por un pensamiento/replay y sus relaciones:
+        // etiquetados aunque el LOD los atenúe — son el foco ahora.
+        for (const th of pensamientos) {
+          for (const l of th.lines) anotar(l.idx, true);
+          for (const r of th.relaciones) anotar(r.b, true);
+        }
         if (P.labels === "hubs") {
           let hubs = 0;
           for (let i = 0; i < N && hubs < 12; i++) {
@@ -1490,6 +1600,13 @@ export function CerebroCanvas({
                 flashes.set(l.idx, { s: 1, c: l.col });
                 sparkMat.color.copy(l.col);
                 l.glow.material.color.copy(l.col);
+                // Segunda ola: el nodo alcanzado pulsa hacia sus
+                // relaciones — cada vecino recibe una chispa con su
+                // color y destella al ser tocado.
+                const cupo = Math.max(0, MAX_REPLAY_REL - th.relaciones.length);
+                l.vecinos.slice(0, cupo).forEach((v, j) => {
+                  if (v !== l.idx) spawnRelacion(th, l.idx, v, l.col, tNow + j * 90);
+                });
               }
               const r = Math.max(0, Math.min(1, (tt - IDA) / VUELTA));
               if (r < 1) {
@@ -1506,6 +1623,41 @@ export function CerebroCanvas({
                 l.glow.material.opacity = 0;
                 trailMat.opacity = 0;
               }
+            }
+          }
+          // Segunda ola en vuelo: arcos cortos nodo → relación con una
+          // chispa que viaja ~450ms y tiñe al vecino al llegar.
+          for (let r = th.relaciones.length - 1; r >= 0; r--) {
+            const rel = th.relaciones[r];
+            const rt = tNow - rel.t0;
+            if (rt < 0) continue;
+            if (rt > 1500) {
+              th.group.remove(rel.line, rel.spark);
+              rel.line.geometry.dispose();
+              (rel.line.material as THREE.Material).dispose();
+              rel.spark.geometry.dispose();
+              (rel.spark.material as THREE.Material).dispose();
+              th.relaciones.splice(r, 1);
+              continue;
+            }
+            const fadeR =
+              rt < 150 ? rt / 150 : rt > 900 ? Math.max(0, 1 - (rt - 900) / 600) : 1;
+            const flR = 0.75 + 0.25 * Math.sin(tNow * 0.02 + rel.b * 2.3);
+            (rel.line.material as THREE.LineBasicMaterial).opacity =
+              fade * fadeR * 0.6 * flR;
+            const relSparkMat = rel.spark.material as THREE.MeshBasicMaterial;
+            const pr = Math.min(1, rt / 450);
+            if (pr < 1) {
+              rel.curve.getPoint(pr, v3);
+              rel.spark.position.copy(v3);
+              relSparkMat.opacity = fade * fadeR * Math.sin(pr * Math.PI);
+            } else {
+              if (!rel.fired) {
+                rel.fired = true;
+                flashes.set(rel.b, { s: 0.8, c: rel.col });
+              }
+              relSparkMat.opacity =
+                fade * fadeR * Math.max(0, 1 - (rt - 450) / 500) * 0.5;
             }
           }
         }
