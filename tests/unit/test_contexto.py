@@ -1,9 +1,12 @@
 """Tests unitarios de extracción de entidades para el hint de contexto."""
 
+import pytest
+
 from src.core.contexto import (
     extraer_entidades,
     extraer_hashtags,
     fusionar_tags,
+    parsear_ttl,
 )
 
 
@@ -52,3 +55,38 @@ def test_fusionar_tags_dedup_case_insensitive() -> None:
         "ia",
         "casa",
     ]
+
+
+AHORA = 1_800_000_000
+
+
+def test_parsear_ttl_none_devuelve_none() -> None:
+    """Sin TTL el recuerdo no caduca."""
+    assert parsear_ttl(None, AHORA) is None
+
+
+def test_parsear_ttl_dias_horas_minutos() -> None:
+    """'30d', '12h' y '45m' se traducen a epoch futuro."""
+    assert parsear_ttl("30d", AHORA) == AHORA + 30 * 86_400
+    assert parsear_ttl("12h", AHORA) == AHORA + 12 * 3_600
+    assert parsear_ttl("45m", AHORA) == AHORA + 45 * 60
+
+
+def test_parsear_ttl_epoch_futuro_pasa_directo() -> None:
+    """Un epoch en segundos se usa tal cual si es futuro."""
+    futuro = AHORA + 10_000
+    assert parsear_ttl(futuro, AHORA) == futuro
+
+
+def test_parsear_ttl_epoch_vencido_rechaza() -> None:
+    """Un epoch ya pasado es un error de validación."""
+    with pytest.raises(ValueError, match="vencido"):
+        parsear_ttl(AHORA - 1, AHORA)
+
+
+def test_parsear_ttl_formato_invalido_rechaza() -> None:
+    """Texto libre o unidades desconocidas no se aceptan."""
+    with pytest.raises(ValueError, match="no reconocido"):
+        parsear_ttl("para siempre", AHORA)
+    with pytest.raises(ValueError, match="no reconocido"):
+        parsear_ttl("5y", AHORA)

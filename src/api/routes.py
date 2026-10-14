@@ -10,6 +10,7 @@ from src.api.auth import verificar_token
 from src.api.rate_limit import LimitadorIntentos
 from src.api.schemas import (
     BenchmarkResponse,
+    CerrarLoopRequest,
     EventoRequest,
     EventoResponse,
     FuentePatch,
@@ -97,6 +98,7 @@ async def listar_eventos(
     hasta_unix: int = 4_102_444_800,
     limite: int = 500,
     rama: str = "main",
+    repartir: bool = False,
 ) -> list[EventoResponse]:
     """Lista eventos de la línea de universo en un rango temporal.
 
@@ -106,6 +108,9 @@ async def listar_eventos(
         limite: Máximo de eventos (1-500).
         rama: Línea de universo a listar ("main" por defecto,
             "*" para todas las ramas).
+        repartir: Si es true, el límite se reparte por fuente —
+            garantiza que todas las procedencias aparezcan aunque
+            una domine el volumen de eventos.
 
     Returns:
         Eventos en orden cronológico.
@@ -113,7 +118,11 @@ async def listar_eventos(
     return [
         EventoResponse(**e)
         for e in await tools_impl._linea(
-            desde_unix, hasta_unix, limite, None if rama == "*" else rama
+            desde_unix,
+            hasta_unix,
+            limite,
+            None if rama == "*" else rama,
+            repartir,
         )
     ]
 
@@ -138,7 +147,48 @@ async def crear_evento(peticion: EventoRequest) -> dict[str, Any]:
         peticion.relaciona_ids,
         peticion.tags,
         peticion.rama,
+        peticion.tipo,
+        peticion.ttl,
+        peticion.reemplaza_id,
+        peticion.con_quien,
     )
+
+
+@router.get("/loops", dependencies=[Depends(verificar_token)])
+async def listar_loops(rama: str = "main") -> list[dict[str, Any]]:
+    """Lista los compromisos abiertos — quién espera respuesta.
+
+    Args:
+        rama: Línea de universo a consultar ("main" por defecto).
+
+    Returns:
+        Compromisos abiertos con contraparte y días de espera.
+    """
+    return await tools_impl._open_loops(rama)
+
+
+@router.post("/loops/{compromiso_id}/cerrar", dependencies=[Depends(verificar_token)])
+async def cerrar_loop(
+    compromiso_id: str, peticion: CerrarLoopRequest
+) -> dict[str, Any]:
+    """Cierra un compromiso registrando su resolución.
+
+    El compromiso permanece en la línea enlazado al evento de cierre
+    (relación "cierra") — transición auditada, nunca un borrado.
+    """
+    return await tools_impl._cerrar_loop(
+        compromiso_id, peticion.resolucion, peticion.fuente
+    )
+
+
+@router.get("/contexto-inicial", dependencies=[Depends(verificar_token)])
+async def contexto_inicial(top_n: int = 8) -> dict[str, Any]:
+    """Pack de arranque de sesión: núcleo + loops + hechos calientes.
+
+    Una sola llamada devuelve la memoria relevante para abrir una
+    conversación — cero LLM, todo consultas locales.
+    """
+    return await tools_impl._contexto_inicial(top_n)
 
 
 @router.get("/tags", dependencies=[Depends(verificar_token)])

@@ -273,6 +273,7 @@ const DIA = 86_400;
  * para huellas viejas, débiles y nunca evocadas (candidatas a poda).
  */
 export function estadoDe(e: Evento, ahora: number): EstadoNodo {
+  if (e.expira_en != null && e.expira_en <= ahora) return "dead";
   const edad = ahora - e.timestamp_unix;
   if (e.refuerzos >= 3 || e.amplitud >= 0.9) return "consolidated";
   if (edad < 2 * DIA) return "fresh";

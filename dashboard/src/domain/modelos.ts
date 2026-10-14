@@ -22,6 +22,14 @@ export interface Evento {
   tags: string[];
   /** Línea de universo a la que pertenece el evento. */
   rama: string;
+  /** Clase epistémica: evento, hecho, creencia, compromiso, preferencia. */
+  tipo: string;
+  /** Timestamp Unix de caducidad (TTL); null = no expira. */
+  expira_en: number | null;
+  /** UUID del evento que lo sustituye (supersede); null = vigente. */
+  reemplazado_por: string | null;
+  /** Contraparte del compromiso (solo tipo="compromiso"). */
+  con_quien: string | null;
 }
 
 /** Tag agregado con su frecuencia de uso. */

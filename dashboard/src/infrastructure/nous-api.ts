@@ -50,7 +50,8 @@ export function crearClienteNous(token: string): PuertoMemoria {
     listarEventos: (desde, hasta, limite = 500, rama) =>
       peticion<Evento[]>(
         `/api/eventos?desde_unix=${desde}&hasta_unix=${hasta}&limite=${limite}` +
-          (rama ? `&rama=${encodeURIComponent(rama)}` : ""),
+          (rama ? `&rama=${encodeURIComponent(rama)}` : "") +
+          "&repartir=true",
         token,
       ),
     listarRelaciones: (limite = 2000) =>

@@ -49,6 +49,19 @@ class EventoRequest(BaseModel):
     relaciona_ids: list[str] | None = Field(default=None, max_length=20)
     tags: list[str] | None = Field(default=None, max_length=12)
     rama: str = Field(default="main", min_length=1, max_length=64)
+    tipo: Literal[
+        "evento", "hecho", "creencia", "compromiso", "preferencia"
+    ] = "evento"
+    ttl: str | int | None = Field(default=None)
+    reemplaza_id: str | None = Field(default=None)
+    con_quien: str | None = Field(default=None, max_length=128)
+
+
+class CerrarLoopRequest(BaseModel):
+    """Cuerpo para cerrar un compromiso abierto."""
+
+    resolucion: str = Field(min_length=1, max_length=10_000)
+    fuente: str = Field(default="dashboard", min_length=1, max_length=50)
 
 
 class RelacionResponse(BaseModel):
@@ -73,6 +86,10 @@ class EventoResponse(BaseModel):
     refuerzos: int = 0
     tags: list[str] = []
     rama: str = "main"
+    tipo: str = "evento"
+    expira_en: int | None = None
+    reemplazado_por: str | None = None
+    con_quien: str | None = None
 
 
 class TagResponse(BaseModel):

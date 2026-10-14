@@ -51,8 +51,12 @@ async def cliente(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[AsyncClient]
         yield c
     async with engine.begin() as conn:
         await conn.execute(
-            text("DELETE FROM eventos WHERE fuente = :fuente"),
-            {"fuente": FUENTE_TEST},
+            text("DELETE FROM eventos WHERE fuente LIKE :patron"),
+            {"patron": f"{FUENTE_TEST}%"},
+        )
+        await conn.execute(
+            text("DELETE FROM fuentes WHERE nombre LIKE :patron"),
+            {"patron": f"{FUENTE_TEST}%"},
         )
         await conn.execute(text("DELETE FROM proyecciones"))
     await engine.dispose()
@@ -390,3 +394,150 @@ async def test_fuentes_ramificar_crea_rama_hija(cliente: AsyncClient) -> None:
     assert datos["nombre"] == "origen-qzx:rama-qzx"
     await cliente.delete("/api/fuentes/origen-qzx:rama-qzx")
     await cliente.delete("/api/fuentes/origen-qzx")
+
+
+@pytest.mark.asyncio
+async def test_eventos_repartir_incluye_todas_las_fuentes(
+    cliente: AsyncClient,
+) -> None:
+    """Con repartir=true una fuente mayoritaria no acapara la ventana."""
+    for i in range(6):
+        r = await cliente.post(
+            "/api/eventos",
+            json={
+                "contenido": f"evento repartido mayor {i}",
+                "fuente": FUENTE_TEST,
+                "dimension": "conductual",
+            },
+        )
+        assert r.status_code == 200
+    r = await cliente.post(
+        "/api/eventos",
+        json={
+            "contenido": "evento repartido minor",
+            "fuente": f"{FUENTE_TEST}_b",
+            "dimension": "cognitiva",
+        },
+    )
+    assert r.status_code == 200
+    r = await cliente.get(
+        "/api/eventos", params={"limite": 4, "repartir": "true"}
+    )
+    fuentes = {e["fuente"] for e in r.json()}
+    assert f"{FUENTE_TEST}_b" in fuentes
+
+
+@pytest.mark.asyncio
+async def test_loops_compromiso_abierto_y_cierre(cliente: AsyncClient) -> None:
+    """Un compromiso aparece en /loops hasta que se cierra."""
+    r = await cliente.post(
+        "/api/eventos",
+        json={
+            "contenido": "responder a Franz sobre el presupuesto",
+            "fuente": FUENTE_TEST,
+            "tipo": "compromiso",
+            "con_quien": "Franz",
+        },
+    )
+    assert r.status_code == 200
+    compromiso_id = r.json()["id"]
+
+    r = await cliente.get("/api/loops")
+    abiertos = [lp for lp in r.json() if lp["id"] == compromiso_id]
+    assert len(abiertos) == 1
+    assert abiertos[0]["con_quien"] == "Franz"
+
+    r = await cliente.post(
+        f"/api/loops/{compromiso_id}/cerrar",
+        json={"resolucion": "le respondí a Franz", "fuente": FUENTE_TEST},
+    )
+    assert r.status_code == 200
+    assert r.json()["estado"] == "cerrado"
+
+    r = await cliente.get("/api/loops")
+    assert all(lp["id"] != compromiso_id for lp in r.json())
+
+
+@pytest.mark.asyncio
+async def test_cerrar_loop_sobre_no_compromiso_devuelve_error(
+    cliente: AsyncClient,
+) -> None:
+    """Solo eventos tipo compromiso son cerrables."""
+    r = await cliente.post(
+        "/api/eventos",
+        json={
+            "contenido": "un hecho cualquiera sin compromiso",
+            "fuente": FUENTE_TEST,
+        },
+    )
+    otro_id = r.json()["id"]
+    r = await cliente.post(
+        f"/api/loops/{otro_id}/cerrar",
+        json={"resolucion": "intento de cierre", "fuente": FUENTE_TEST},
+    )
+    assert r.status_code in (400, 422, 500)
+
+
+@pytest.mark.asyncio
+async def test_supersede_marca_reemplazado(cliente: AsyncClient) -> None:
+    """El evento viejo queda enlazado al nuevo vía reemplazado_por."""
+    r = await cliente.post(
+        "/api/eventos",
+        json={
+            "contenido": "mi peso es 80kg exactamente",
+            "fuente": FUENTE_TEST,
+            "tipo": "hecho",
+        },
+    )
+    viejo_id = r.json()["id"]
+    r = await cliente.post(
+        "/api/eventos",
+        json={
+            "contenido": "mi peso es 79kg exactamente",
+            "fuente": FUENTE_TEST,
+            "tipo": "hecho",
+            "reemplaza_id": viejo_id,
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["reemplaza"] == viejo_id
+
+    r = await cliente.get("/api/eventos", params={"limite": 500})
+    viejo = next(e for e in r.json() if e["id"] == viejo_id)
+    assert viejo["reemplazado_por"] is not None
+
+
+@pytest.mark.asyncio
+async def test_eventos_ttl_expira_en(cliente: AsyncClient) -> None:
+    """ttl='30d' persiste expira_en futuro en el evento."""
+    r = await cliente.post(
+        "/api/eventos",
+        json={
+            "contenido": "nota efímera que caduca sola",
+            "fuente": FUENTE_TEST,
+            "ttl": "30d",
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["expira_en"] > r.json()["timestamp_unix"]
+
+
+@pytest.mark.asyncio
+async def test_contexto_inicial_devuelve_pack(cliente: AsyncClient) -> None:
+    """El pack de sesión incluye núcleo, loops, calientes y stats."""
+    await cliente.post(
+        "/api/eventos",
+        json={
+            "contenido": "compromiso pendiente de contexto inicial",
+            "fuente": FUENTE_TEST,
+            "tipo": "compromiso",
+            "con_quien": "Maria",
+        },
+    )
+    r = await cliente.get("/api/contexto-inicial")
+    assert r.status_code == 200
+    pack = r.json()
+    assert set(pack) >= {"nucleo", "loops", "calientes", "stats"}
+    assert any(
+        lp["con_quien"] == "Maria" for lp in pack["loops"]
+    )

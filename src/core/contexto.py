@@ -68,6 +68,40 @@ def fusionar_tags(explicitos: list[str] | None, contenido: str) -> list[str]:
     return list(fusion)[:_MAX_TAGS]
 
 
+_PATRON_TTL = re.compile(r"^(\d+)\s*([smhdw])$", re.IGNORECASE)
+_TTL_FACTOR = {"s": 1, "m": 60, "h": 3600, "d": 86_400, "w": 604_800}
+
+
+def parsear_ttl(ttl: str | int | None, ahora: int) -> int | None:
+    """Traduce un TTL declarado a timestamp Unix de expiración.
+
+    Acepta duraciones compactas (``"30d"``, ``"12h"``, ``"45m"``,
+    ``"2w"``), un epoch en segundos como entero, o None (no expira).
+
+    Args:
+        ttl: Duración o epoch de expiración; None = sin caducidad.
+        ahora: Timestamp Unix actual sobre el que sumar duraciones.
+
+    Returns:
+        Timestamp Unix de expiración, o None si no caduca.
+
+    Raises:
+        ValueError: Formato de TTL no reconocido o ya vencido.
+    """
+    if ttl is None:
+        return None
+    if isinstance(ttl, int):
+        if ttl <= ahora:
+            raise ValueError("el TTL ya estaría vencido")
+        return ttl
+    m = _PATRON_TTL.match(ttl.strip())
+    if not m:
+        raise ValueError(
+            f"TTL no reconocido: {ttl!r} — usa '30d', '12h', '45m' o epoch"
+        )
+    return ahora + int(m.group(1)) * _TTL_FACTOR[m.group(2).lower()]
+
+
 def extraer_entidades(contenido: str) -> list[str]:
     """Extrae nombres propios mencionados en el contenido.
 

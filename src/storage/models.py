@@ -57,6 +57,12 @@ class EventoModel(Base):
         ARRAY(String(64)), server_default=text("'{}'::varchar(64)[]")
     )
     rama: Mapped[str] = mapped_column(String(64), server_default="main")
+    tipo: Mapped[str] = mapped_column(String(20), server_default="evento")
+    expira_en: Mapped[int | None] = mapped_column(BigInteger)
+    reemplazado_por: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("eventos.id", ondelete="SET NULL")
+    )
+    con_quien: Mapped[str | None] = mapped_column(String(128))
     contenido_tsv: Mapped[str | None] = mapped_column(
         TSVECTOR,
         Computed("to_tsvector('spanish', contenido)", persisted=True),
@@ -73,7 +79,12 @@ class EventoModel(Base):
             "dimension IN ('cognitiva', 'somatica', 'conductual')",
             name="ck_eventos_dimension",
         ),
+        CheckConstraint(
+            "tipo IN ('evento','hecho','creencia','compromiso','preferencia')",
+            name="ck_eventos_tipo",
+        ),
         Index("ix_eventos_timestamp", "timestamp_unix"),
+        Index("ix_eventos_tipo", "tipo"),
         Index("ix_eventos_dimension", "dimension"),
         Index("ix_eventos_fuente", "fuente"),
         Index("ix_eventos_tsv", "contenido_tsv", postgresql_using="gin"),
@@ -124,7 +135,8 @@ class RelacionModel(Base):
     __table_args__ = (
         CheckConstraint("origen_id < destino_id", name="ck_relaciones_orden"),
         CheckConstraint(
-            "tipo IN ('explicita', 'semantica')", name="ck_relaciones_tipo"
+            "tipo IN ('explicita', 'semantica', 'reemplaza', 'cierra')",
+            name="ck_relaciones_tipo",
         ),
         UniqueConstraint(
             "origen_id", "destino_id", "tipo", name="uq_relaciones_par_tipo"

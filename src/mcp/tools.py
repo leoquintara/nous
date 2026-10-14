@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from src.config import get_settings
 from src.core.busqueda import BusquedaHibrida4D
 from src.core.clasificador import ClasificadorDimensiones
-from src.core.contexto import analizar_contexto, fusionar_tags
+from src.core.contexto import analizar_contexto, fusionar_tags, parsear_ttl
 from src.core.embeddings import GeneradorEmbeddings
 from src.core.episodios import GAP_MAX_DEFECTO_SEGUNDOS, segmentar
 from src.core.exceptions import ErrorValidacion
@@ -251,6 +251,12 @@ def _modelo_a_dict(modelo: EventoModel) -> dict[str, Any]:
         "refuerzos": modelo.refuerzos,
         "tags": list(modelo.tags or []),
         "rama": modelo.rama,
+        "tipo": modelo.tipo,
+        "expira_en": modelo.expira_en,
+        "reemplazado_por": (
+            str(modelo.reemplazado_por) if modelo.reemplazado_por else None
+        ),
+        "con_quien": modelo.con_quien,
     }
 
 
@@ -284,6 +290,9 @@ def _resultado_a_dict(r: ResultadoBusqueda) -> dict[str, Any]:
     }
 
 
+TIPOS_EVENTO = ("evento", "hecho", "creencia", "compromiso", "preferencia")
+
+
 async def _recordar(
     contenido: str,
     dimension: Literal["cognitiva", "somatica", "conductual"] | None,
@@ -294,6 +303,10 @@ async def _recordar(
     relaciona_ids: list[str] | None = None,
     tags: list[str] | None = None,
     rama: str = "main",
+    tipo: str = "evento",
+    ttl: str | int | None = None,
+    reemplaza_id: str | None = None,
+    con_quien: str | None = None,
 ) -> dict[str, Any]:
     """Persiste un evento con indexación write-behind.
 
@@ -302,18 +315,32 @@ async def _recordar(
     a una tarea en segundo plano, de modo que la respuesta no paga la
     inferencia del modelo (~30-50ms). Si ``relaciona_ids`` trae UUIDs de
     eventos existentes, se registran vínculos explícitos con ellos.
+    ``reemplaza_id`` declara un supersede: el evento viejo queda para
+    arqueología y el nuevo encabeza la cadena. ``tipo="compromiso"``
+    abre un loop que permanece abierto hasta que un evento lo cierre
+    (relación ``cierra``). ``ttl`` acepta "30d"/"12h"/epoch.
     """
     if not 0.0 <= amplitud <= 1.0:
         raise ErrorValidacion("amplitud debe estar entre 0.0 y 1.0")
     if frecuencia is not None and frecuencia <= 0.0:
         raise ErrorValidacion("frecuencia debe ser positiva (Hz)")
+    if tipo not in TIPOS_EVENTO:
+        raise ErrorValidacion(
+            f"tipo debe ser uno de {', '.join(TIPOS_EVENTO)}"
+        )
+    ts = timestamp_unix if timestamp_unix is not None else int(time.time())
+    try:
+        expira_en = parsear_ttl(ttl, ts)
+    except ValueError as e:
+        raise ErrorValidacion(str(e)) from e
+    if con_quien and tipo != "compromiso":
+        raise ErrorValidacion("con_quien solo aplica a tipo='compromiso'")
     respuesta: dict[str, Any] = {}
     if dimension is None:
         resultado = await _obtener_clasificador().clasificar(contenido)
         dimension = resultado.dimension.value
         respuesta["confianza_clasificacion"] = resultado.confianza
         respuesta["dimension_dudosa"] = resultado.dudoso
-    ts = timestamp_unix if timestamp_unix is not None else int(time.time())
     tags_final = fusionar_tags(tags, contenido)
     async with get_session(obtener_engine()) as session:
         repo = EventoRepository(session)
@@ -327,6 +354,9 @@ async def _recordar(
             frecuencia=frecuencia,
             tags=tags_final,
             rama=rama,
+            tipo=tipo,
+            expira_en=expira_en,
+            con_quien=con_quien,
         )
         await repo.crear(evento)
         await FuenteRepository(session).crear(fuente, tipo="agente")
@@ -334,8 +364,22 @@ async def _recordar(
             session, contenido, excluir_id=evento.id
         )
         vinculos = 0
+        relaciones = RelacionRepository(session)
+        if reemplaza_id:
+            try:
+                viejo_id = uuid.UUID(str(reemplaza_id))
+            except (ValueError, AttributeError) as e:
+                raise ErrorValidacion(
+                    f"reemplaza_id no es un UUID válido: {reemplaza_id!r}"
+                ) from e
+            if await repo.obtener(viejo_id) is None:
+                raise ErrorValidacion(
+                    f"el evento a reemplazar no existe: {reemplaza_id}"
+                )
+            await repo.marcar_reemplazado(viejo_id, evento.id)
+            if await relaciones.vincular(viejo_id, evento.id, "reemplaza"):
+                respuesta["reemplaza"] = str(viejo_id)
         if relaciona_ids:
-            relaciones = RelacionRepository(session)
             for texto_id in relaciona_ids[:20]:
                 try:
                     otro_id = uuid.UUID(str(texto_id))
@@ -355,9 +399,14 @@ async def _recordar(
             "id": str(evento.id),
             "timestamp_unix": ts,
             "dimension": dimension,
+            "tipo": tipo,
             "indexado": False,
         }
     )
+    if expira_en:
+        respuesta["expira_en"] = expira_en
+    if con_quien:
+        respuesta["con_quien"] = con_quien
     if tags_final:
         respuesta["tags"] = tags_final
     return respuesta
@@ -574,15 +623,128 @@ async def _linea(
     hasta_unix: int,
     limite: int,
     rama: str | None = None,
+    repartir: bool = False,
 ) -> list[dict[str, Any]]:
     """Devuelve los eventos del rango temporal en orden cronológico."""
     if desde_unix > hasta_unix:
         raise ErrorValidacion("desde_unix debe ser <= hasta_unix")
     async with get_session(obtener_engine()) as session:
         eventos = await EventoRepository(session).listar_por_rango(
-            desde_unix, hasta_unix, min(max(limite, 1), 500), rama
+            desde_unix, hasta_unix, min(max(limite, 1), 500), rama, repartir
         )
     return [_modelo_a_dict(e) for e in eventos]
+
+
+async def _open_loops(rama: str = "main") -> list[dict[str, Any]]:
+    """Lista los compromisos abiertos — quién espera respuesta tuya."""
+    async with get_session(obtener_engine()) as session:
+        loops = await EventoRepository(session).listar_compromisos_abiertos(rama)
+    ahora = int(time.time())
+    return [
+        {
+            **_modelo_a_dict(e),
+            "dias_abierto": (ahora - e.timestamp_unix) // 86_400,
+        }
+        for e in loops
+    ]
+
+
+async def _cerrar_loop(
+    compromiso_id: str,
+    resolucion: str,
+    fuente: str,
+) -> dict[str, Any]:
+    """Cierra un compromiso registrando su resolución como evento.
+
+    El cierre es una transición con auditoría — el compromiso queda
+    en la línea de universo enlazado por una relación ``cierra`` al
+    evento de resolución, nunca borrado.
+    """
+    try:
+        cid = uuid.UUID(str(compromiso_id))
+    except (ValueError, AttributeError) as e:
+        raise ErrorValidacion(
+            f"compromiso_id no es un UUID válido: {compromiso_id!r}"
+        ) from e
+    async with get_session(obtener_engine()) as session:
+        repo = EventoRepository(session)
+        compromiso = await repo.obtener(cid)
+        if compromiso is None:
+            raise ErrorValidacion(f"compromiso no encontrado: {compromiso_id}")
+        if compromiso.tipo != "compromiso":
+            raise ErrorValidacion(
+                f"el evento {compromiso_id} es tipo '{compromiso.tipo}', "
+                "no 'compromiso'"
+            )
+    cierre = await _recordar(
+        resolucion,
+        "conductual",
+        fuente,
+        0.6,
+        None,
+        None,
+        tags=["cierre"],
+    )
+    cierre_id = uuid.UUID(str(cierre["id"]))
+    async with get_session(obtener_engine()) as session:
+        await RelacionRepository(session).vincular(cid, cierre_id, "cierra")
+        await session.commit()
+    return {
+        "compromiso_id": str(cid),
+        "cierre_id": str(cierre_id),
+        "estado": "cerrado",
+    }
+
+
+async def _contexto_inicial(top_n: int = 8) -> dict[str, Any]:
+    """Pack de arranque de sesión: memoria núcleo + loops + hechos
+    calientes — cero LLM, todo consultas locales (estilo context_pack).
+
+    Args:
+        top_n: Eventos núcleo y hechos calientes a incluir (máx. 16).
+
+    Returns:
+        ``nucleo`` (eventos recientes de mayor amplitud), ``loops``
+        (compromisos abiertos con su contraparte), ``calientes``
+        (eventos de la última semana con más refuerzos) y ``stats``.
+    """
+    n = min(max(top_n, 1), 16)
+    ahora = int(time.time())
+    semana = ahora - 7 * 86_400
+    async with get_session(obtener_engine()) as session:
+        repo = EventoRepository(session)
+        recientes = await repo.listar_por_rango(semana, ahora, 500)
+        loops = await repo.listar_compromisos_abiertos("main", ahora)
+        total = int(
+            (
+                await session.execute(select(func.count(EventoModel.id)))
+            ).scalar_one()
+        )
+    vigentes = [
+        e
+        for e in recientes
+        if e.expira_en is None or e.expira_en > ahora
+    ]
+    nucleo = sorted(vigentes, key=lambda e: (-e.amplitud, -e.refuerzos))[:n]
+    calientes = sorted(vigentes, key=lambda e: (-e.refuerzos, -e.timestamp_unix))[
+        :n
+    ]
+    return {
+        "nucleo": [_modelo_a_dict(e) for e in nucleo],
+        "loops": [
+            {
+                **_modelo_a_dict(e),
+                "dias_abierto": (ahora - e.timestamp_unix) // 86_400,
+            }
+            for e in loops
+        ],
+        "calientes": [_modelo_a_dict(e) for e in calientes],
+        "stats": {
+            "eventos_totales": total,
+            "eventos_semana": len(recientes),
+            "compromisos_abiertos": len(loops),
+        },
+    }
 
 
 async def _proyectar(horizonte_dias: int, dias_historial: int) -> dict[str, Any]:
@@ -631,6 +793,10 @@ async def recordar_evento(
     relaciona_ids: list[str] | None = None,
     tags: list[str] | None = None,
     rama: str = "main",
+    tipo: str = "evento",
+    ttl: str | int | None = None,
+    reemplaza_id: str | None = None,
+    con_quien: str | None = None,
 ) -> dict[str, Any]:
     """Guarda un evento nuevo en la memoria persistente 4D del usuario.
 
@@ -671,6 +837,19 @@ async def recordar_evento(
         rama: Línea de universo donde registrar el evento
             ("main" por defecto). Las ramas son líneas paralelas que
             divergen de la principal, útiles para escenarios.
+        tipo: Clase epistémica del recuerdo — "evento" (default),
+            "hecho" (dato objetivo), "creencia" (opinión revisable),
+            "compromiso" (promesa pendiente → abre un loop que
+            compromisos_abiertos lista hasta que se cierre) o
+            "preferencia" (gusto del usuario).
+        ttl: Caducidad del recuerdo — "30d", "12h", "45m", "2w" o
+            epoch Unix. Omitido = no expira. Los expirados dejan de
+            ser evocables por búsqueda pero quedan en la línea.
+        reemplaza_id: UUID del evento que este sustituye (supersede):
+            "mi peso es 79" reemplaza a "mi peso es 80". El viejo queda
+            para arqueología en la línea; el nuevo encabeza la cadena.
+        con_quien: Solo con tipo="compromiso" — la contraparte que
+            espera respuesta (persona, equipo, sistema).
 
     Returns:
         Dict con "id", "timestamp_unix", "dimension" usada,
@@ -692,7 +871,79 @@ async def recordar_evento(
         relaciona_ids,
         tags,
         rama,
+        tipo,
+        ttl,
+        reemplaza_id,
+        con_quien,
     )
+
+
+@mcp_server.tool()
+async def compromisos_abiertos(
+    rama: str = "main",
+) -> list[dict[str, Any]]:
+    """Lista los compromisos abiertos — quién espera respuesta tuya.
+
+    USAR CUANDO: preguntes "qué tengo pendiente", "a quién le debo
+    respuesta" o quieras revisar promesas sin cerrar. Un compromiso
+    permanece abierto hasta que se cierra con cerrar_compromiso —
+    nunca se borra, solo cambia de estado.
+
+    Args:
+        rama: Línea de universo a consultar ("main" por defecto).
+
+    Returns:
+        Compromisos con id, contenido, con_quien (contraparte),
+        timestamp_unix y dias_abierto — los más antiguos primero.
+    """
+    return await _open_loops(rama)
+
+
+@mcp_server.tool()
+async def cerrar_compromiso(
+    compromiso_id: str,
+    resolucion: str,
+    fuente: str = "agente",
+) -> dict[str, Any]:
+    """Cierra un compromiso abierto registrando su resolución.
+
+    USAR CUANDO: el usuario cumplió o descartó una promesa que estaba
+    abierta. El cierre es una transición con auditoría — el compromiso
+    queda en la línea enlazado al evento de resolución (relación
+    "cierra"), nunca se borra.
+
+    Args:
+        compromiso_id: UUID del compromiso (de compromisos_abiertos).
+        resolucion: Texto de cómo se resolvió ("le respondí a Franz").
+        fuente: Origen del cierre (default "agente").
+
+    Returns:
+        Dict con compromiso_id, cierre_id (evento de resolución) y
+        estado="cerrado".
+    """
+    return await _cerrar_loop(compromiso_id, resolucion, fuente)
+
+
+@mcp_server.tool()
+async def contexto_inicial(
+    top_n: int = 8,
+) -> dict[str, Any]:
+    """Pack de arranque de sesión: qué traigo a esta conversación.
+
+    USAR CUANDO: inicies una sesión con el usuario o tras un cambio de
+    contexto — devuelve memoria núcleo + compromisos abiertos + hechos
+    calientes en UNA llamada, sin LLM ni latencia de búsqueda. No
+    reemplaza a consultar_memoria para preguntas concretas.
+
+    Args:
+        top_n: Eventos núcleo y hechos calientes a incluir (máx. 16).
+
+    Returns:
+        Dict con "nucleo" (recientes de mayor amplitud), "loops"
+        (compromisos abiertos con contraparte y días de espera),
+        "calientes" (más reforzados de la semana) y "stats" globales.
+    """
+    return await _contexto_inicial(top_n)
 
 
 @mcp_server.tool()

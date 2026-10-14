@@ -28,6 +28,10 @@ function evento(parcial: Partial<Evento> = {}): Evento {
     refuerzos: parcial.refuerzos ?? 0,
     tags: parcial.tags ?? [],
     rama: parcial.rama ?? "main",
+    tipo: parcial.tipo ?? "evento",
+    expira_en: parcial.expira_en ?? null,
+    reemplazado_por: parcial.reemplazado_por ?? null,
+    con_quien: parcial.con_quien ?? null,
   };
 }
 
@@ -173,6 +177,21 @@ describe("eventosAGrafo", () => {
           timestamp_unix: AHORA - 60 * DIA,
           amplitud: 0.1,
           refuerzos: 0,
+        }),
+      ],
+      AHORA,
+    );
+    expect(g.nodes[0].estado).toBe("dead");
+  });
+
+  it("un evento con TTL vencido queda dead aunque sea reciente y fuerte", () => {
+    const g = eventosAGrafo(
+      [
+        evento({
+          timestamp_unix: AHORA - DIA,
+          amplitud: 0.9,
+          refuerzos: 5,
+          expira_en: AHORA - 60,
         }),
       ],
       AHORA,

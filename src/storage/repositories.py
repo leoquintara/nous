@@ -4,6 +4,7 @@ Encapsulan las consultas sobre los modelos. La lógica de negocio
 vive en src/core/, nunca aquí.
 """
 
+import time
 import uuid
 from collections.abc import Sequence
 from typing import Any, cast
@@ -67,6 +68,7 @@ class EventoRepository:
         hasta: int,
         limite: int = 100,
         rama: str | None = None,
+        repartir: bool = False,
     ) -> Sequence[EventoModel]:
         """Lista eventos en el rango temporal [desde, hasta].
 
@@ -76,20 +78,138 @@ class EventoRepository:
             limite: Máximo de eventos a retornar.
             rama: Línea de universo a listar; None = todas las ramas
                 ("main" solo si se pasa explícitamente).
+            repartir: Si es True, el límite se reparte por fuente
+                (cuota = limite / nº de fuentes) — evita que una fuente
+                masiva (p. ej. benchmarks) acapare toda la ventana y
+                deje el grafo con una sola procedencia.
 
         Returns:
             Eventos ordenados por timestamp ascendente.
         """
+        filtros: list[Any] = [
+            EventoModel.timestamp_unix.between(desde, hasta)
+        ]
+        if rama is not None:
+            filtros.append(EventoModel.rama == rama)
+        if repartir:
+            return await self._listar_repartido(filtros, limite)
         stmt = (
             select(EventoModel)
-            .where(EventoModel.timestamp_unix.between(desde, hasta))
+            .where(*filtros)
             .order_by(EventoModel.timestamp_unix)
             .limit(limite)
         )
-        if rama is not None:
-            stmt = stmt.where(EventoModel.rama == rama)
         resultado = await self._session.execute(stmt)
         return resultado.scalars().all()
+
+    async def _listar_repartido(
+        self, filtros: list[Any], limite: int
+    ) -> Sequence[EventoModel]:
+        """Reparte el límite entre las fuentes presentes en el filtro.
+
+        Cada fuente aporta sus ``cuota`` eventos más recientes vía
+        ``ROW_NUMBER() OVER (PARTITION BY fuente)``; las fuentes con
+        menos eventos que la cuota aportan todo lo que tienen.
+        La cuota sobrante se rellena con los eventos más recientes del
+        resto de fuentes para no desperdiciar la ventana.
+        """
+        nfuentes = int(
+            (
+                await self._session.execute(
+                    select(func.count(func.distinct(EventoModel.fuente))).where(
+                        *filtros
+                    )
+                )
+            ).scalar_one()
+            or 1
+        )
+        cuota = max(1, limite // nfuentes)
+        rn = (
+            func.row_number()
+            .over(
+                partition_by=EventoModel.fuente,
+                order_by=EventoModel.timestamp_unix.desc(),
+            )
+            .label("rn")
+        )
+        sub = select(EventoModel.id.label("id"), rn).where(*filtros).subquery()
+        stmt = (
+            select(EventoModel)
+            .join(sub, EventoModel.id == sub.c.id)
+            .where(sub.c.rn <= cuota)
+            .order_by(EventoModel.timestamp_unix)
+        )
+        resultado = await self._session.execute(stmt)
+        eventos = list(resultado.scalars().all())
+        faltan = limite - len(eventos)
+        if faltan > 0:
+            ids = {e.id for e in eventos}
+            relleno = await self._session.execute(
+                select(EventoModel)
+                .where(*filtros, EventoModel.id.notin_(ids))
+                .order_by(EventoModel.timestamp_unix.desc())
+                .limit(faltan)
+            )
+            eventos += list(relleno.scalars().all())
+            eventos.sort(key=lambda e: e.timestamp_unix)
+        return eventos
+
+    async def listar_compromisos_abiertos(
+        self, rama: str = "main", ahora: int | None = None
+    ) -> Sequence[EventoModel]:
+        """Lista los compromisos aún abiertos (motor de open loops).
+
+        Un compromiso está abierto mientras ningún evento lo cierre
+        (relación tipo ``cierra``), no esté reemplazado ni expirado.
+
+        Args:
+            rama: Línea de universo a consultar.
+            ahora: Timestamp Unix actual (default: ahora real).
+
+        Returns:
+            Compromisos ordenados por antigüedad — primero los que
+            llevan más tiempo esperando respuesta.
+        """
+        cierre = select(RelacionModel.id).where(
+            RelacionModel.tipo == "cierra",
+            or_(
+                RelacionModel.origen_id == EventoModel.id,
+                RelacionModel.destino_id == EventoModel.id,
+            ),
+        )
+        ahora = ahora if ahora is not None else int(time.time())
+        stmt = (
+            select(EventoModel)
+            .where(
+                EventoModel.tipo == "compromiso",
+                EventoModel.rama == rama,
+                EventoModel.reemplazado_por.is_(None),
+                or_(
+                    EventoModel.expira_en.is_(None),
+                    EventoModel.expira_en > ahora,
+                ),
+                ~cierre.exists(),
+            )
+            .order_by(EventoModel.timestamp_unix)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
+
+    async def marcar_reemplazado(
+        self, viejo_id: uuid.UUID, nuevo_id: uuid.UUID
+    ) -> None:
+        """Marca un evento como sustituido por otro más reciente.
+
+        Args:
+            viejo_id: Evento que queda para arqueología.
+            nuevo_id: Evento cabeza de la cadena de supersede.
+        """
+        stmt = (
+            update(EventoModel)
+            .where(EventoModel.id == viejo_id)
+            .values(reemplazado_por=nuevo_id)
+        )
+        await self._session.execute(stmt)
 
     async def listar_tags(self, limite: int = 200) -> Sequence[tuple[str, int]]:
         """Agrega los tags de todos los eventos con su conteo.
@@ -124,8 +244,10 @@ class EventoRepository:
         """
         tsquery = func.plainto_tsquery("spanish", query)
         rank = func.ts_rank(EventoModel.contenido_tsv, tsquery).label("score")
+        ahora = int(time.time())
         # Los tags explícitos también hacen match (no caben en el
-        # tsvector generado: array_to_string no es immutable).
+        # tsvector generado: array_to_string no es immutable). Los
+        # eventos expirados (TTL cumplido) no son evocables.
         stmt = (
             select(EventoModel, rank)
             .where(
@@ -134,7 +256,11 @@ class EventoRepository:
                     func.array_to_string(EventoModel.tags, " ").ilike(
                         f"%{query}%"
                     ),
-                )
+                ),
+                or_(
+                    EventoModel.expira_en.is_(None),
+                    EventoModel.expira_en > ahora,
+                ),
             )
             .order_by(rank.desc())
             .limit(limite)
@@ -156,9 +282,16 @@ class EventoRepository:
             descendente.
         """
         distancia = EventoModel.embedding.cosine_distance(vector).label("distancia")
+        ahora = int(time.time())
         stmt = (
             select(EventoModel, distancia)
-            .where(EventoModel.embedding.is_not(None))
+            .where(
+                EventoModel.embedding.is_not(None),
+                or_(
+                    EventoModel.expira_en.is_(None),
+                    EventoModel.expira_en > ahora,
+                ),
+            )
             .order_by(distancia)
             .limit(limite)
         )
