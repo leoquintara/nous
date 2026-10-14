@@ -489,7 +489,7 @@ export function PanelFuentes({
       <p className="texto-suave text-[0.65rem] font-semibold tracking-wide uppercase">
         Procedencia
       </p>
-      <div className="flex flex-col gap-1">
+      <div className="sin-scrollbar flex max-h-56 flex-col gap-1 overflow-y-auto pr-0.5">
         {fuentes.map((f) => {
           const oculta = ocultas.has(f.id);
           return (
