@@ -405,7 +405,7 @@ export default function PaginaUniverso() {
         <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-2 p-3">
           <div className="vidrio-fuerte pointer-events-auto flex items-center gap-2 rounded-full px-3.5 py-1.5 text-xs font-semibold">
             <Planet width={14} height={14} style={{ color: "var(--primary)" }} />
-            Línea de universo
+            Timeline
             {rio && (
               <span className="texto-suave font-normal">
                 {rio.eventos.length} eventos · {rio.ramas.length}{" "}
