@@ -1498,8 +1498,9 @@ export function CerebroCanvas({
         // detalle, con tope por rendimiento).
         etiquetados.clear();
         const anotar = (i: number, forzar = false) => {
+          if (i < 0) return;
           const existe = forzar ? seleccionable(i) : lodVisible(i);
-          if (i < 0 || !existe) return;
+          if (!existe) return;
           v3.set(pts[i].x, pts[i].y, pts[i].z).project(camera);
           if (v3.z > 1) return;
           const el = etiqueta(i);
