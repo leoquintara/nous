@@ -155,6 +155,14 @@ export default function PaginaCerebro() {
     [datos, prefs.srcFilter, setPref],
   );
 
+  /** Muestra u oculta todas las fuentes de golpe. */
+  const alternarTodas = useCallback(
+    (mostrar: boolean) => {
+      setPref("srcFilter", mostrar ? null : []);
+    },
+    [setPref],
+  );
+
   /** Persiste la posición de un nodo fijado/soltado por arrastre. */
   const alCambiarPin = useCallback(
     (eventoId: string, pos: PosicionPin | null) => {
@@ -352,6 +360,7 @@ export default function PaginaCerebro() {
                 fuentes={datos.fuentes}
                 ocultas={ocultas}
                 alAlternar={alternarFuente}
+                alAlternarTodas={alternarTodas}
                 cap={prefs.srcCap}
                 alCambiarCap={(cap) => setPref("srcCap", cap)}
               />

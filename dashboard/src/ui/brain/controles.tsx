@@ -474,6 +474,8 @@ interface PanelFuentesProps {
   fuentes: Fuente[];
   ocultas: Set<string>;
   alAlternar: (fuente: string) => void;
+  /** true muestra todo, false oculta todo. */
+  alAlternarTodas: (mostrar: boolean) => void;
   cap: number;
   alCambiarCap: (cap: number) => void;
 }
@@ -483,6 +485,7 @@ export function PanelFuentes({
   fuentes,
   ocultas,
   alAlternar,
+  alAlternarTodas,
   cap,
   alCambiarCap,
 }: PanelFuentesProps) {
@@ -517,6 +520,24 @@ export function PanelFuentes({
       </button>
       {abierto && (
         <div className="flex flex-col gap-2 pt-1.5">
+          <div className="flex gap-1.5">
+            <button
+              type="button"
+              onClick={() => alAlternarTodas(true)}
+              disabled={visibles === fuentes.length}
+              className="vidrio texto-suave flex-1 rounded-lg px-2 py-1 text-[0.65rem] transition hover:text-(--ink) disabled:opacity-40"
+            >
+              Mostrar todo
+            </button>
+            <button
+              type="button"
+              onClick={() => alAlternarTodas(false)}
+              disabled={visibles === 0}
+              className="vidrio texto-suave flex-1 rounded-lg px-2 py-1 text-[0.65rem] transition hover:text-(--ink) disabled:opacity-40"
+            >
+              Ocultar todo
+            </button>
+          </div>
           <div className="sin-scrollbar flex max-h-64 flex-col gap-1 overflow-y-auto pr-0.5">
             {fuentes.map((f) => {
               const oculta = ocultas.has(f.id);
