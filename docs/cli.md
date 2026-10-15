@@ -78,21 +78,23 @@ instalación y ejecuta el flujo apropiado.
   `v*` como versión reciente.
 - Fuente sin remoto: `actualizacion_disponible: null` — no hay fuente
   de versiones, se reporta honestamente.
-- Paquete: consulta el JSON del índice PyPI y compara versiones
+- Paquete: consulta el JSON del índice PyPI
+  (`pypi.org/pypi/nous-memory/json`) y compara versiones
   numéricamente (`1.10.0 > 1.9.9`).
-- **Homónimo PyPI**: el nombre `nous` en PyPI es de otro proyecto.
-  Si la metadata del índice no identifica a Quintara AI como autor,
-  `check-update` reporta "sin índice propio" y `upgrade` **aborta**
-  antes de ejecutar `pip install --upgrade nous` — nunca instala
-  código ajeno. Hasta publicar con nombre propio, la vía de upgrade
-  de una instalación pipx es `pipx install --force <ruta-del-repo>`.
+- **Homónimo PyPI**: el paquete se publica como `nous-memory` — el
+  nombre `nous` en PyPI es de otro proyecto. Si la metadata del
+  índice no identifica a Quintara AI como autor, `check-update`
+  reporta "sin índice propio" y `upgrade` **aborta** antes de
+  ejecutar `pip install --upgrade nous-memory` — nunca instala
+  código ajeno. Hasta publicar, la vía de upgrade de una
+  instalación pipx es `pipx install --force <ruta-del-repo>`.
 
 ### `upgrade`
 
 1. **Preflight** (fuente): aborta si el árbol tiene cambios sin
    commit — nunca pisa trabajo local.
 2. **Código**: `git pull --ff-only` (nunca merge ni rebase; falla
-   limpio si la historia diverge) o `pip install --upgrade nous`.
+   limpio si la historia diverge) o `pip install --upgrade nous-memory`.
    Sin remoto, el pull se omite y solo corren deps + migraciones.
 3. **Dependencias**: `poetry install` (fuente).
 4. **Post-upgrade**: `alembic upgrade head` — equivalente al

@@ -225,4 +225,4 @@ MCP → Core → Storage, tipado estricto, Conventional Commits.
 AGPL 3.0 open source — ver [LICENSE](LICENSE).
 Licencia comercial: licensing@quintarai.com
 
-Nous es un producto de Quintara AI. © 2025 Quintara AI.
+Nous es un producto de Quintara AI. © 2026 Quintara AI.

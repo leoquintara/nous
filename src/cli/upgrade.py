@@ -30,8 +30,8 @@ from src.cli import _VERSION_FALLBACK
 logger = logging.getLogger("nous.cli.upgrade")
 
 RAIZ_PROYECTO = Path(__file__).resolve().parents[2]
-PYPI_JSON = "https://pypi.org/pypi/nous/json"
-PAQUETE = "nous"
+PYPI_JSON = "https://pypi.org/pypi/nous-memory/json"
+PAQUETE = "nous-memory"
 
 MetodoInstalacion = Literal["fuente", "paquete"]
 

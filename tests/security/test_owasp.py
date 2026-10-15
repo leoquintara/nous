@@ -331,8 +331,8 @@ class TestA08Integridad:
 
     def test_comandos_de_upgrade_son_fijos(self) -> None:
         """Los comandos del upgrade no interpolan entrada del usuario."""
-        assert up.PAQUETE == "nous"
-        assert up.PYPI_JSON == "https://pypi.org/pypi/nous/json"
+        assert up.PAQUETE == "nous-memory"
+        assert up.PYPI_JSON == "https://pypi.org/pypi/nous-memory/json"
 
 
 class TestA09Logging:
