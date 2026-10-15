@@ -11,14 +11,18 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import atexit
 import io
 import json
 import logging
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, cast
 
+from src.cli import ui
 from src.cli import upgrade as up
 from src.config import get_settings
 
@@ -44,6 +48,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     serve.add_argument("--host", default=None, help="Host del transporte HTTP.")
     serve.add_argument("--port", type=int, default=None, help="Puerto HTTP.")
+    serve.add_argument(
+        "--sin-dashboard", action="store_true",
+        help="No levantar el dashboard Next.js junto al transporte HTTP.",
+    )
 
     v = sub.add_parser("version", help="Versión y método de instalación.")
     v.add_argument("--json", action="store_true", help="Salida JSON.")
@@ -174,8 +182,8 @@ def _cmd_version(como_json: bool) -> int:
         _json(datos)
     else:
         sys.stdout.write(
-            f"nous {datos['version']} ({datos['metodo_instalacion']}, "
-            f"python {datos['python']})\n"
+            f"{ui.acento('nous')} {datos['version']} "
+            f"{ui.suave(f'({datos["metodo_instalacion"]}, python {datos["python"]})')}\n"
         )
     return 0
 
@@ -191,9 +199,12 @@ def _cmd_check_update(como_json: bool) -> int:
     if resultado.version_reciente:
         sys.stdout.write(f"Más reciente: {resultado.version_reciente}\n")
     if resultado.actualizacion_disponible:
-        sys.stdout.write(f"Actualización disponible → {resultado.comando_upgrade}\n")
+        sys.stdout.write(
+            ui.ok("Actualización disponible")
+            + f" → {ui.info(resultado.comando_upgrade)}\n"
+        )
     else:
-        sys.stdout.write(resultado.detalle + "\n")
+        sys.stdout.write(ui.suave(resultado.detalle) + "\n")
     return 0
 
 
@@ -201,7 +212,7 @@ def _cmd_upgrade(no_migrate: bool, yes: bool, como_json: bool) -> int:
     """Implementa ``nous upgrade`` con confirmación y pasos."""
     info = up.check_update()
     if info.actualizacion_disponible is False:
-        sys.stdout.write("Ya estás en la versión más reciente.\n")
+        sys.stdout.write(ui.ok("Ya estás en la versión más reciente.") + "\n")
         return 0
     if not yes and not _confirmar():
         sys.stdout.write("Upgrade cancelado.\n")
@@ -211,9 +222,10 @@ def _cmd_upgrade(no_migrate: bool, yes: bool, como_json: bool) -> int:
         _json(resultado.a_dict())
     else:
         for paso in resultado.pasos:
-            marca = "✓" if paso.ok else "✗"
+            marca = ui.ok("✓") if paso.ok else ui.error("✗")
             sys.stdout.write(f"  {marca} {paso.nombre}\n")
-        sys.stdout.write(resultado.detalle + "\n")
+        estilo_detalle = ui.ok if resultado.ok else ui.error
+        sys.stdout.write(estilo_detalle(resultado.detalle) + "\n")
     return 0 if resultado.ok else 1
 
 
@@ -273,7 +285,13 @@ def _cmd_doctor(como_json: bool) -> int:
         _json(datos)
     else:
         for clave, valor in datos.items():
-            sys.stdout.write(f"{clave}: {valor}\n")
+            if valor in ("ok", True):
+                render = ui.ok(str(valor))
+            elif valor in (False, "error", "fallo", "sin conexión"):
+                render = ui.error(str(valor))
+            else:
+                render = str(valor)
+            sys.stdout.write(f"{ui.suave(clave)}: {render}\n")
     return 0 if datos["base_de_datos"] == "ok" else 1
 
 
@@ -326,7 +344,7 @@ async def _cmd_seed(eventos: int) -> int:
     from scripts.seed_db import sembrar
 
     sembrados = await sembrar(eventos)
-    sys.stdout.write(f"Sembrados {sembrados} eventos.\n")
+    sys.stdout.write(ui.ok(f"Sembrados {sembrados} eventos.") + "\n")
     return 0
 
 
@@ -340,7 +358,7 @@ async def _cmd_export(archivo: Path) -> int:
         n = await exportar(engine, archivo)
     finally:
         await engine.dispose()
-    sys.stdout.write(f"Exportados {n} eventos a {archivo}\n")
+    sys.stdout.write(ui.ok(f"Exportados {n} eventos a {archivo}") + "\n")
     return 0
 
 
@@ -352,18 +370,23 @@ async def _cmd_import(
     from src.storage.database import crear_engine
 
     if not origen.exists():
-        sys.stderr.write(f"error: {origen} no existe\n")
+        sys.stderr.write(ui.error(f"error: {origen} no existe") + "\n")
         return 1
     engine = crear_engine()
     try:
         resumen = await importar(engine, origen, formato, fuente, rama)
     finally:
         await engine.dispose()
+    exito = resumen["errores"] == 0 or resumen["importados"] > 0
+    estilo_resumen = ui.ok if exito else ui.error
     sys.stdout.write(
-        "Importados {importados}, omitidos {omitidos}, errores {errores},"
-        " vínculos {vinculos}\n".format(**resumen)
+        estilo_resumen(
+            "Importados {importados}, omitidos {omitidos}, errores {errores},"
+            " vínculos {vinculos}".format(**resumen)
+        )
+        + "\n"
     )
-    return 0 if resumen["errores"] == 0 or resumen["importados"] > 0 else 1
+    return 0 if exito else 1
 
 
 async def _poda(
@@ -400,6 +423,43 @@ def _cmd_benchmark() -> int:
     return proc.returncode
 
 
+def _dir_dashboard() -> Path | None:
+    """Localiza ``dashboard/package.json`` (checkout fuente o cwd)."""
+    for base in (Path.cwd(), up.RAIZ_PROYECTO):
+        candidato = base / "dashboard" / "package.json"
+        if candidato.is_file():
+            return candidato.parent
+    return None
+
+
+def _detener_dashboard(proc: subprocess.Popen[bytes]) -> None:
+    """Termina el proceso del dashboard al salir del servidor."""
+    if proc.poll() is None:
+        proc.terminate()
+
+
+def _lanzar_dashboard(directorio: Path) -> subprocess.Popen[bytes] | None:
+    """Arranca el dashboard Next.js como subproceso.
+
+    Usa ``npm start`` si existe un build (``.next/BUILD_ID``) o
+    ``npm run dev`` en caso contrario. El proceso se termina
+    automáticamente al salir del servidor vía ``atexit``.
+
+    Args:
+        directorio: Raíz del proyecto dashboard.
+
+    Returns:
+        El proceso lanzado, o None si npm no está disponible.
+    """
+    npm = shutil.which("npm.cmd") or shutil.which("npm")
+    if npm is None:
+        return None
+    modo = "start" if (directorio / ".next" / "BUILD_ID").is_file() else "dev"
+    proc = subprocess.Popen(f'"{npm}" run {modo}', cwd=directorio, shell=True)
+    atexit.register(_detener_dashboard, proc)
+    return proc
+
+
 def _cmd_serve(args: argparse.Namespace) -> int:
     """Configura el entorno y delega en ``src.main.main()``."""
     if args.transport:
@@ -408,6 +468,38 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         os.environ["NOUS_API_HOST"] = args.host
     if args.port:
         os.environ["NOUS_API_PORT"] = str(args.port)
+    settings = get_settings()
+    transporte = args.transport or settings.mcp_transport
+    if transporte == "stdio":
+        if sys.stdin.isatty():
+            # Cada Enter envía una línea vacía que el SDK marca como
+            # JSON-RPC inválido — es cosmético, pero explicarlo ahorra
+            # la confusión de un "Internal Server Error" en consola.
+            sys.stderr.write(
+                ui.aviso(
+                    "stdio es para clientes MCP — cada Enter imprime un "
+                    "error de protocolo inofensivo.\n"
+                    "Para uso manual: nous serve --transport http"
+                )
+                + "\n"
+            )
+    elif not args.sin_dashboard:
+        directorio = _dir_dashboard()
+        if directorio is None:
+            sys.stderr.write(
+                ui.suave(
+                    "Dashboard no incluido en la instalación por paquete; "
+                    "solo API+MCP.\n"
+                )
+            )
+        elif _lanzar_dashboard(directorio) is None:
+            sys.stderr.write(
+                ui.aviso("npm no está en PATH — dashboard no lanzado.\n")
+            )
+        else:
+            sys.stderr.write(
+                ui.info(f"Dashboard Next.js arrancando en {directorio}\n")
+            )
     from src.main import main as servidor_main
 
     servidor_main()
@@ -473,11 +565,16 @@ def _despachar(args: argparse.Namespace) -> int:
         if args.json:
             _json(datos)
         elif datos["aplicado"]:
-            sys.stdout.write(f"Podados {datos['eliminados']} eventos.\n")
+            sys.stdout.write(
+                ui.ok(f"Podados {datos['eliminados']} eventos.") + "\n"
+            )
         else:
             sys.stdout.write(
-                f"{datos['candidatos']} eventos podables "
-                "(usa --aplicar para eliminarlos).\n"
+                ui.aviso(
+                    f"{datos['candidatos']} eventos podables "
+                    "(usa --aplicar para eliminarlos)."
+                )
+                + "\n"
             )
         return 0
     return 2
@@ -485,10 +582,12 @@ def _despachar(args: argparse.Namespace) -> int:
 
 def _imprimir_stats(datos: dict[str, object]) -> None:
     """Imprime las estadísticas en formato legible."""
-    sys.stdout.write(f"Eventos totales: {datos['total']}\n")
+    sys.stdout.write(
+        f"Eventos totales: {ui.negrita(str(datos['total']))}\n"
+    )
     por_dimension = cast("dict[str, int]", datos["por_dimension"])
     for dim, n in por_dimension.items():
-        sys.stdout.write(f"  {dim}: {n}\n")
+        sys.stdout.write(f"  {ui.info(dim)}: {n}\n")
 
 
 if __name__ == "__main__":

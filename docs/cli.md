@@ -8,15 +8,30 @@ actualización de versiones. No añade dependencias — usa `argparse`
 ## Instalación
 
 ```bash
-poetry install          # registra el script `nous`
+poetry install          # registra el script `nous` en el venv
 nous --help             # o: python -m src.cli --help
+pipx install .          # comando `nous` global (como gbrain)
 ```
+
+La salida usa colores ANSI cuando la terminal es TTY — `NO_COLOR=1` o
+`NOUS_SIN_COLOR=1` los desactiva.
+
+## Serve
+
+- **`nous serve`** (stdio): transporte para clientes MCP — el proceso
+  habla JSON-RPC por stdin/stdout. En una terminal interactiva, cada
+  línea vacía produce un aviso de protocolo inofensivo.
+- **`nous serve --transport http`**: API REST + MCP HTTP en
+  `NOUS_API_HOST:PORT` y, si `dashboard/` existe en el directorio
+  actual o en el checkout fuente, levanta Next.js (`npm start` si hay
+  build, `npm run dev` si no) — `--sin-dashboard` lo omite. En
+  instalaciones pipx (sin dashboard) solo sirve API+MCP.
 
 ## Referencia de comandos
 
 | Comando | Qué hace | Salida JSON |
 |---|---|---|
-| `nous serve [--transport stdio\|http] [--host] [--port]` | Arranca el servidor MCP/HTTP | — |
+| `nous serve [--transport stdio\|http] [--host] [--port] [--sin-dashboard]` | Arranca el servidor MCP/HTTP; en http también levanta el dashboard Next.js si el checkout lo incluye | — |
 | `nous version` | Versión, método de instalación, Python | `--json` |
 | `nous check-update` | Compara la versión instalada con la disponible | `--json` |
 | `nous upgrade [--no-migrate] [--yes]` | Actualiza el código y migra la DB | `--json` |
