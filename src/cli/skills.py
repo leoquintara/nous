@@ -23,7 +23,7 @@ from pathlib import Path
 # ── Artefactos empaquetados ────────────────────────────────────────
 
 _SKILL_RECORDAR = """---
-name: nous-recordar
+name: nous-remember
 description: Persistir eventos en la memoria 4D de Nous. Usar cuando
   el usuario pida recordar algo, haya una decisión, emoción o acción
   relevante, o el contexto de una conversación deba sobrevivir.
@@ -65,7 +65,7 @@ cuerpo) y **conductual** (acciones, hábitos, commits). Además soporta
 """
 
 _SKILL_CONSULTAR = """---
-name: nous-consultar
+name: nous-recall
 description: Consultar la memoria 4D de Nous antes de responder.
   Usar cuando la pregunta depende de hechos previos del usuario,
   historial, decisiones o contexto personal.
@@ -94,7 +94,7 @@ vectorial + rerank + recencia) y devuelve resultados con scores y
 """
 
 _SKILL_CONTEXTO = """---
-name: nous-contexto
+name: nous-context
 description: Responder al aviso de contexto incompleto de Nous.
   Usar cuando recordar_evento devuelva contexto.completo=false.
 ---
@@ -116,7 +116,7 @@ menciona entidades (`entidades_nuevas`) sin antecedentes en la memoria.
 """
 
 _AGENT_MEMORISTA = """---
-name: nous-memorista
+name: nous-keeper
 description: Decide qué persistir en Nous y con qué metadatos.
   Delega aquí cuando no sea obvio si un hecho merece memoria.
 tools: nous
@@ -150,10 +150,10 @@ class Artefacto:
 
 
 ARTEFACTOS: tuple[Artefacto, ...] = (
-    Artefacto("nous-recordar", _SKILL_RECORDAR, es_agente=False),
-    Artefacto("nous-consultar", _SKILL_CONSULTAR, es_agente=False),
-    Artefacto("nous-contexto", _SKILL_CONTEXTO, es_agente=False),
-    Artefacto("nous-memorista", _AGENT_MEMORISTA, es_agente=True),
+    Artefacto("nous-remember", _SKILL_RECORDAR, es_agente=False),
+    Artefacto("nous-recall", _SKILL_CONSULTAR, es_agente=False),
+    Artefacto("nous-context", _SKILL_CONTEXTO, es_agente=False),
+    Artefacto("nous-keeper", _AGENT_MEMORISTA, es_agente=True),
 )
 
 # Subdirectorio de agentes por target conocido (varía por herramienta).
