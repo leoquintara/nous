@@ -26,8 +26,16 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # host.docker.internal resuelve al host del engine — permite
+    # apuntar NOUS_DATABASE_URL_DOCKER a un postgres externo al stack
+    # (p. ej. host.docker.internal:5433) sin levantar `db`.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
-      NOUS_DATABASE_URL: postgresql+asyncpg://${NOUS_DB_USER:-nous}:${NOUS_DB_PASSWORD:-nous}@db:5432/${NOUS_DB_NAME:-nous}
+      # Default: la db del stack. Para una PostgreSQL existente,
+      # define NOUS_DATABASE_URL_DOCKER en .env — el servicio `db`
+      # puede omitirse con `up -d --no-deps app`.
+      NOUS_DATABASE_URL: ${NOUS_DATABASE_URL_DOCKER:-postgresql+asyncpg://${NOUS_DB_USER:-nous}:${NOUS_DB_PASSWORD:-nous}@db:5432/${NOUS_DB_NAME:-nous}}
       # Obligatorio: sin token la API queda abierta a la red.
       NOUS_API_TOKEN: ${NOUS_API_TOKEN:?Define NOUS_API_TOKEN en .env (ns_ + 64 hex)}
       NOUS_MCP_TRANSPORT: http
