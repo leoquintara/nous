@@ -6,7 +6,8 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import cast
+from pathlib import Path
+from typing import Any, cast
 
 import uvicorn
 from fastapi import FastAPI
@@ -42,14 +43,28 @@ class SecurityHeadersMiddleware:
 
     Envuelve a ``BearerTokenMiddleware`` para que las respuestas 401
     del middleware también las lleven. La API solo sirve JSON, así que
-    una CSP de ``default-src 'none'`` es correcta y estricta.
+    recibe CSP ``default-src 'none'``; el dashboard estático (mismo
+    origen) necesita CSP propia que permita scripts/estilos 'self'.
     """
 
-    _HEADERS = (
+    _API = ("api", "mcp", "health")
+    _HEADERS_API = (
         (b"x-content-type-options", b"nosniff"),
         (b"x-frame-options", b"DENY"),
         (b"referrer-policy", b"no-referrer"),
         (b"content-security-policy", b"default-src 'none'"),
+    )
+    _HEADERS_DASH = (
+        (b"x-content-type-options", b"nosniff"),
+        (b"x-frame-options", b"DENY"),
+        (b"referrer-policy", b"no-referrer"),
+        (
+            b"content-security-policy",
+            b"default-src 'self'; script-src 'self' 'unsafe-inline'; "
+            b"style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+            b"connect-src 'self'; worker-src 'self' blob:; "
+            b"font-src 'self' data:",
+        ),
     )
 
     def __init__(self, app: ASGIApp) -> None:
@@ -63,15 +78,59 @@ class SecurityHeadersMiddleware:
         if scope["type"] != "http":
             await self._app(scope, receive, send)
             return
+        prefijo = scope.get("path", "").lstrip("/").split("/", 1)[0]
+        extras = (
+            self._HEADERS_API if prefijo in self._API else self._HEADERS_DASH
+        )
 
         async def _send_con_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
                 headers = list(message.get("headers", []))
-                headers.extend(self._HEADERS)
+                headers.extend(extras)
                 message = {**message, "headers": headers}
             await send(message)
 
         await self._app(scope, receive, _send_con_headers)
+
+
+def _dir_dashboard_static() -> Path | None:
+    """Localiza el build estático del dashboard (wheel o checkout)."""
+    raiz = Path(__file__).resolve().parent
+    for candidato in (
+        raiz / "dashboard_static",           # incluido en el wheel
+        raiz.parent / "dashboard" / "out",   # export del repo fuente
+    ):
+        if (candidato / "index.html").is_file():
+            return candidato
+    return None
+
+
+def _dashboard_asgi(directorio: Path) -> ASGIApp:
+    """Sirve el export estático con fallback SPA.
+
+    ``next export`` emite ``/universo`` como ``universo.html`` (el dir
+    homónimo solo lleva payloads RSC). StaticFiles no resuelve esa
+    forma: al 404 en un path sin extensión reintenta ``<path>.html``.
+    """
+    from starlette.exceptions import HTTPException
+    from starlette.staticfiles import StaticFiles
+
+    class _StaticSPA(StaticFiles):
+        async def get_response(
+            self, path: str, scope: Scope
+        ) -> Any:
+            try:
+                resp = await super().get_response(path, scope)
+            except HTTPException as exc:
+                if exc.status_code != 404 or Path(path).suffix:
+                    raise
+                return await super().get_response(path + ".html", scope)
+            # html=True devuelve 404.html como respuesta, no excepción.
+            if resp.status_code == 404 and not Path(path).suffix:
+                return await super().get_response(path + ".html", scope)
+            return resp
+
+    return _StaticSPA(directory=directorio, html=True)
 
 
 def crear_app_http() -> ASGIApp:
@@ -112,42 +171,58 @@ def crear_app_http() -> ASGIApp:
             # dispatch MCP (call_tool compila la validación pydantic de
             # cada tool en su primer uso). Sin esto, las primeras
             # requests de cada proceso pagan ~30ms extra por tool.
-            try:
-                await mcp_server.call_tool(
-                    "recordar_evento",
-                    {
-                        "contenido": "__warmup__",
-                        "dimension": "cognitiva",
-                        "fuente": "warmup",
-                    },
-                )
-                await mcp_server.call_tool(
-                    "consultar_memoria",
-                    {"consulta": "__warmup__", "top_n": 1},
-                )
-            except Exception:  # noqa: BLE001 — fallback al path directo
-                logging.getLogger("nous").debug(
-                    "warmup via call_tool fallo, uso directo"
-                )
-                await _recordar(
-                    "__warmup__", "cognitiva", "warmup", 0.5, None, None
-                )
-                await _consultar("__warmup__", 1)
-            await _drenar_fondo()
             engine = obtener_engine()
-            async with get_session(engine) as session:
-                await session.execute(
-                    delete(EventoModel).where(EventoModel.fuente == "warmup")
+            parar_trazas = asyncio.Event()
+            tarea_trazas: asyncio.Task[None] | None = None
+            try:
+                try:
+                    await mcp_server.call_tool(
+                        "recordar_evento",
+                        {
+                            "contenido": "__warmup__",
+                            "dimension": "cognitiva",
+                            "fuente": "warmup",
+                        },
+                    )
+                    await mcp_server.call_tool(
+                        "consultar_memoria",
+                        {"consulta": "__warmup__", "top_n": 1},
+                    )
+                except Exception:  # noqa: BLE001 — fallback al path directo
+                    logging.getLogger("nous").debug(
+                        "warmup via call_tool fallo, uso directo"
+                    )
+                    await _recordar(
+                        "__warmup__", "cognitiva", "warmup", 0.5,
+                        None, None,
+                    )
+                    await _consultar("__warmup__", 1)
+                await _drenar_fondo()
+                async with get_session(engine) as session:
+                    await session.execute(
+                        delete(EventoModel).where(
+                            EventoModel.fuente == "warmup"
+                        )
+                    )
+                    await session.commit()
+                # Llena el pool: las tareas write-behind compiten por
+                # conexiones; si el pool está frío, una escritura real
+                # puede pagar el handshake TCP+auth (~80ms).
+                pool = cast(AsyncAdaptedQueuePool, engine.pool)
+                conexiones = await asyncio.gather(
+                    *(engine.connect() for _ in range(pool.size()))
                 )
-                await session.commit()
-            # Llena el pool: las tareas write-behind compiten por
-            # conexiones; si el pool está frío, una escritura real
-            # puede pagar el handshake TCP+auth (~80ms).
-            pool = cast(AsyncAdaptedQueuePool, engine.pool)
-            conexiones = await asyncio.gather(
-                *(engine.connect() for _ in range(pool.size()))
-            )
-            await asyncio.gather(*(c.close() for c in conexiones))
+                await asyncio.gather(*(c.close() for c in conexiones))
+                tarea_trazas = asyncio.create_task(
+                    trazas.vaciador(engine, parar_trazas)
+                )
+            except Exception:
+                # DB inalcanzable: el servidor igual arranca — /health
+                # y el dashboard responden; cada request reintentará.
+                logging.getLogger("nous").error(
+                    "PostgreSQL no respondió al arrancar; "
+                    "los endpoints reintentarán por request"
+                )
             # Congela los objetos calientes (modelos ONNX, caches de
             # HF): las colecciones gen2 del GC dejan de recorrerlos y
             # las pausas de GC dejan de producir outliers de ~40ms.
@@ -156,24 +231,27 @@ def crear_app_http() -> ASGIApp:
             # Umbrales altos: el GC casi nunca dispara dentro de una
             # request; el worker de fondo recolecta en la quietud.
             gc.set_threshold(50_000, 50, 50)
-            parar_trazas = asyncio.Event()
-            tarea_trazas = asyncio.create_task(
-                trazas.vaciador(engine, parar_trazas)
-            )
             try:
                 yield
             finally:
                 parar_trazas.set()
-                await tarea_trazas
+                if tarea_trazas is not None:
+                    await tarea_trazas
 
-    app = Starlette(
-        routes=[
-            Route("/health", _salud),
-            Mount("/api", app=api),
-            Mount("/", app=mcp_app),
-        ],
-        lifespan=_lifespan,
-    )
+    from starlette.routing import BaseRoute
+
+    rutas: list[BaseRoute] = [
+        Route("/health", _salud),
+        Mount("/api", app=api),
+        # Las rutas internas del MCP (Mount("/mcp")) se empalmam
+        # directas: Mount("/") anterior las convertía en catch-all
+        # y bloqueaba el dashboard estático.
+        *mcp_app.routes,
+    ]
+    if (dash := _dir_dashboard_static()) is not None:
+        # Último: catch-all solo para paths que /api y /mcp no tomaron.
+        rutas.append(Mount("/", app=_dashboard_asgi(dash)))
+    app = Starlette(routes=rutas, lifespan=_lifespan)
     return TrazabilidadMiddleware(
         SecurityHeadersMiddleware(BearerTokenMiddleware(app))
     )

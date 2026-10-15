@@ -18,7 +18,11 @@ PREFIXO_TOKEN = "ns_"
 # servidor desde otro directorio (p. ej. un launcher que ignore el
 # cwd configurado) seguían encontrando la configuración real en lugar
 # de caer silenciosamente a los defaults y apuntar a la DB equivocada.
-_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
+# En instalaciones por paquete (pipx/wheel) no hay .env junto al código:
+# se usa el config de nivel usuario en ~/.config/nous/.env.
+_ENV_REPO = Path(__file__).resolve().parents[1] / ".env"
+_ENV_USUARIO = Path.home() / ".config" / "nous" / ".env"
+_ENV_FILE = _ENV_REPO if _ENV_REPO.is_file() else _ENV_USUARIO
 
 
 class Settings(BaseSettings):

@@ -82,11 +82,18 @@ async def _app_interna(
     await send({"type": "http.response.body", "body": b"ok"})
 
 
-def _scope_http(autorizacion: str | None = None) -> dict[str, Any]:
+def _scope_http(
+    autorizacion: str | None = None, path: str = "/api/eventos"
+) -> dict[str, Any]:
     headers = []
     if autorizacion is not None:
         headers.append((b"authorization", autorizacion.encode()))
-    return {"type": "http", "method": "GET", "path": "/", "headers": headers}
+    return {
+        "type": "http",
+        "method": "GET",
+        "path": path,
+        "headers": headers,
+    }
 
 
 class _Enviado:
@@ -138,6 +145,22 @@ class TestMiddlewareASGI:
     async def test_scope_no_http_deja_pasar(self) -> None:
         mensajes = await self._ejecutar({"type": "lifespan"}, TOKEN_PRUEBA)
         assert mensajes[0]["status"] == 200
+
+    @pytest.mark.asyncio
+    async def test_dashboard_estatico_es_publico(self) -> None:
+        """Las rutas fuera de /api y /mcp sirven UI sin datos: abiertas."""
+        for path in ("/", "/universo", "/_next/static/x.js", "/favicon.ico"):
+            mensajes = await self._ejecutar(
+                _scope_http(path=path), TOKEN_PRUEBA
+            )
+            assert mensajes[0]["status"] == 200, path
+
+    @pytest.mark.asyncio
+    async def test_mcp_exige_token(self) -> None:
+        mensajes = await self._ejecutar(
+            _scope_http(path="/mcp"), TOKEN_PRUEBA
+        )
+        assert mensajes[0]["status"] == 401
 
 
 class TestPrefijoToken:

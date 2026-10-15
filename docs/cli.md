@@ -21,11 +21,23 @@ La salida usa colores ANSI cuando la terminal es TTY — `NO_COLOR=1` o
 - **`nous serve`** (stdio): transporte para clientes MCP — el proceso
   habla JSON-RPC por stdin/stdout. En una terminal interactiva, cada
   línea vacía produce un aviso de protocolo inofensivo.
-- **`nous serve --transport http`**: API REST + MCP HTTP en
-  `NOUS_API_HOST:PORT` y, si `dashboard/` existe en el directorio
-  actual o en el checkout fuente, levanta Next.js (`npm start` si hay
-  build, `npm run dev` si no) — `--sin-dashboard` lo omite. En
-  instalaciones pipx (sin dashboard) solo sirve API+MCP.
+- **`nous serve --transport http`**: API REST + MCP HTTP +
+  **dashboard estático** en `NOUS_API_HOST:PORT` — un solo proceso
+  sirve todo (`/`, `/universo`, `/api/*`, `/mcp`). Si `dashboard/`
+  existe en el checkout fuente, además levanta el dev server Next.js
+  en :3000 con hot-reload — `--sin-dashboard` lo omite. Antes de
+  arrancar hace un pre-flight a PostgreSQL: si no responde, aborta
+  con un mensaje claro en lugar de un traceback.
+
+  En instalaciones por paquete (pipx/wheel) el dashboard va
+  **empaquetado**: `src/dashboard_static/` se genera con
+  `cd dashboard && npm run build:export` y copiando `out/` antes de
+  `pipx install`. La configuración se lee de
+  `~/.config/nous/.env` cuando no hay `.env` junto al código.
+
+  Auth: `/api/*` y `/mcp` exigen `Bearer <NOUS_API_TOKEN>`; el HTML
+  estático del dashboard es público (no contiene datos) — el flujo
+  es abrir `/login`, pegar el token, y la app llama `/api` con él.
 
 ## Referencia de comandos
 

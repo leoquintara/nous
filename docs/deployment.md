@@ -10,8 +10,10 @@ docker-compose up -d            # solo PostgreSQL 18 + pgvector
 poetry install
 poetry run nous db upgrade
 poetry run nous serve           # MCP stdio
-poetry run python -m src.main   # REST + MCP HTTP en :8720
-cd dashboard && npm install && npm run dev
+poetry run nous serve --transport http
+# ↑ REST + MCP + dashboard estático en :8720 (usa dashboard/out si
+#   existe); además levanta el dev server Next en :3000 con hot-reload.
+#   --sin-dashboard lo omite.
 ```
 
 ## Docker completo
@@ -25,6 +27,21 @@ docker-compose --profile app up -d
 levanta `nous-db` (pgvector/pgvector:pg18, volumen `nous_pgdata`) y
 `nous-app` (REST + MCP HTTP en :8720). La imagen se construye con el
 `Dockerfile` raíz.
+
+## Instalación como comando global (pipx)
+
+```bash
+cd dashboard && npm ci && npm run build:export   # genera out/
+cp -r out ../src/dashboard_static                # empaqueta el build
+cd .. && pipx install .                          # instala nous + dashboard
+mkdir -p ~/.config/nous && cp .env ~/.config/nous/.env
+nous serve --transport http   # API + MCP + dashboard en :8720
+```
+
+Sin `.env` junto al código, Nous lee `~/.config/nous/.env` (POSIX) —
+en Windows `%USERPROFILE%\.config\nous\.env`. El dashboard va dentro
+del wheel: `pipx install` desde un checkout sin `src/dashboard_static`
+instala solo API+MCP.
 
 ## Producto en un servidor propio
 

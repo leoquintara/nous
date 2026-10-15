@@ -100,11 +100,19 @@ class BearerTokenMiddleware:
             return
         # Sondas de vida, el login del dashboard y los preflight CORS
         # son públicos por diseño.
-        if scope.get("method") == "OPTIONS" or scope.get("path") in (
+        path = scope.get("path", "")
+        if scope.get("method") == "OPTIONS" or path in (
             "/health",
             "/api/health",
             "/api/login",
         ):
+            await self._app(scope, receive, send)
+            return
+        # El dashboard estático (HTML/JS/CSS) es UI pública: no
+        # contiene datos; toda superficie de datos (/api, /mcp) sigue
+        # protegida por token.
+        prefijo = path.lstrip("/").split("/", 1)[0]
+        if prefijo not in ("api", "mcp"):
             await self._app(scope, receive, send)
             return
         esperado = token_configurado()

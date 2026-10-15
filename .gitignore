@@ -38,3 +38,8 @@ Thumbs.db
 # logs de desarrollo locales
 *.log
 nul
+
+# Builds del dashboard (se generan con npm run build:export)
+dashboard/out/
+dashboard/.next/
+src/dashboard_static/

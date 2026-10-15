@@ -433,6 +433,14 @@ def _dir_dashboard() -> Path | None:
     return None
 
 
+def _hay_dashboard_empaquetado() -> bool:
+    """Indica si el paquete incluye el build estático del dashboard."""
+    estatico = (
+        Path(__file__).resolve().parents[1] / "dashboard_static" / "index.html"
+    )
+    return estatico.is_file()
+
+
 def _detener_dashboard(proc: subprocess.Popen[bytes]) -> None:
     """Termina el árbol del dashboard al salir del servidor.
 
@@ -459,12 +467,12 @@ def _detener_dashboard(proc: subprocess.Popen[bytes]) -> None:
 
 
 def _lanzar_dashboard(directorio: Path) -> subprocess.Popen[bytes] | None:
-    """Arranca el dashboard Next.js como subproceso.
+    """Arranca el dashboard Next.js en modo dev como subproceso.
 
-    Usa ``npm start`` si existe un build (``.next/BUILD_ID``) o
-    ``npm run dev`` en caso contrario. Corre en su **propio grupo de
-    proceso**: Ctrl+C solo llega a Nous, y ``atexit`` elimina el
-    árbol completo al salir — sin nodos huérfanos en :3000.
+    Corre en su **propio grupo de proceso**: Ctrl+C solo llega a
+    Nous, y ``atexit`` elimina el árbol completo al salir — sin
+    nodos huérfanos en :3000. (``next start`` no aplica: el build
+    de producción es ``output: export`` para servirlo estático.)
 
     Args:
         directorio: Raíz del proyecto dashboard.
@@ -475,20 +483,40 @@ def _lanzar_dashboard(directorio: Path) -> subprocess.Popen[bytes] | None:
     npm = shutil.which("npm.cmd") or shutil.which("npm")
     if npm is None:
         return None
-    modo = "start" if (directorio / ".next" / "BUILD_ID").is_file() else "dev"
     if sys.platform == "win32":
         proc = subprocess.Popen(
-            f'"{npm}" run {modo}',
+            f'"{npm}" run dev',
             cwd=directorio,
             shell=True,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
         )
     else:
         proc = subprocess.Popen(
-            [npm, "run", modo], cwd=directorio, start_new_session=True
+            [npm, "run", "dev"], cwd=directorio, start_new_session=True
         )
     atexit.register(_detener_dashboard, proc)
     return proc
+
+
+async def _chequear_db() -> str | None:
+    """Verifica que PostgreSQL responde antes de levantar el servidor.
+
+    Returns:
+        None si la conexión responde; mensaje de error legible si no.
+    """
+    from sqlalchemy import text
+
+    from src.storage.database import crear_engine
+
+    engine = crear_engine()
+    try:
+        async with engine.connect() as conexion:
+            await conexion.execute(text("SELECT 1"))
+    except Exception as exc:  # noqa: BLE001 — pre-flight convierte
+        return f"{type(exc).__name__}: {exc}"  # cualquier fallo de conexión a mensaje
+    finally:
+        await engine.dispose()
+    return None
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
@@ -516,21 +544,38 @@ def _cmd_serve(args: argparse.Namespace) -> int:
             )
     elif not args.sin_dashboard:
         directorio = _dir_dashboard()
-        if directorio is None:
-            sys.stderr.write(
-                ui.suave(
-                    "Dashboard no incluido en la instalación por paquete; "
-                    "solo API+MCP.\n"
+        if directorio is not None:
+            if _lanzar_dashboard(directorio) is None:
+                sys.stderr.write(
+                    ui.aviso("npm no está en PATH — dashboard no lanzado.\n")
                 )
-            )
-        elif _lanzar_dashboard(directorio) is None:
+            else:
+                sys.stderr.write(
+                    ui.info(f"Dashboard Next.js dev en {directorio}\n")
+                )
+        elif _hay_dashboard_empaquetado():
             sys.stderr.write(
-                ui.aviso("npm no está en PATH — dashboard no lanzado.\n")
+                ui.info(
+                    f"Dashboard incluido — se sirve en "
+                    f"http://{settings.api_host}:{settings.api_port}/\n"
+                )
             )
         else:
             sys.stderr.write(
-                ui.info(f"Dashboard Next.js arrancando en {directorio}\n")
+                ui.suave(
+                    "Dashboard no disponible (sin checkout ni build "
+                    "empaquetado); solo API+MCP.\n"
+                )
             )
+    problema_db = asyncio.run(_chequear_db())
+    if problema_db is not None:
+        sys.stderr.write(
+            ui.error(f"PostgreSQL inalcanzable: {problema_db}\n")
+            + ui.suave(
+                "Revisa NOUS_DATABASE_URL y que el servidor esté arriba.\n"
+            )
+        )
+        return 1
     from src.main import main as servidor_main
 
     try:
