@@ -121,7 +121,7 @@ export function CerebroCanvas({
   const [glError, setGlError] = useState(false);
 
   useEffect(() => {
-    if (datos.status !== "ready" || datos.nodes.length === 0) return;
+    if (datos.status === "cargando") return;
     const wrap = wrapRef.current;
     if (!wrap) return;
     let cancelado = false;
@@ -318,7 +318,8 @@ export function CerebroCanvas({
       halos.frustumCulled = false;
       halos.count = 0;
       scene.add(halos);
-      for (let i = 0; i < 256; i++) halos.setColorAt(i, tmpC.set(0xffffff));
+      for (let i = 0; i < Math.min(N, 256); i++)
+        halos.setColorAt(i, tmpC.set(0xffffff));
 
       // Aristas por tipo, cada una con su estilo.
       const grupos: Record<"link" | "tag" | "core", Arista[]> = {

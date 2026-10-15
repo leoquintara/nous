@@ -265,8 +265,18 @@ export default function PaginaUniverso() {
           proy && "trayectorias" in proy ? (proy.trayectorias ?? []) : [],
         );
         if (eventos.length === 0) {
-          setRio(null);
-          datosRef.current = { eventos, ctx: null };
+          const ahora = Math.floor(Date.now() / 1000);
+          const ctx = ctxDe(ahora - 30 * DIA, ahora, RIO);
+          setRio({
+            eventos,
+            relaciones,
+            objetivos: metas,
+            ctx,
+            horizonte: Math.max(ctx.span * 0.15, 3 * DIA),
+            ramas: ["main"],
+            fuentes: [],
+          });
+          datosRef.current = { eventos, ctx };
           setError(null);
           return;
         }

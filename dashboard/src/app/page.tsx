@@ -332,14 +332,12 @@ export default function PaginaCerebro() {
             {error}
           </p>
         )}
-        {!error && (!datos || datos.status !== "ready") && (
+        {!error && (!datos || datos.status === "cargando") && (
           <div className="texto-suave flex h-full items-center justify-center text-sm">
-            {datos?.status === "vacio"
-              ? "Sin eventos en los últimos 90 días."
-              : "Cargando memoria…"}
+            Cargando memoria…
           </div>
         )}
-        {datos?.status === "ready" && (
+        {(datos?.status === "ready" || datos?.status === "vacio") && (
           <CerebroCanvas
             datos={datos}
             seleccion={sel}
@@ -351,6 +349,13 @@ export default function PaginaCerebro() {
             cursor={cursor}
             onPensarRef={pensarRef}
           />
+        )}
+        {datos?.status === "vacio" && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-end justify-center pb-10">
+            <p className="vidrio texto-suave rounded-full px-4 py-1.5 text-xs">
+              Memoria vacía — el cerebro espera su primer evento.
+            </p>
+          </div>
         )}
 
         <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start justify-between gap-2 p-3">
