@@ -123,7 +123,7 @@ class TestCheckUpdatePaquete:
         monkeypatch.setattr(up, "detectar_metodo", lambda: "paquete")
         monkeypatch.setattr(up, "version_actual", lambda: "0.1.0")
         monkeypatch.setattr(
-            up, "_version_mas_reciente_paquete", lambda: "0.2.0"
+            up, "_version_mas_reciente_paquete", lambda: ("0.2.0", False)
         )
         resultado = up.check_update()
         assert resultado.actualizacion_disponible is True
@@ -135,10 +135,22 @@ class TestCheckUpdatePaquete:
         """Índice caído → indeterminado."""
         monkeypatch.setattr(up, "detectar_metodo", lambda: "paquete")
         monkeypatch.setattr(
-            up, "_version_mas_reciente_paquete", lambda: None
+            up, "_version_mas_reciente_paquete", lambda: (None, False)
         )
         resultado = up.check_update()
         assert resultado.actualizacion_disponible is None
+
+    def test_homonimo_pypi_no_sugiere_pip_upgrade(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """'nous' en PyPI ajeno → sin comparación ni pip upgrade."""
+        monkeypatch.setattr(up, "detectar_metodo", lambda: "paquete")
+        monkeypatch.setattr(
+            up, "_version_mas_reciente_paquete", lambda: (None, True)
+        )
+        resultado = up.check_update()
+        assert resultado.actualizacion_disponible is None
+        assert "pip install --upgrade" not in resultado.comando_upgrade
 
 
 class TestUpgrade:
@@ -220,6 +232,9 @@ class TestUpgrade:
         comandos: list[list[str]] = []
         monkeypatch.setattr(up, "detectar_metodo", lambda: "paquete")
         monkeypatch.setattr(
+            up, "_version_mas_reciente_paquete", lambda: ("0.2.0", False)
+        )
+        monkeypatch.setattr(
             up, "_ejecutar_paso",
             lambda nombre, cmd: comandos.append(cmd)
             or up.PasoUpgrade(nombre, True),
@@ -228,11 +243,27 @@ class TestUpgrade:
         assert resultado.ok is True
         assert "pip" in comandos[0] and "--upgrade" in comandos[0]
 
+    def test_paquete_homonimo_aborta(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Homónimo en PyPI → upgrade aborta sin tocar pip."""
+        monkeypatch.setattr(up, "detectar_metodo", lambda: "paquete")
+        monkeypatch.setattr(
+            up, "_version_mas_reciente_paquete", lambda: (None, True)
+        )
+        resultado = up.upgrade(no_migrate=True)
+        assert resultado.ok is False
+        assert "PyPI" in resultado.detalle
+        assert resultado.pasos == []
+
     def test_migracion_fallida_reporta_error(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Fallo en alembic → upgrade marcado como fallido."""
         monkeypatch.setattr(up, "detectar_metodo", lambda: "paquete")
+        monkeypatch.setattr(
+            up, "_version_mas_reciente_paquete", lambda: ("0.2.0", False)
+        )
         monkeypatch.setattr(
             up, "_ejecutar_paso",
             lambda nombre, cmd: up.PasoUpgrade(

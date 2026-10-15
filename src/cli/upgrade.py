@@ -161,15 +161,32 @@ def _versiones_remotas_fuente() -> tuple[int, str | None]:
     return atras, (tags[0] if tags else None)
 
 
-def _version_mas_reciente_paquete() -> str | None:
-    """Consulta el índice de paquetes por la última versión publicada."""
+def _version_mas_reciente_paquete() -> tuple[str | None, bool]:
+    """Consulta el índice de paquetes por la última versión publicada.
+
+    Returns:
+        ``(versión, homónimo)`` — ``homónimo=True`` cuando el paquete
+        ``nous`` del índice no es de Quintara AI: el nombre está
+        ocupado por otro proyecto y ni la versión ni un
+        ``pip install --upgrade nous`` son seguros de usar.
+    """
     try:
         respuesta = httpx.get(PYPI_JSON, timeout=10.0)
         respuesta.raise_for_status()
-    except (httpx.HTTPError, ValueError):
-        return None
-    version = respuesta.json().get("info", {}).get("version")
-    return str(version) if version else None
+        info = respuesta.json()["info"]
+    except (httpx.HTTPError, ValueError, KeyError):
+        return None, False
+    huella = json.dumps(
+        {
+            k: info.get(k)
+            for k in ("author", "author_email", "home_page", "project_urls")
+        },
+        ensure_ascii=False,
+    ).lower()
+    if "quintarai" not in huella:
+        return None, True
+    version = info.get("version")
+    return (str(version), False) if version else (None, False)
 
 
 def _partes_version(version: str) -> tuple[int, ...]:
@@ -211,7 +228,15 @@ def check_update() -> ResultadoCheckUpdate:
             f"{atras} commit(s) por detrás del upstream.",
         )
     comando = f"{sys.executable} -m pip install --upgrade {PAQUETE}"
-    reciente = _version_mas_reciente_paquete()
+    reciente, homonimo = _version_mas_reciente_paquete()
+    if homonimo:
+        return ResultadoCheckUpdate(
+            actual, metodo, None, None,
+            "pipx install --force <ruta-del-repo>",
+            PYPI_JSON,
+            "El nombre 'nous' en PyPI pertenece a otro proyecto: sin "
+            "índice propio, actualiza reinstalando desde la fuente.",
+        )
     if reciente is None:
         return ResultadoCheckUpdate(
             actual, metodo, None, None, comando, PYPI_JSON,
@@ -287,6 +312,15 @@ def upgrade(*, no_migrate: bool = False) -> ResultadoUpgrade:
             _ejecutar_paso("instalar dependencias", ["poetry", "install"])
         )
     else:
+        _, homonimo = _version_mas_reciente_paquete()
+        if homonimo:
+            resultado.ok = False
+            resultado.detalle = (
+                "'nous' en PyPI es otro proyecto — abortando para no "
+                "instalar código ajeno. Reinstala desde la fuente: "
+                "pipx install --force <ruta-del-repo>"
+            )
+            return resultado
         resultado.pasos.append(
             _ejecutar_paso(
                 f"pip install --upgrade {PAQUETE}",

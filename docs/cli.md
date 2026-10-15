@@ -78,8 +78,14 @@ instalación y ejecuta el flujo apropiado.
   `v*` como versión reciente.
 - Fuente sin remoto: `actualizacion_disponible: null` — no hay fuente
   de versiones, se reporta honestamente.
-- Paquete: consulta el JSON del índice PyPI (`pypi.org/pypi/nous/json`)
-  y compara versiones numéricamente (`1.10.0 > 1.9.9`).
+- Paquete: consulta el JSON del índice PyPI y compara versiones
+  numéricamente (`1.10.0 > 1.9.9`).
+- **Homónimo PyPI**: el nombre `nous` en PyPI es de otro proyecto.
+  Si la metadata del índice no identifica a Quintara AI como autor,
+  `check-update` reporta "sin índice propio" y `upgrade` **aborta**
+  antes de ejecutar `pip install --upgrade nous` — nunca instala
+  código ajeno. Hasta publicar con nombre propio, la vía de upgrade
+  de una instalación pipx es `pipx install --force <ruta-del-repo>`.
 
 ### `upgrade`
 

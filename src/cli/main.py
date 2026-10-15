@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import io
 import json
 import logging
 import os
@@ -422,6 +423,11 @@ def main(argv: list[str] | None = None) -> int:
     Returns:
         0 éxito, 1 error de ejecución, 2 uso incorrecto (argparse).
     """
+    # Consolas Windows cp1252 no codifican →, ✓, ✗: forzar UTF-8.
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if isinstance(sys.stderr, io.TextIOWrapper):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     args = _parser().parse_args(argv)
     if args.version or args.comando == "version":
         return _cmd_version(getattr(args, "json", False))
