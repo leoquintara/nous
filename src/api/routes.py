@@ -349,18 +349,41 @@ async def listar_relaciones(limite: int = 2000) -> list[RelacionResponse]:
     ]
 
 
+@router.delete("/eventos/{evento_id}", dependencies=[Depends(verificar_token)])
+async def olvidar_evento(evento_id: str) -> dict[str, Any]:
+    """Borra un evento de la memoria (olvidar_evento).
+
+    Borrado duro e irreversible — el evento y sus vínculos desaparecen
+    de la línea de universo. Para correcciones auditables usar
+    ``reemplaza_id`` al registrar.
+
+    Args:
+        evento_id: UUID del evento a eliminar.
+
+    Returns:
+        Dict con eliminado y vinculos_borrados.
+    """
+    return await tools_impl._olvidar(evento_id)
+
+
 @router.get("/buscar", dependencies=[Depends(verificar_token)])
-async def buscar(q: str, top_n: int = 10) -> list[dict[str, Any]]:
+async def buscar(
+    q: str, top_n: int = 10, rama: str = "main"
+) -> list[dict[str, Any]]:
     """Búsqueda híbrida 4D con contexto temporal (consultar_memoria).
 
     Args:
         q: Consulta en lenguaje natural.
         top_n: Máximo de resultados (1-50).
+        rama: Línea de universo a consultar ("main" default,
+            "*" para todas).
 
     Returns:
         Resultados con evento, scores y contexto temporal.
     """
-    return await tools_impl._consultar(q, top_n)
+    return await tools_impl._consultar(
+        q, top_n, None if rama == "*" else rama
+    )
 
 
 @router.post("/proyeccion", dependencies=[Depends(verificar_token)])

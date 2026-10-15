@@ -233,13 +233,15 @@ class EventoRepository:
         return [(str(fila["tag"]), int(fila["n"])) for fila in resultado.mappings().all()]
 
     async def buscar_por_texto(
-        self, query: str, limite: int = 20
+        self, query: str, limite: int = 20, rama: str | None = None
     ) -> Sequence[tuple[EventoModel, float]]:
         """Búsqueda full-text sobre contenido vía tsvector (español).
 
         Args:
             query: Texto a buscar (plainto_tsquery).
             limite: Máximo de resultados.
+            rama: Línea de universo a la que limitar la búsqueda
+                (None = todas las ramas).
 
         Returns:
             Tuplas (evento, ts_rank) ordenadas por rank descendente.
@@ -250,20 +252,23 @@ class EventoRepository:
         # Los tags explícitos también hacen match (no caben en el
         # tsvector generado: array_to_string no es immutable). Los
         # eventos expirados (TTL cumplido) no son evocables.
+        filtros = [
+            or_(
+                EventoModel.contenido_tsv.op("@@")(tsquery),
+                func.array_to_string(EventoModel.tags, " ").ilike(
+                    f"%{query}%"
+                ),
+            ),
+            or_(
+                EventoModel.expira_en.is_(None),
+                EventoModel.expira_en > ahora,
+            ),
+        ]
+        if rama is not None:
+            filtros.append(EventoModel.rama == rama)
         stmt = (
             select(EventoModel, rank)
-            .where(
-                or_(
-                    EventoModel.contenido_tsv.op("@@")(tsquery),
-                    func.array_to_string(EventoModel.tags, " ").ilike(
-                        f"%{query}%"
-                    ),
-                ),
-                or_(
-                    EventoModel.expira_en.is_(None),
-                    EventoModel.expira_en > ahora,
-                ),
-            )
+            .where(*filtros)
             .order_by(rank.desc())
             .limit(limite)
         )
@@ -271,13 +276,15 @@ class EventoRepository:
         return [(fila["EventoModel"], float(fila["score"])) for fila in resultado.mappings().all()]
 
     async def buscar_por_vector(
-        self, vector: list[float], limite: int = 20
+        self, vector: list[float], limite: int = 20, rama: str | None = None
     ) -> Sequence[tuple[EventoModel, float]]:
         """Búsqueda por similitud coseno sobre el embedding.
 
         Args:
             vector: Vector de consulta (misma dimensión que el embedding).
             limite: Máximo de resultados.
+            rama: Línea de universo a la que limitar la búsqueda
+                (None = todas las ramas).
 
         Returns:
             Tuplas (evento, similitud_coseno) ordenadas por similitud
@@ -285,15 +292,18 @@ class EventoRepository:
         """
         distancia = EventoModel.embedding.cosine_distance(vector).label("distancia")
         ahora = int(time.time())
+        filtros = [
+            EventoModel.embedding.is_not(None),
+            or_(
+                EventoModel.expira_en.is_(None),
+                EventoModel.expira_en > ahora,
+            ),
+        ]
+        if rama is not None:
+            filtros.append(EventoModel.rama == rama)
         stmt = (
             select(EventoModel, distancia)
-            .where(
-                EventoModel.embedding.is_not(None),
-                or_(
-                    EventoModel.expira_en.is_(None),
-                    EventoModel.expira_en > ahora,
-                ),
-            )
+            .where(*filtros)
             .order_by(distancia)
             .limit(limite)
         )
@@ -497,6 +507,24 @@ class EventoRepository:
         resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
         return resultado.rowcount > 0
 
+    async def eliminar(self, evento_id: uuid.UUID) -> bool:
+        """Elimina un evento de la memoria — borrado duro, irreversible.
+
+        A diferencia de ``eliminar_debil`` (fusión de duplicados) o de
+        ``reemplaza_id`` (auditable), esto es el "derecho al olvido":
+        la fila desaparece de la línea de universo. El llamador debe
+        limpiar primero los vínculos que lo referencian.
+
+        Args:
+            evento_id: UUID del evento a borrar.
+
+        Returns:
+            True si la fila existía y fue eliminada.
+        """
+        stmt = delete(EventoModel).where(EventoModel.id == evento_id)
+        resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
+        return resultado.rowcount > 0
+
 
 class RelacionRepository:
     """Acceso a datos de los vínculos entre eventos."""
@@ -564,6 +592,27 @@ class RelacionRepository:
         )
         resultado = await self._session.execute(stmt)
         return resultado.scalars().all()
+
+    async def eliminar_de(self, evento_id: uuid.UUID) -> int:
+        """Borra todos los vínculos que referencian un evento.
+
+        Limpieza previa al borrado de un evento: ninguna relación debe
+        quedar apuntando a una fila inexistente.
+
+        Args:
+            evento_id: UUID del evento eliminado.
+
+        Returns:
+            Número de vínculos borrados.
+        """
+        stmt = delete(RelacionModel).where(
+            or_(
+                RelacionModel.origen_id == evento_id,
+                RelacionModel.destino_id == evento_id,
+            )
+        )
+        resultado = cast(CursorResult[RelacionModel], await self._session.execute(stmt))
+        return resultado.rowcount
 
 
 class FuenteRepository:

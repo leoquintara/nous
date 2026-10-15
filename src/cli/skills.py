@@ -82,6 +82,13 @@ ramas** (líneas temporales paralelas para escenarios).
 - `vinculos_creados`: cuántas relaciones explícitas se materializaron.
 - `indexado=false` es normal: el embedding se genera en segundo plano;
   la búsqueda por texto ya lo ve.
+
+## Olvidar (derecho al olvido)
+
+- `olvidar_evento(evento_id)` borra el evento y sus vínculos de la
+  línea — irreversible. Solo cuando el usuario pida olvidar algo.
+- Para **corregir** un dato usa `reemplaza_id` (auditable) — no
+  `olvidar_evento`.
 """
 
 _SKILL_CONSULTAR = """---
@@ -97,15 +104,20 @@ Elige la tool según la forma de la pregunta:
 
 | Pregunta | Tool |
 |---|---|
-| "¿qué sé de X?" (por tema) | `consultar_memoria(consulta, top_n)` |
+| "¿qué sé de X?" (por tema) | `consultar_memoria(consulta, top_n, rama?)` |
 | Arranque de sesión | `contexto_inicial(top_n)` |
 | "¿qué pasó ayer/entre X e Y?" (rango) | `obtener_linea_de_universo(desde, hasta)` |
 | "¿cómo fue mi día/semana?" (bloques) | `obtener_episodios(desde, hasta)` |
 | "¿qué debo pendiente?" | `compromisos_abiertos()` |
+| Hilos temáticos | `listar_tags()` |
+| Grafo de vínculos | `listar_relaciones()` |
+| ¿Quién escribe en la memoria? | `listar_fuentes()` |
 
 - `consultar_memoria` ejecuta búsqueda híbrida (BM25 + vectorial +
   rerank + recencia) y devuelve resultados con scores y
   `contexto_temporal` (los eventos adyacentes en la línea de universo).
+  Busca en `rama="main"` por defecto — los escenarios alternativos no
+  contaminan la línea real; `rama="*"` para todas.
 - `contexto_inicial` devuelve en UNA llamada: memoria núcleo + loops
   abiertos + hechos calientes de la semana + stats. Úsala al iniciar
   una sesión — es barata, sin LLM.
@@ -195,8 +207,45 @@ un objetivo — si no es obvia, déjala transversal (None).
 ## Ramas — líneas alternativas
 
 - Todo evento/objetivo/compromiso vive en una `rama` ("main" default).
+- `ramificar_fuente(nombre, rama)` crea la línea alterna como
+  sub-fuente ``{fuente}:{rama}`` — descubre las fuentes con
+  `listar_fuentes()` primero.
 - Registra en otra rama solo si el usuario explora un escenario.
-- `obtener_linea_de_universo(..., rama="*")` recorre todas las ramas.
+- `obtener_linea_de_universo(..., rama="*")` recorre todas las ramas;
+  `consultar_memoria(..., rama="*")` busca en todas — por defecto
+  ambas se quedan en "main".
+"""
+
+_SKILL_PREFERENCIAS = """---
+name: nous-preferences
+description: Leer y guardar preferencias duraderas del usuario en
+  Nous. Usar cuando el usuario declare un ajuste estable de
+  comportamiento o configuración que aplique a futuras sesiones.
+---
+
+# Preferencias duraderas en Nous
+
+Distinto de un recuerdo: `recordar_evento` guarda hechos sobre el
+mundo ("prefiero el café sin azúcar"); `guardar_preferencia` guarda
+**ajustes operativos** del agente — cómo responderte, en qué formato,
+qué herramientas evitar.
+
+## Tools
+
+- `leer_preferencia(clave)` — devuelve el documento JSON guardado, o
+  `{}` si no existe. Léela al inicio si el usuario suele pedir un
+  estilo concreto.
+- `guardar_preferencia(clave, valor)` — upsert por clave; `valor` es
+  JSON arbitrario.
+
+## Convenciones
+
+- Claves namespacadas por punto: `estilo.respuestas`,
+  `formato.codigo`, `timezone.local`.
+- Una clave = un documento coherente. No mezcles temas.
+- Si el usuario corrige una preferencia, sobrescribe la misma clave —
+  no crees una variante.
+- Nunca guardes secretos ni tokens: las preferencias son legibles.
 """
 
 _AGENT_MEMORISTA = """---
@@ -233,6 +282,44 @@ Tu única responsabilidad es decidir qué se persiste en Nous y cómo.
 10. Nunca registres secretos, tokens ni datos bancarios.
 """
 
+_AGENT_CURATOR = """---
+name: nous-curator
+description: Higiene periódica de la memoria — loops viejos,
+  objetivos vencidos, fuentes y ramas. Delega aquí la revisión de
+  salud del universo Nous.
+tools: nous
+---
+
+# Curador Nous
+
+Tu responsabilidad es la higiene de la línea de universo: que nada
+pudra en silencio.
+
+## Qué revisar
+
+1. `compromisos_abiertos()` — loops con `dias_abierto` alto:
+   recuerda al usuario qué promesas llevan más tiempo esperando.
+   Nunca cierres uno sin su confirmación — la resolución es suya.
+2. `listar_objetivos()` — metas cuya `fecha_objetivo` ya pasó y
+   siguen activas: sugiere cerrarlas (`cerrar_objetivo` cumplido o
+   abandonado) o replantear la fecha. El usuario decide.
+3. `listar_fuentes()` — fuentes que ya no escriben: sugiere archivar
+   (el dashboard las oculta sin borrar el historial).
+4. `listar_tags()` — tags duplicados u obsoletos que ensucian los
+   hilos temáticos.
+5. `proyectar_trayectoria()` — si la dimensión dominante lleva mucho
+   tiempo en un estado (p. ej. estrés somático sostenido),
+   coméntalo con tacto.
+
+## Reglas
+
+- Propón, no ejecutes: la memoria es del usuario y toda transición
+  destructiva o de cierre necesita su gesto explícito.
+- `olvidar_evento` solo si el usuario lo pide literalmente.
+- El reporte es breve: hallazgos ordenados por antigüedad, una
+  acción sugerida por hallazgo.
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class Artefacto:
@@ -248,7 +335,9 @@ ARTEFACTOS: tuple[Artefacto, ...] = (
     Artefacto("nous-recall", _SKILL_CONSULTAR, es_agente=False),
     Artefacto("nous-context", _SKILL_CONTEXTO, es_agente=False),
     Artefacto("nous-universe", _SKILL_UNIVERSO, es_agente=False),
+    Artefacto("nous-preferences", _SKILL_PREFERENCIAS, es_agente=False),
     Artefacto("nous-keeper", _AGENT_MEMORISTA, es_agente=True),
+    Artefacto("nous-curator", _AGENT_CURATOR, es_agente=True),
 )
 
 # Subdirectorio de agentes por target conocido (varía por herramienta).

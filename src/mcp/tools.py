@@ -475,11 +475,16 @@ async def _consolidar_luego(engine: AsyncEngine, eventos_ids: list[uuid.UUID]) -
         logger.exception("no se pudieron consolidar refuerzos")
 
 
-async def _consultar(consulta: str, top_n: int) -> list[dict[str, Any]]:
+async def _consultar(
+    consulta: str, top_n: int, rama: str | None = None
+) -> list[dict[str, Any]]:
     """Ejecuta la búsqueda híbrida 4D y serializa los resultados."""
     async with get_session(obtener_engine()) as session:
         resultados = await _obtener_busqueda().buscar(
-            session, consulta, top_n=max(1, min(top_n, 50))
+            session,
+            consulta,
+            top_n=max(1, min(top_n, 50)),
+            rama=rama,
         )
     _encolar_fondo(_ItemConsolidacion(tuple(uuid.UUID(r.evento_id) for r in resultados)))
     if resultados:
@@ -694,6 +699,30 @@ async def _cerrar_loop(
         "compromiso_id": str(cid),
         "cierre_id": str(cierre_id),
         "estado": "cerrado",
+    }
+
+
+async def _olvidar(evento_id: str) -> dict[str, Any]:
+    """Borra un evento de la memoria — derecho al olvido.
+
+    Borrado duro e irreversible: el evento y sus vínculos desaparecen
+    de la línea de universo. Para correcciones con historia usa
+    ``reemplaza_id`` en ``recordar_evento`` en su lugar.
+    """
+    try:
+        eid = uuid.UUID(str(evento_id))
+    except (ValueError, AttributeError) as e:
+        raise ErrorValidacion(
+            f"evento_id no es un UUID válido: {evento_id!r}"
+        ) from e
+    async with get_session(obtener_engine()) as session:
+        vinculos = await RelacionRepository(session).eliminar_de(eid)
+        ok = await EventoRepository(session).eliminar(eid)
+        await session.commit()
+    return {
+        "id": str(eid),
+        "eliminado": ok,
+        "vinculos_borrados": vinculos,
     }
 
 
@@ -1134,6 +1163,7 @@ async def cerrar_objetivo(
 async def consultar_memoria(
     consulta: str,
     top_n: int = 10,
+    rama: str = "main",
 ) -> list[dict[str, Any]]:
     """Busca memorias del usuario por TEMA con búsqueda híbrida 4D.
 
@@ -1148,13 +1178,18 @@ async def consultar_memoria(
     Args:
         consulta: Pregunta o tema en lenguaje natural.
         top_n: Máximo de resultados (1-50). Default 10.
+        rama: Línea de universo a consultar — "main" por defecto, así
+            los escenarios en ramas alternativas no contaminan el
+            recuerdo de la línea real. Usa "*" para todas las ramas.
 
     Returns:
         Resultados ordenados por relevancia; cada uno trae el "evento"
         completo, sus scores y "contexto_temporal": los eventos que
         ocurrieron justo antes y después en la línea de tiempo.
     """
-    return await _consultar(consulta, top_n)
+    return await _consultar(
+        consulta, top_n, None if rama == "*" else rama
+    )
 
 
 @mcp_server.tool()
@@ -1281,3 +1316,141 @@ async def proyectar_trayectoria(
         "id" de la proyección persistida en la tabla proyecciones.
     """
     return await _proyectar(horizonte_dias, dias_historial)
+
+
+@mcp_server.tool()
+async def olvidar_evento(evento_id: str) -> dict[str, Any]:
+    """Borra un evento de la memoria para siempre — derecho al olvido.
+
+    USAR CUANDO: el usuario pida explícitamente olvidar algo ("borra
+    eso", "no quiero que recuerdes X"). El evento y sus vínculos
+    desaparecen de la línea de universo; es irreversible.
+
+    NO usar para corregir un dato que sigue siendo válido con otro
+    valor: eso es ``reemplaza_id`` en recordar_evento (auditable).
+    NO usar para compromisos resueltos: cerrar_compromiso (el loop
+    queda cerrado en la línea, no borrado).
+
+    Args:
+        evento_id: UUID del evento a eliminar.
+
+    Returns:
+        Dict con "eliminado" y "vinculos_borrados".
+    """
+    return await _olvidar(evento_id)
+
+
+@mcp_server.tool()
+async def listar_tags(limite: int = 100) -> list[dict[str, Any]]:
+    """Lista los tags de la memoria con su frecuencia de uso.
+
+    USAR CUANDO: necesites descubrir los hilos temáticos del usuario
+    antes de consultar (los tags enlazan eventos que comparten tema),
+    o para revisar qué etiquetas acumuló la memoria.
+
+    Args:
+        limite: Máximo de tags (1-500). Default 100.
+
+    Returns:
+        [{"tag", "eventos"}] ordenados por frecuencia descendente.
+    """
+    return await _tags(min(max(limite, 1), 500))
+
+
+@mcp_server.tool()
+async def listar_fuentes() -> list[dict[str, Any]]:
+    """Lista las fuentes registradas y las usadas sin registrar.
+
+    USAR CUANDO: necesites saber de dónde viene la memoria (qué
+    agentes/importaciones escriben) o antes de crear una rama con
+    ramificar_fuente — la rama nace como sub-fuente de otra.
+
+    Returns:
+        Fuentes con nombre, tipo, estado, namespace, rama_origen y
+        conteo de eventos.
+    """
+    return await _fuentes()
+
+
+@mcp_server.tool()
+async def ramificar_fuente(
+    nombre: str,
+    rama: str,
+    namespace: str = "",
+) -> dict[str, Any] | None:
+    """Crea una línea de universo alterna derivada de una fuente.
+
+    USAR CUANDO: el usuario quiera explorar un escenario sin tocar su
+    historia real ("¿y si hubiera...?"). La rama nace como sub-fuente
+    ``{nombre}:{rama}``: los eventos registrados bajo ella con
+    ``rama=<rama>`` viven en la línea paralela — comparten el pasado
+    pero divergen del presente, y consultar_memoria no los mezcla
+    con la línea main salvo que se pida ``rama="*"``.
+
+    Args:
+        nombre: Fuente origen (de listar_fuentes).
+        rama: Nombre de la línea alterna a crear.
+        namespace: Agrupador opcional (hereda el de la fuente).
+
+    Returns:
+        La sub-fuente creada, o None si la fuente origen no existe.
+    """
+    return await _ramificar_fuente(nombre, rama, namespace)
+
+
+@mcp_server.tool()
+async def listar_relaciones(limite: int = 500) -> list[dict[str, Any]]:
+    """Lista los vínculos entre memorias — el grafo explícito.
+
+    USAR CUANDO: quieras ver cómo se conectan los recuerdos
+    (explícitos declarados con relaciona_ids y semánticos inferidos),
+    o auditar la estructura del grafo antes de proponer vínculos.
+
+    Args:
+        limite: Máximo de vínculos (1-5000). Default 500.
+
+    Returns:
+        [{"origen_id", "destino_id", "tipo", "peso"}] recientes
+        primero.
+    """
+    return await _relaciones(limite)
+
+
+@mcp_server.tool()
+async def leer_preferencia(clave: str) -> dict[str, Any]:
+    """Lee un documento de preferencias persistido del usuario.
+
+    USAR CUANDO: necesites recordar una configuración duradera que el
+    usuario pidió en otra sesión ("prefiero respuestas breves",
+    "mi timezone es CDMX"). Las preferencias son JSON arbitrario
+    namespacado por clave — sobreviven sesiones y reinicios.
+
+    Args:
+        clave: Clave del documento (p. ej. "estilo.respuestas").
+
+    Returns:
+        El documento guardado, o {} si no existe.
+    """
+    return await _preferencia_leer(clave)
+
+
+@mcp_server.tool()
+async def guardar_preferencia(
+    clave: str, valor: dict[str, Any]
+) -> dict[str, Any]:
+    """Persiste una preferencia duradera del usuario (upsert por clave).
+
+    USAR CUANDO: el usuario declare una preferencia estable de
+    comportamiento/configuración que aplique a futuras sesiones. Para
+    hechos sobre el mundo/la persona usa recordar_evento (tipo
+    "preferencia") — esto es para ajustes operativos del agente.
+
+    Args:
+        clave: Clave del documento (p. ej. "estilo.respuestas").
+        valor: Documento JSON a persistir.
+
+    Returns:
+        {"clave", "guardado": true}.
+    """
+    await _preferencia_guardar(clave, valor)
+    return {"clave": clave, "guardado": True}

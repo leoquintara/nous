@@ -136,3 +136,61 @@ async def test_registrar_y_listar_benchmark(session: AsyncSession) -> None:
     assert len(corridas) == 1
     assert corridas[0].id == corrida.id
     assert corridas[0].metricas["latencia_ms_p95"] == 42.0
+
+
+async def test_eliminar_borra_el_evento(session: AsyncSession) -> None:
+    """eliminar borra el evento de forma incondicional."""
+    repo = EventoRepository(session)
+    evento = await repo.crear(_evento(1_700_000_000, "olvidable"))
+
+    assert await repo.eliminar(evento.id) is True
+    assert await repo.obtener(evento.id) is None
+    assert await repo.eliminar(evento.id) is False
+
+
+async def test_eliminar_de_limpia_vinculos(session: AsyncSession) -> None:
+    """eliminar_de borra los vínculos que apuntan al evento."""
+    from src.storage.repositories import RelacionRepository
+
+    eventos = EventoRepository(session)
+    relaciones = RelacionRepository(session)
+    a = await eventos.crear(_evento(1_700_000_000, "origen"))
+    b = await eventos.crear(_evento(1_700_000_100, "destino"))
+    await relaciones.vincular(a.id, b.id, "explicita")
+
+    assert await relaciones.eliminar_de(a.id) == 1
+    assert await relaciones.listar() == []
+
+
+async def test_buscar_por_texto_filtra_rama(session: AsyncSession) -> None:
+    """La búsqueda por texto limita a la rama indicada."""
+    repo = EventoRepository(session)
+    await repo.crear(_evento(1_700_000_000, "decisión real", rama="main"))
+    await repo.crear(
+        _evento(1_700_000_100, "decisión alternativa", rama="whatif")
+    )
+
+    main = await repo.buscar_por_texto("decisión", rama="main")
+    whatif = await repo.buscar_por_texto("decisión", rama="whatif")
+    todas = await repo.buscar_por_texto("decisión")
+
+    assert [e.contenido for e, _ in main] == ["decisión real"]
+    assert [e.contenido for e, _ in whatif] == ["decisión alternativa"]
+    assert len(todas) == 2
+
+
+async def test_buscar_por_vector_filtra_rama(session: AsyncSession) -> None:
+    """La búsqueda vectorial limita a la rama indicada."""
+    repo = EventoRepository(session)
+    vec = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+    await repo.crear(
+        _evento(1_700_000_000, "main", embedding=vec, rama="main")
+    )
+    await repo.crear(
+        _evento(1_700_000_100, "rama", embedding=vec, rama="whatif")
+    )
+
+    main = await repo.buscar_por_vector(vec, rama="main")
+
+    assert len(main) == 1
+    assert main[0][0].rama == "main"

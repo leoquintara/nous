@@ -115,7 +115,11 @@ class BusquedaHibrida4D:
         self._primados: dict[str, tuple[float, float]] = {}
 
     async def buscar(
-        self, session: AsyncSession, query: str, top_n: int = 10
+        self,
+        session: AsyncSession,
+        query: str,
+        top_n: int = 10,
+        rama: str | None = None,
     ) -> list[ResultadoBusqueda]:
         """Ejecuta la búsqueda híbrida completa con contexto 4D.
 
@@ -123,14 +127,18 @@ class BusquedaHibrida4D:
             session: Sesión async de SQLAlchemy.
             query: Texto de la consulta.
             top_n: Máximo de resultados finales.
+            rama: Línea de universo a la que limitar la búsqueda
+                (None = todas las ramas). El default de las tools es
+                "main" para que los escenarios alternativos no
+                contaminen el recuerdo de la línea real.
 
         Returns:
             Resultados ordenados por score_final con contexto temporal.
         """
         vector_query = await self._embeddings.generar(query)
         repo = EventoRepository(session)
-        hits_texto = await repo.buscar_por_texto(query)
-        hits_vector = await repo.buscar_por_vector(vector_query)
+        hits_texto = await repo.buscar_por_texto(query, rama=rama)
+        hits_vector = await repo.buscar_por_vector(vector_query, rama=rama)
 
         modelos = _indice_modelos(hits_texto, hits_vector)
         fusionados = _fusionar(hits_texto, hits_vector, top_n)
