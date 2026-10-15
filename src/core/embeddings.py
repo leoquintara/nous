@@ -277,8 +277,19 @@ class GeneradorEmbeddings:
             return False
 
     def _cargar_torch(self) -> None:
-        """Carga el modelo vía sentence-transformers/torch."""
-        from sentence_transformers import SentenceTransformer
+        """Carga el modelo vía sentence-transformers/torch.
+
+        Backend opcional: el paquete vive en el extra ``torch`` (~2GB)
+        y solo se instala si se necesita un modelo sin pesos ONNX.
+        """
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as exc:
+            raise ProveedorNoDisponibleError(
+                "El backend torch no está instalado: "
+                "pip install 'nous-memory[torch]'. "
+                "El backend ONNX cubre los modelos por defecto."
+            ) from exc
 
         try:
             self._modelo = SentenceTransformer(
