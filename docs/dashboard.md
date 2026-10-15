@@ -8,10 +8,19 @@
 | Ruta | Feature | Consume |
 |---|---|---|
 | `/login` | Acceso por token `ns_*` o usuario+contraseña (POST `/api/login`) | `crearAuth` |
-| `/` (Cerebro) | Cerebro 3D animado con membrana, neuronas por dimensión, pulsos sinápticos y selección de evento | eventos vía `listarEventos` |
+| `/` (Cerebro) | Cerebro 3D con membrana, nodos por dimensión, replay de actividad en 2 olas (nodo + relaciones), picking en espacio de pantalla, panel de procedencia por fuente | `GET /api/actividad`, `GET /api/eventos` |
 | `/memoria` | Búsqueda híbrida 4D con contexto temporal antes/después | `GET /api/buscar` |
-| `/proyeccion` | Distribución dimensional proyectada + trayectorias activas | `POST /api/proyeccion`, `GET /api/proyeccion/actual` |
+| `/universo` (tab "Timeline") | Línea temporal 4D interactiva: cursor, cauce recorrido luminoso (shader `uRecorrido`), ramas, fantasmas de futuro, eventos destacados por amplitud | `GET /api/eventos`, `/api/fuentes`, `/api/objetivos` |
+| `/proyeccion` | Distribución dimensional + futuros re-ponderados por LLM (PanelIA manual) | `POST /api/proyeccion`, `/api/ia/predecir` |
+| `/modelos` | Proveedores IA: primario + fallback, keys enmascaradas, probar conexión | `/api/ia/proveedores` |
+| `/fuentes` | Fuentes de memoria, ramificación de universo | `/api/fuentes` |
+| `/trazas` (tab "Logs") | Trazas de llamadas MCP/REST, agregados, pings | `/api/llamadas`, `/api/llamadas/stats` |
+| `/importar` | Migraciones visuales: JSONL/memlord/gbrain/Obsidian por archivo + gbrain/memlord por URL+token vía API MCP | `POST /api/importar`, `/api/importar/historial` |
 | `/benchmarks` | Corridas persistidas con métricas y commit | `GET /api/benchmarks` |
+
+El nav compartido incluye toggle de tema, fullscreen nativo y
+`backdrop-filter: blur(10px)`. Todas las acciones de IA (PanelIA,
+"Analizar con IA") son manuales — ninguna se dispara sola.
 
 ## Arquitectura hexagonal
 
@@ -44,19 +53,26 @@ un token malo nunca entra a la sesión. El modo usuario+contraseña intercambia
 credenciales por el token vía `POST /api/login` (opcional, requiere
 `NOUS_DASHBOARD_USUARIO/PASSWORD`).
 
-### 3. Cerebro 3D: canvas 2D con proyección propia, sin Three.js
+### 3. Cerebro 3D: Three.js con `InstancedMesh` y shaders propios
 
-Migración del plugin DSH Memory. Se mantuvo el renderer manual (no WebGL) porque:
-el grafo tiene ~300 nodos y canvas 2D lo sobra; cero dependencias pesadas;
-la lógica física (springs, repulsión, LOD, pulsos, cascadas, membrana) se tipó
-en módulos separados:
+Migrado del renderer canvas 2D a WebGL real (Three.js): nodos como
+`InstancedMesh` (un solo draw call), materiales con uniforms para
+nacimiento/LOD/atenuación, pulsos sinápticos viajeros y membrana
+procedural.
 
-| Módulo | Responsabilidad |
-|---|---|
-| `tipos.ts` | Neurona, Arista, Membrana, Pulso — dominio del grafo |
-| `geometria.ts` | Regiones cerebrales procedurales, membrana con ruido |
-| `fisica.ts` | Integración de springs/repulsión por frame, cascadas |
-| `CerebroCanvas.tsx` | Loop rAF, proyección 3D→2D, hit-testing, panel de evento |
+- **Picking en espacio de pantalla**: proyectar cada nodo a píxeles y
+  elegir el más cercano a ≤13px — el raycast contra instancias atenuadas
+  por LOD fallaba en nodos pequeños.
+- **Replay de actividad en 2 olas**: semilla → arco al nodo → hasta 6
+  arcos a sus relaciones (explícitas > semánticas por peso > vecinos
+  estructurales, máx. 48 por replay), con etiquetas forzadas durante el
+  efecto.
+- **`src/ui/universo/materiales.ts`**: shaders del cauce temporal —
+  `uRecorrido` ilumina solo el tramo ya vivido (inicio→cursor), atenúa
+  el futuro y marca la cabeza con brillo suave; los fantasmas conservan
+  brillo por probabilidad.
+- El LOD es decisión de **render**, no de interacción — todo nodo nacido
+  es seleccionable.
 
 ### 4. Liquid glass = dos superficies
 

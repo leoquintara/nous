@@ -25,8 +25,37 @@ nous --help             # o: python -m src.cli --help
 | `nous seed [--eventos N]` | Siembra eventos de ejemplo | — |
 | `nous stats` | Total y desglose por dimensión | `--json` |
 | `nous export <archivo.jsonl>` | Vuelca la memoria a JSONL | — |
-| `nous import <archivo.jsonl>` | Importa JSONL regenerando embeddings | — |
+| `nous import <archivo> [--fuente F] [--rama R]` | Importa JSONL / memlord / gbrain / Obsidian | — |
+| `nous skills install --target .agents` | Instala skills/agentes en tu agente | — |
+| `nous skills list` | Lista los artefactos empaquetados | — |
+| `nous prune [--dias 90] [--amplitud 0.3]` | Poda eventos viejos y débiles | — |
 | `nous benchmark` | Lanza `scripts/benchmark_search.py` | — |
+
+## Import
+
+`--fuente` acepta: `jsonl` (default), `memlord`, `gbrain`, `obsidian`.
+`--rama` asigna una rama distinta de `main` a lo importado. Archivos y
+directorios se importan de forma idempotente (ids duplicados se omiten).
+
+Para instancias **remotas** de gbrain/memlord, la importación se hace
+vía API MCP desde el dashboard (`/importar`) o
+`POST /api/importar` con `{fuente, url, token}` — la CLI solo maneja
+archivos.
+
+## Skills y agentes
+
+`nous skills install --target .agents` copia los artefactos empaquetados
+al directorio de tu agente (`--target` es ruta completa o un nombre
+corto como `.agents`, `.claude`, `.cursor`, `.opencode`). Skills:
+`nous-remember`, `nous-recall`, `nous-context`, `nous-universe`,
+`nous-preferences`, `nous-checkin`, `nous-somatic`. Agentes:
+`nous-keeper`, `nous-curator`, `nous-pathfinder`, `nous-mirror`.
+
+## Prune
+
+`nous prune` elimina eventos más viejos que `--dias` con amplitud por
+debajo de `--amplitud`. No toca hechos, objetivos ni compromisos
+abiertos — solo eventos débiles y envejecidos.
 
 Códigos de salida: `0` éxito, `1` error de ejecución, `2` uso
 incorrecto (argparse).
