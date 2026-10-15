@@ -451,3 +451,103 @@ class TestWorkspaceOverrideE2E:
                     )
                 )
                 await s.commit()
+
+
+@pytest.mark.asyncio
+class TestToolsMCPConScope:
+    """Los tools públicos MCP aceptan ``scope``/``workspace`` y los
+    enrutan por el contexto fijado (stdio y streamable-http igual)."""
+
+    async def test_recordar_con_scope_workspace(
+        self,
+        engine: AsyncEngine,
+        escenario: dict[str, object],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """member escribe scope=workspace y queda visible al equipo."""
+        from src.core.identidad import fijar_contexto
+        from src.mcp import tools
+        from src.storage.repositories import EventoRepository
+
+        monkeypatch.setattr(tools, "obtener_engine", lambda: engine)
+        monkeypatch.setattr(
+            tools,
+            "crear_engine",
+            lambda: create_async_engine(TEST_DB_URL),
+        )
+        user_b = escenario["user_b"]
+        fijar_contexto(
+            _ctx(user_b, WORKSPACE_PERSONAL_ID, "member")
+        )
+        try:
+            r = await tools.recordar_evento(
+                "decisión visible para el equipo entero",
+                fuente="test_scopes_tool",
+                scope="workspace",
+            )
+        finally:
+            fijar_contexto(None)
+        async with get_session(engine) as s:
+            fila = (
+                await EventoRepository(
+                    s, _ctx(user_b, WORKSPACE_PERSONAL_ID)
+                ).obtener(r["id"])
+            )
+        assert fila is not None
+        assert fila.scope == "workspace"
+        assert fila.autor_id == user_b.id  # type: ignore[attr-defined]
+        assert fila.workspace_id == WORKSPACE_PERSONAL_ID
+        async with get_session(engine) as s:
+            await s.execute(
+                delete(EventoModel).where(EventoModel.id == fila.id)
+            )
+            await s.commit()
+
+    async def test_viewer_no_escribe_aunque_sea_owner_en_otro_ws(
+        self,
+        engine: AsyncEngine,
+        escenario: dict[str, object],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """user_b es viewer EN ws_b: escribir allí da 403 aunque sea
+        member en personal — el rol efectivo es el del destino."""
+        from src.core.identidad import fijar_contexto
+        from src.mcp import tools
+
+        monkeypatch.setattr(tools, "obtener_engine", lambda: engine)
+        user_b = escenario["user_b"]
+        fijar_contexto(
+            _ctx(user_b, WORKSPACE_PERSONAL_ID, "member")
+        )
+        try:
+            with pytest.raises(PermisoDenegadoError):
+                await tools.recordar_evento(
+                    "intento de escritura como viewer",
+                    fuente="test_scopes_tool",
+                    workspace="sc-ws-b",
+                )
+        finally:
+            fijar_contexto(None)
+
+    async def test_contexto_inicial_con_override(
+        self,
+        engine: AsyncEngine,
+        escenario: dict[str, object],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """contexto_inicial(workspace=…) resuelve el ctx del destino."""
+        from src.core.identidad import fijar_contexto
+        from src.mcp import tools
+
+        monkeypatch.setattr(tools, "obtener_engine", lambda: engine)
+        user_a = escenario["user_a"]
+        fijar_contexto(_ctx(user_a, WORKSPACE_PERSONAL_ID, "member"))
+        try:
+            # user_a sin membresía en ws_b → rechazo.
+            with pytest.raises(PermisoDenegadoError):
+                await tools.contexto_inicial(workspace="sc-ws-b")
+            # Su workspace default sí responde.
+            r = await tools.contexto_inicial()
+            assert "resumen" in r or isinstance(r, dict)
+        finally:
+            fijar_contexto(None)

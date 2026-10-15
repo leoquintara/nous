@@ -57,6 +57,9 @@ La salida usa colores ANSI cuando la terminal es TTY — `NO_COLOR=1` o
 | `nous skills list` | Lista los artefactos empaquetados | — |
 | `nous prune [--dias 90] [--amplitud 0.3]` | Poda eventos viejos y débiles | — |
 | `nous benchmark` | Lanza `scripts/benchmark_search.py` | — |
+| `nous users create\|list` | Crea usuarios (handle único) y los lista | `--json` |
+| `nous workspaces create\|list\|invite\|canjear` | Workspaces e invitaciones `ns_inv_*` de un solo uso | `--json` |
+| `nous keys list\|create\|revoke` | Keys `ns_u_*` por usuario — en claro solo al emitir | `--json` |
 
 ## Import
 

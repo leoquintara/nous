@@ -34,6 +34,19 @@ Un test por categoría en `tests/security/test_owasp.py` +
    del archivo la completa `_validar_fila` contra el contrato de tabla.
 5. **`/api/docs` detrás de auth** en vez de deshabilitarlo: útil en
    self-hosted, protegido por el mismo Bearer que los datos.
+6. **Key = credencial completa** (multi-tenant): no hay passwords. Las
+   `ns_u_*` se persisten solo como hash SHA-256 — la DB no contiene
+   secretos en claro. Comparación estática con `hmac.compare_digest`.
+7. **Aislamiento por workspace en la capa de datos**: la regla de
+   visibilidad (ws+scope=workspace ∪ autor=me ∪ sin-atribuir) vive en
+   los repositorios, no en los endpoints — imposible olvidarla en un
+   endpoint nuevo. Tests de fuga entre workspaces lo verifican.
+8. **Invitación como secreto de un solo uso**: `ns_inv_*` también se
+   guarda hasheada; el canje es endpoint público pero rate-limited
+   igual que `/login`, y queda marcado `canjeada_por` — reusar
+   devuelve 422.
+9. **Último owner protegido**: ni `quitar_miembro` ni `cambiar_rol`
+   permiten dejar un workspace sin owner (evita lock-out).
 
 ## Residual / pendiente documentado
 

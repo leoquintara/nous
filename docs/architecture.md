@@ -35,10 +35,16 @@ MCP / REST / CLI  →  Core  →  Storage
 ## Esquema (tablas principales)
 
 `eventos` (contenido, dimensión, tipo, amplitud, frecuencia, tags[],
-embedding vector, rama, ttl, reemplaza_id, tsvector) · `relaciones`
+embedding vector, rama, ttl, reemplaza_id, tsvector,
+**workspace_id, scope, autor_id**) · `relaciones`
 (origen, destino, peso, explícita) · `fuentes` · `objetivos` ·
 `trayectorias` · `proyecciones` · `configuracion` (proveedores IA +
 preferencias) · `llamadas` (trazas) · `benchmarks`.
+
+Identidad multi-tenant (migración 0009): `usuarios` · `workspaces` ·
+`miembros` (workspace, usuario, rol owner|member|viewer) ·
+`api_keys` (solo hash SHA-256; `ns_u_*`, workspace_default) ·
+`invitaciones` (`ns_inv_*` de un solo uso con expiración).
 
 ## Flujos clave
 
@@ -57,6 +63,32 @@ preferencias) · `llamadas` (trazas) · `benchmarks`.
   historial auditable, nunca borrado.
 - **Olvido**: `DELETE /eventos/{id}` borra evento + vínculos
   (irreversible, para el derecho al olvido).
+
+## Multi-tenant
+
+El workspace es el límite de aislamiento (decisión Q1 del grill-me):
+cada entidad de dominio lleva `workspace_id` y las de memoria además
+`scope` (`personal`|`workspace`) y `autor_id`.
+
+- **Regla de visibilidad**: dentro del workspace activo, el actor ve
+  `scope='workspace'` ∪ sus propios eventos ∪ los sin atribuir
+  (datos previos al tenant). El filtro vive en los repositorios —
+  ningún query cruza workspaces.
+- **Auth**: la credencial ES la API key. `NOUS_API_TOKEN` (`ns_*`)
+  equivale al owner del workspace bootstrap `personal`; las keys
+  `ns_u_*` resuelven a (usuario, workspace default, rol). El rol del
+  destino manda: un viewer en el destino no escribe aunque sea owner
+  en otro workspace.
+- **Override**: tools MCP y endpoints REST aceptan `workspace=` (slug
+  o UUID) — exige membresía en el destino (403 si no).
+- **Roles**: `owner` gestiona miembros/invitaciones; `member` escribe
+  (borra solo lo suyo); `viewer` solo lee (403 en escrituras).
+- **Invitación**: `ns_inv_*` canjeable una vez con expiración — crea
+  usuario + membresía + su primera `ns_u_*`.
+- **Feature gate** (edición libre self-hosted): sin `NOUS_LICENSE_KEY`
+  el límite es 1 usuario y 3 workspaces — `CupoExcedidoError` → 402.
+- **stdio**: `NOUS_API_KEY` en el entorno del proceso decide el
+  usuario; ausente → owner local (comportamiento previo intacto).
 
 ## Dashboard
 

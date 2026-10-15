@@ -77,6 +77,15 @@ instala solo API+MCP.
    commit a ~0.5s de riesgo de escritura.
 7. **Modelos**: `NOUS_HF_OFFLINE=true` exige los modelos en caché local;
    descárgalos una vez con `NOUS_HF_OFFLINE=false`.
+8. **Licencia (multi-tenant)**: sin `NOUS_LICENSE_KEY` la edición libre
+   permite **1 usuario y 3 workspaces** — suficiente para uso personal
+   self-hosted. Con licencia se levantan los límites. El estado se
+   consulta en `GET /api/identidad` (`licencia.activa`) y en el
+   dashboard `/equipo`.
+9. **Agentes por usuario**: los clientes MCP stdio usan `NOUS_API_KEY`
+   (key `ns_u_*` del usuario) en el entorno del proceso; ausente, stdio
+   actúa como el owner local. En HTTP cada agente lleva su propia
+   `Authorization: Bearer ns_u_*`.
 
 ## Upgrades
 

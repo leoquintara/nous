@@ -17,10 +17,15 @@
 | `/trazas` (tab "Logs") | Trazas de llamadas MCP/REST, agregados, pings | `/api/llamadas`, `/api/llamadas/stats` |
 | `/importar` | Migraciones visuales: JSONL/memlord/gbrain/Obsidian por archivo + gbrain/memlord por URL+token vía API MCP | `POST /api/importar`, `/api/importar/historial` |
 | `/benchmarks` | Corridas persistidas con métricas y commit | `GET /api/benchmarks` |
+| `/equipo` | Miembros y roles del workspace activo, invitaciones `ns_inv_*`, keys propias, estado de licencia | `/api/identidad`, `/api/workspaces/*`, `/api/llaves` |
+| `/unirse` | Canje público de invitación (sin login): token + handle → key `ns_u_*` mostrada una vez | `POST /api/invitaciones/canjear` |
 
-El nav compartido incluye toggle de tema, fullscreen nativo y
-`backdrop-filter: blur(10px)`. Todas las acciones de IA (PanelIA,
-"Analizar con IA") son manuales — ninguna se dispara sola.
+El nav compartido incluye **switcher de workspace** (el activo viaja
+como `?workspace=` en todas las llamadas y como campo en los POST),
+toggle de tema, fullscreen nativo y `backdrop-filter: blur(10px)`.
+Los eventos muestran badge `personal`/`workspace` (scope). Todas las
+acciones de IA (PanelIA, "Analizar con IA") son manuales — ninguna se
+dispara sola.
 
 ## Arquitectura hexagonal
 

@@ -226,13 +226,16 @@ except Exception as e:
 - Sanitizar toda entrada del usuario antes de guardarla en PostgreSQL.
 - El usuario puede exportar/importar/borrar toda su memoria en cualquier momento.
 
-### Autenticación HTTP
+### Autenticación HTTP y multi-tenant
 
-- Las superficies HTTP (transporte `streamable-http` del MCP y la API REST) se protegen con **Bearer token** vía `NOUS_API_TOKEN`.
-- Formato obligatorio del token: prefijo `ns_` + material aleatorio (p. ej. `ns_` + `secrets.token_hex(32)`).
+- Las superficies HTTP (transporte `streamable-http` del MCP y la API REST) se protegen con **Bearer token**. El estático `NOUS_API_TOKEN` (`ns_` + material aleatorio) equivale al **owner del workspace bootstrap `personal`**; las keys de usuario `ns_u_*` resuelven a `(usuario, workspace_default, rol)` — solo se persiste su hash SHA-256.
 - Token ausente = modo desarrollo local (warning en logs). Nunca exponer a red sin token.
-- `/health` permanece abierto; el resto de rutas exige `Authorization: Bearer <token>`.
-- El transporte `stdio` no requiere token (proceso local, sin red).
+- `/health` y `/api/invitaciones/canjear` permanecen abiertos; el resto de rutas exige `Authorization: Bearer <token>` — las escrituras además exigen rol `member`/`owner` (403 a `viewer`).
+- **Aislamiento por workspace**: toda entidad de dominio lleva `workspace_id`; eventos/objetivos además `scope` (`personal`|`workspace`) y `autor_id`. La visibilidad (workspace ∪ propios ∪ sin-atribuir) se filtra en los repositorios — nunca se bypassa con queries directas.
+- **Override de workspace** (`workspace=` en tools MCP y REST): exige membresía en el destino, 403 si no. El rol resuelto en el destino manda.
+- **Invitaciones** `ns_inv_*`: hash, un solo uso, con expiración. El canje crea usuario + membresía + primera key.
+- **Feature gate**: sin `NOUS_LICENSE_KEY`, la edición libre permite 1 usuario y 3 workspaces (`CupoExcedidoError` → 402).
+- El transporte `stdio` no requiere token: `NOUS_API_KEY` en el entorno del proceso decide el usuario; ausente → owner local.
 
 ## 🧪 Testing
 

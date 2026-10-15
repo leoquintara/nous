@@ -2,8 +2,18 @@
 
 FastAPI (`src/api/`). Sirve el MCP streamable-HTTP en `/mcp` y la API de
 operación del dashboard. Todo endpoint requiere `Authorization: Bearer
-ns_<token>` (salvo `/health`, `/` y `/login`), salvo que `NOUS_API_TOKEN`
-esté vacío (modo dev local).
+ns_<token>` (salvo `/health`, `/`, `/login` y
+`/api/invitaciones/canjear`), salvo que `NOUS_API_TOKEN` esté vacío
+(modo dev local).
+
+**Credenciales**: `ns_<token>` estático = owner del workspace
+`personal`; `ns_u_*` = key de usuario (resuelve su workspace default
+y rol). Los GET solo exigen token válido; las escrituras exigen rol
+`member`/`owner` en el workspace activo (403 a `viewer`). Los
+endpoints aceptan `?workspace=<slug|uuid>` como override — exige
+membresía en el destino. Las escrituras de memoria aceptan `scope:
+"personal"|"workspace"` (default `personal` — compartir es siempre
+explícito).
 
 ## Vida y acceso
 
@@ -69,8 +79,25 @@ esté vacío (modo dev local).
 | POST | `/importar` | Migración: `{fuente, ruta\|url, token, vista_previa}` — gbrain/memlord vía API MCP, archivos por `ruta` |
 | GET | `/importar/historial` | Historial de migraciones |
 
+## Identidad multi-tenant
+
+| Método | Ruta | Qué hace |
+|---|---|---|
+| GET | `/identidad` | Whoami: usuario, workspace activo, workspaces con rol, estado de licencia |
+| POST | `/workspaces` | Crea workspace (el llamante queda owner) |
+| GET | `/workspaces/{ref}/miembros` | Roster del workspace (cualquier miembro) |
+| PATCH | `/workspaces/{ref}/miembros/{uid}` | Cambia rol member↔viewer — solo owner |
+| DELETE | `/workspaces/{ref}/miembros/{uid}` | Expulsa miembro — solo owner; último owner protegido |
+| POST | `/workspaces/{ref}/invitaciones` | Emite `ns_inv_*` (rol, días) — solo owner; se ve una vez |
+| POST | `/invitaciones/canjear` | **Público** (rate-limited): token + handle + nombre → key `ns_u_*` una vez |
+| GET | `/llaves` | Keys del llamante (sin secretos) |
+| POST | `/llaves` | Emite key propia — en claro una sola vez |
+| DELETE | `/llaves/{ref}` | Revoca por UUID o prefijo — solo las propias |
+
 ## Errores
 
-`401` token ausente/inválido · `403` origen no permitido · `404`
-recurso inexistente · `502` instancia remota MCP inalcanzable (lista las
-tools anunciadas en el mensaje para depuración).
+`401` token ausente/inválido · `402` límite de la edición libre sin
+licencia · `403` origen no permitido, rol insuficiente o sin membresía
+en el workspace destino · `404` recurso inexistente · `422` validación
+de dominio · `502` instancia remota MCP inalcanzable (lista las tools
+anunciadas en el mensaje para depuración).
