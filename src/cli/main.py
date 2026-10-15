@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -433,8 +434,27 @@ def _dir_dashboard() -> Path | None:
 
 
 def _detener_dashboard(proc: subprocess.Popen[bytes]) -> None:
-    """Termina el proceso del dashboard al salir del servidor."""
-    if proc.poll() is None:
+    """Termina el árbol del dashboard al salir del servidor.
+
+    En Windows el proceso raíz es un cmd/npm envoltorio: se usa
+    ``taskkill /T`` para matar también a node. En POSIX el hijo vive
+    en su propia sesión y se cierra con SIGTERM al grupo.
+    """
+    if proc.poll() is not None:
+        return
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            capture_output=True, timeout=15, check=False,
+        )
+        return
+    killpg = getattr(os, "killpg", None)  # solo POSIX
+    if killpg is None:
+        proc.terminate()
+        return
+    try:
+        killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
         proc.terminate()
 
 
@@ -442,8 +462,9 @@ def _lanzar_dashboard(directorio: Path) -> subprocess.Popen[bytes] | None:
     """Arranca el dashboard Next.js como subproceso.
 
     Usa ``npm start`` si existe un build (``.next/BUILD_ID``) o
-    ``npm run dev`` en caso contrario. El proceso se termina
-    automáticamente al salir del servidor vía ``atexit``.
+    ``npm run dev`` en caso contrario. Corre en su **propio grupo de
+    proceso**: Ctrl+C solo llega a Nous, y ``atexit`` elimina el
+    árbol completo al salir — sin nodos huérfanos en :3000.
 
     Args:
         directorio: Raíz del proyecto dashboard.
@@ -455,7 +476,17 @@ def _lanzar_dashboard(directorio: Path) -> subprocess.Popen[bytes] | None:
     if npm is None:
         return None
     modo = "start" if (directorio / ".next" / "BUILD_ID").is_file() else "dev"
-    proc = subprocess.Popen(f'"{npm}" run {modo}', cwd=directorio, shell=True)
+    if sys.platform == "win32":
+        proc = subprocess.Popen(
+            f'"{npm}" run {modo}',
+            cwd=directorio,
+            shell=True,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+    else:
+        proc = subprocess.Popen(
+            [npm, "run", modo], cwd=directorio, start_new_session=True
+        )
     atexit.register(_detener_dashboard, proc)
     return proc
 
@@ -502,7 +533,13 @@ def _cmd_serve(args: argparse.Namespace) -> int:
             )
     from src.main import main as servidor_main
 
-    servidor_main()
+    try:
+        servidor_main()
+    except KeyboardInterrupt:
+        # stdio/no-uvicorn: el interrupt llega limpio; uvicorn lo
+        # gestiona solo con shutdown graceful.
+        sys.stderr.write(ui.suave("\nNous detenido.\n"))
+        return 130
     return 0
 
 
