@@ -20,6 +20,7 @@ import {
   SunLight,
   Timer,
   Upload,
+  Community,
 } from "iconoir-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -37,6 +38,7 @@ const ENLACES = [
   { href: "/modelos", etiqueta: "Modelos", Icono: Cpu },
   { href: "/trazas", etiqueta: "Logs", Icono: Activity },
   { href: "/importar", etiqueta: "Importar", Icono: Upload },
+  { href: "/equipo", etiqueta: "Equipo", Icono: Community },
 ] as const;
 
 /** Estructura autenticada con navegación liquid glass. */
@@ -48,7 +50,8 @@ export function Shell({
   /** Sin contenedor max-w: el contenido ocupa todo el ancho. */
   fluid?: boolean;
 }) {
-  const { tema, alternarTema, token, cerrarSesion } = usarApp();
+  const { tema, alternarTema, token, cerrarSesion, yo, workspace, fijarWorkspace } =
+    usarApp();
   const pathname = usePathname();
   const router = useRouter();
   const [pantalla, setPantalla] = useState(false);
@@ -101,6 +104,28 @@ export function Shell({
             </Link>
           ))}
         </nav>
+        {yo && yo.workspaces.length > 0 && (
+          <select
+            aria-label="Workspace activo"
+            title={`Workspace · ${yo.workspace_activo.rol}`}
+            value={workspace ?? yo.workspace_activo.slug}
+            onChange={(e) =>
+              fijarWorkspace(
+                e.target.value === yo.workspace_activo.slug
+                  ? null
+                  : e.target.value,
+              )
+            }
+            className="vidrio max-w-36 rounded-xl px-2 py-1.5 text-xs outline-none"
+          >
+            {yo.workspaces.map((w) => (
+              <option key={w.id} value={w.slug}>
+                {w.slug}
+                {w.rol !== "owner" ? ` · ${w.rol}` : ""}
+              </option>
+            ))}
+          </select>
+        )}
         <button
           onClick={() => {
             if (document.fullscreenElement) {

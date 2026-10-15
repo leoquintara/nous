@@ -683,3 +683,219 @@ async def canjear_invitacion(
         )
         await session.commit()
         return usuario, key
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceConRol:
+    """Workspace del usuario con el rol que tiene en él."""
+
+    id: uuid.UUID
+    slug: str
+    nombre: str
+    rol: str
+
+
+async def listar_workspaces_con_rol(
+    engine: AsyncEngine, usuario_id: uuid.UUID | None
+) -> list[WorkspaceConRol]:
+    """Lista workspaces del usuario junto a su rol en cada uno.
+
+    ``usuario_id=None`` (modo desarrollo sin token) devuelve todos
+    los workspaces con rol owner.
+
+    Args:
+        engine: Engine async.
+        usuario_id: Usuario cuyas membresías se listan.
+
+    Returns:
+        Workspaces ordenados por fecha de creación.
+    """
+    async with get_session(engine) as session:
+        if usuario_id is None:
+            filas = (
+                await session.execute(
+                    select(WorkspaceModel).order_by(
+                        WorkspaceModel.creado_en
+                    )
+                )
+            ).scalars().all()
+            return [
+                WorkspaceConRol(
+                    id=w.id, slug=w.slug, nombre=w.nombre, rol="owner"
+                )
+                for w in filas
+            ]
+        filas2 = (
+            await session.execute(
+                select(WorkspaceModel, MiembroModel.rol)
+                .join(
+                    MiembroModel,
+                    MiembroModel.workspace_id == WorkspaceModel.id,
+                )
+                .where(MiembroModel.usuario_id == usuario_id)
+                .order_by(WorkspaceModel.creado_en)
+            )
+        ).all()
+        return [
+            WorkspaceConRol(
+                id=w.id, slug=w.slug, nombre=w.nombre, rol=rol
+            )
+            for w, rol in filas2
+        ]
+
+
+@dataclass(frozen=True, slots=True)
+class MiembroInfo:
+    """Fila de membresía enriquecida con datos del usuario."""
+
+    usuario_id: uuid.UUID
+    handle: str
+    nombre: str | None
+    rol: str
+
+
+async def listar_miembros(
+    engine: AsyncEngine, workspace_id: uuid.UUID
+) -> list[MiembroInfo]:
+    """Lista los miembros de un workspace con su handle y nombre.
+
+    Args:
+        engine: Engine async.
+        workspace_id: Workspace cuyo roster se lee.
+
+    Returns:
+        Miembros ordenados por fecha de alta.
+    """
+    async with get_session(engine) as session:
+        filas = (
+            await session.execute(
+                select(MiembroModel, UsuarioModel)
+                .join(
+                    UsuarioModel,
+                    UsuarioModel.id == MiembroModel.usuario_id,
+                )
+                .where(MiembroModel.workspace_id == workspace_id)
+                .order_by(MiembroModel.creado_en)
+            )
+        ).all()
+    return [
+        MiembroInfo(
+            usuario_id=u.id, handle=u.handle, nombre=u.nombre, rol=m.rol
+        )
+        for m, u in filas
+    ]
+
+
+async def _es_ultimo_owner(
+    engine: AsyncEngine, workspace_id: uuid.UUID, usuario_id: uuid.UUID
+) -> bool:
+    """True si quitar/degradar a este usuario deja el ws sin owner."""
+    async with get_session(engine) as session:
+        owners = (
+            await session.execute(
+                select(MiembroModel.usuario_id).where(
+                    MiembroModel.workspace_id == workspace_id,
+                    MiembroModel.rol == "owner",
+                )
+            )
+        ).scalars().all()
+    return list(owners) == [usuario_id]
+
+
+async def quitar_miembro(
+    engine: AsyncEngine, workspace_id: uuid.UUID, usuario_id: uuid.UUID
+) -> None:
+    """Quita un miembro del workspace (sus memorias quedan intactas).
+
+    Args:
+        engine: Engine async.
+        workspace_id: Workspace afectado.
+        usuario_id: Miembro a expulsar.
+
+    Raises:
+        ErrorValidacion: El usuario no es miembro, o es el último
+            owner (el workspace no puede quedar sin dueño).
+    """
+    async with get_session(engine) as session:
+        fila = (
+            await session.execute(
+                select(MiembroModel).where(
+                    MiembroModel.workspace_id == workspace_id,
+                    MiembroModel.usuario_id == usuario_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if fila is None:
+            raise ErrorValidacion("el usuario no es miembro")
+    if await _es_ultimo_owner(engine, workspace_id, usuario_id):
+        raise ErrorValidacion(
+            "no se puede quitar al único owner del workspace"
+        )
+    async with get_session(engine) as session:
+        fila = (
+            await session.execute(
+                select(MiembroModel).where(
+                    MiembroModel.workspace_id == workspace_id,
+                    MiembroModel.usuario_id == usuario_id,
+                )
+            )
+        ).scalar_one()
+        await session.delete(fila)
+        await session.commit()
+    _cache_ctx.clear()
+
+
+async def cambiar_rol(
+    engine: AsyncEngine,
+    workspace_id: uuid.UUID,
+    usuario_id: uuid.UUID,
+    rol: str,
+) -> None:
+    """Cambia el rol de un miembro (member|viewer; owner no asignable).
+
+    Args:
+        engine: Engine async.
+        workspace_id: Workspace afectado.
+        usuario_id: Miembro a modificar.
+        rol: Nuevo rol — ``member`` o ``viewer``.
+
+    Raises:
+        ErrorValidacion: Rol inválido, usuario no miembro o último
+            owner degradado.
+    """
+    if rol not in ("member", "viewer"):
+        raise ErrorValidacion(
+            f"rol no asignable: {rol!r} — solo member|viewer"
+        )
+    async with get_session(engine) as session:
+        fila = (
+            await session.execute(
+                select(MiembroModel).where(
+                    MiembroModel.workspace_id == workspace_id,
+                    MiembroModel.usuario_id == usuario_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if fila is None:
+            raise ErrorValidacion("el usuario no es miembro")
+        rol_actual = fila.rol
+    if rol_actual == rol:
+        return
+    if rol_actual == "owner" and await _es_ultimo_owner(
+        engine, workspace_id, usuario_id
+    ):
+        raise ErrorValidacion(
+            "no se puede degradar al único owner del workspace"
+        )
+    async with get_session(engine) as session:
+        fila = (
+            await session.execute(
+                select(MiembroModel).where(
+                    MiembroModel.workspace_id == workspace_id,
+                    MiembroModel.usuario_id == usuario_id,
+                )
+            )
+        ).scalar_one()
+        fila.rol = rol
+        await session.commit()
+    _cache_ctx.clear()

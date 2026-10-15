@@ -11,8 +11,11 @@ import type {
   EventoActividad,
   FuenteInfo,
   HistorialImportacion,
+  Identidad,
   Llamada,
   LlamadasStats,
+  Llave,
+  Miembro,
   NuevoProveedorIA,
   Objetivo,
   ParametrosImportacion,
@@ -23,8 +26,11 @@ import type {
   PruebaProveedor,
   Relacion,
   ResultadoBusqueda,
+  ResultadoCanje,
   ResultadoImportacion,
+  RolWorkspace,
   TagConteo,
+  Workspace,
 } from "@/domain/modelos";
 
 /** Petición de creación de evento. */
@@ -36,6 +42,8 @@ export interface NuevoEvento {
   frecuencia?: number | null;
   tags?: string[];
   rama?: string;
+  /** Visibilidad — por defecto personal (privada). */
+  scope?: "personal" | "workspace";
 }
 
 /** Petición de creación de fuente administrable. */
@@ -142,4 +150,37 @@ export interface PuertoAuth {
   login(usuario: string, password: string): Promise<string>;
   /** Verifica que un token Bearer es válido contra la API. */
   verificarToken(token: string): Promise<boolean>;
+}
+
+/** Puerto de identidad multi-tenant: workspaces, equipo y llaves. */
+export interface PuertoIdentidad {
+  /** Quién es el llamante y a qué workspaces pertenece. */
+  identidad(): Promise<Identidad>;
+  /** Crea un workspace; el llamante queda como owner. */
+  crearWorkspace(slug: string, nombre: string): Promise<Workspace>;
+  /** Roster del workspace (miembros con rol). */
+  listarMiembros(ref: string): Promise<Miembro[]>;
+  /** Cambia el rol de un miembro — solo owners. */
+  cambiarRol(ref: string, usuarioId: string, rol: RolWorkspace): Promise<void>;
+  /** Expulsa un miembro — solo owners; sus memorias permanecen. */
+  quitarMiembro(ref: string, usuarioId: string): Promise<void>;
+  /** Emite un token de invitación (una sola vez visible). */
+  invitar(ref: string, rol: "member" | "viewer", dias?: number): Promise<{ token: string }>;
+  /** Llaves del llamante (sin secretos). */
+  listarLlaves(): Promise<Llave[]>;
+  /** Emite una key propia — en claro una sola vez. */
+  crearLlave(nombre?: string, workspaceDefaultId?: string): Promise<{ key: string }>;
+  /** Revoca una key propia por UUID o prefijo. */
+  revocarLlave(ref: string): Promise<void>;
+}
+
+/** Puerto público del canje de invitación (sin Bearer). */
+export interface PuertoInvitacion {
+  /** Canjea un token ns_inv_* creando usuario + membresía + key. */
+  canjear(entrada: {
+    token: string;
+    handle: string;
+    nombre: string;
+    email?: string;
+  }): Promise<ResultadoCanje>;
 }

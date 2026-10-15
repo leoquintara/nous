@@ -39,6 +39,21 @@ function ChipDimension({ dimension }: { dimension: Evento["dimension"] }) {
   );
 }
 
+/** Chip de visibilidad — solo marca lo personal; workspace es el
+ *  caso "normal" en equipo y no necesita ruido visual. */
+function ChipScope({ scope }: { scope: Evento["scope"] }) {
+  if (scope !== "personal") return null;
+  return (
+    <span
+      className="rounded-full border px-2 py-0.5 text-[0.65rem] font-medium"
+      style={{ borderColor: "var(--linea)", color: "var(--texto-suave)" }}
+      title="Solo visible para ti"
+    >
+      personal
+    </span>
+  );
+}
+
 /** Página de consulta y memoria fresca. */
 export default function PaginaMemoria() {
   const { memoria } = usarApp();
@@ -144,7 +159,10 @@ export default function PaginaMemoria() {
                 className="vidrio p-4"
               >
                 <div className="mb-1 flex items-center justify-between gap-3 text-xs">
-                  <ChipDimension dimension={r.evento.dimension} />
+                  <span className="flex items-center gap-1.5">
+                    <ChipDimension dimension={r.evento.dimension} />
+                    <ChipScope scope={r.evento.scope} />
+                  </span>
                   <span className="texto-suave">
                     score {r.score_final.toFixed(3)} ·{" "}
                     {new Date(r.evento.timestamp_unix * 1000).toLocaleString("es")}
@@ -224,6 +242,7 @@ export default function PaginaMemoria() {
                     <p className="text-sm">{ev.contenido}</p>
                     <p className="texto-suave mt-1 flex flex-wrap items-center gap-2 text-[0.65rem]">
                       <ChipDimension dimension={ev.dimension} />
+                      <ChipScope scope={ev.scope} />
                       <span>
                         {new Date(ev.timestamp_unix * 1000).toLocaleString("es")}
                       </span>

@@ -185,13 +185,15 @@ class BearerTokenMiddleware:
         if scope["type"] != "http":
             await self._app(scope, receive, send)
             return
-        # Sondas de vida, el login del dashboard y los preflight CORS
-        # son públicos por diseño.
+        # Sondas de vida, el login del dashboard, el canje de
+        # invitaciones (el token ns_inv_ es la credencial) y los
+        # preflight CORS son públicos por diseño.
         path = scope.get("path", "")
         if scope.get("method") == "OPTIONS" or path in (
             "/health",
             "/api/health",
             "/api/login",
+            "/api/invitaciones/canjear",
         ):
             await self._app(scope, receive, send)
             return

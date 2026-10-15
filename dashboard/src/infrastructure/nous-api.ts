@@ -7,6 +7,8 @@
 
 import type {
   PuertoAuth,
+  PuertoIdentidad,
+  PuertoInvitacion,
   PuertoMemoria,
 } from "@/application/puertos";
 import {
@@ -21,8 +23,11 @@ import type {
   EventoActividad,
   FuenteInfo,
   HistorialImportacion,
+  Identidad,
   Llamada,
   LlamadasStats,
+  Llave,
+  Miembro,
   NuevoProveedorIA,
   Objetivo,
   ParametrosImportacion,
@@ -33,19 +38,30 @@ import type {
   PruebaProveedor,
   Relacion,
   ResultadoBusqueda,
+  ResultadoCanje,
   ResultadoImportacion,
+  RolWorkspace,
   TagConteo,
+  Workspace,
 } from "@/domain/modelos";
 
 const BASE_URL = process.env.NEXT_PUBLIC_NOUS_API ?? "http://127.0.0.1:8720";
+
+/** Añade el override de workspace a una ruta con o sin query. */
+function conWorkspace(ruta: string, workspace?: string | null): string {
+  if (!workspace) return ruta;
+  const sep = ruta.includes("?") ? "&" : "?";
+  return `${ruta}${sep}workspace=${encodeURIComponent(workspace)}`;
+}
 
 /** Ejecuta una petición autenticada y devuelve el JSON o lanza. */
 async function peticion<T>(
   ruta: string,
   token: string,
   init?: RequestInit,
+  workspace?: string | null,
 ): Promise<T> {
-  const res = await fetch(`${BASE_URL}${ruta}`, {
+  const res = await fetch(`${BASE_URL}${conWorkspace(ruta, workspace)}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${token}`,
@@ -60,84 +76,85 @@ async function peticion<T>(
   return (await res.json()) as T;
 }
 
-/** Crea el adaptador de memoria ligado a un token concreto. */
-export function crearClienteNous(token: string): PuertoMemoria {
+/** Crea el adaptador de memoria ligado a un token y workspace. */
+export function crearClienteNous(
+  token: string,
+  workspace?: string | null,
+): PuertoMemoria {
+  /** Peticion ligada al token y al workspace activo. */
+  const req = <T,>(ruta: string, init?: RequestInit): Promise<T> =>
+    peticion<T>(ruta, token, init, workspace);
   return {
     listarEventos: (desde, hasta, limite = 500, rama) =>
-      peticion<Evento[]>(
+      req<Evento[]>(
         `/api/eventos?desde_unix=${desde}&hasta_unix=${hasta}&limite=${limite}` +
           (rama ? `&rama=${encodeURIComponent(rama)}` : "") +
           "&repartir=true",
-        token,
       ),
     listarRelaciones: (limite = 2000) =>
-      peticion<Relacion[]>(`/api/relaciones?limite=${limite}`, token),
+      req<Relacion[]>(`/api/relaciones?limite=${limite}`),
     listarTags: (limite = 200) =>
-      peticion<TagConteo[]>(`/api/tags?limite=${limite}`, token),
-    listarFuentes: () => peticion<FuenteInfo[]>(`/api/fuentes`, token),
+      req<TagConteo[]>(`/api/tags?limite=${limite}`),
+    listarFuentes: () => req<FuenteInfo[]>(`/api/fuentes`),
     crearFuente: (fuente: NuevaFuente) =>
-      peticion<FuenteInfo>(`/api/fuentes`, token, {
+      req<FuenteInfo>(`/api/fuentes`, {
         method: "POST",
         body: JSON.stringify(fuente),
       }),
     estadoFuente: async (nombre, estado) => {
-      await peticion<{ nombre: string }>(
+      await req<{ nombre: string }>(
         `/api/fuentes/${encodeURIComponent(nombre)}`,
-        token,
         { method: "PATCH", body: JSON.stringify({ estado }) },
       );
     },
     eliminarFuente: async (nombre) => {
-      await peticion<{ nombre: string }>(
+      await req<{ nombre: string }>(
         `/api/fuentes/${encodeURIComponent(nombre)}`,
-        token,
         { method: "DELETE" },
       );
     },
     ramificarFuente: (nombre, rama, namespace = "") =>
-      peticion<FuenteInfo>(
+      req<FuenteInfo>(
         `/api/fuentes/${encodeURIComponent(nombre)}/ramificar`,
-        token,
         { method: "POST", body: JSON.stringify({ rama, namespace }) },
       ),
     buscar: (consulta, topN = 10) =>
-      peticion<ResultadoBusqueda[]>(
+      req<ResultadoBusqueda[]>(
         `/api/buscar?q=${encodeURIComponent(consulta)}&top_n=${topN}`,
-        token,
       ),
     registrarEvento: (evento: NuevoEvento) =>
-      peticion(`/api/eventos`, token, {
+      req(`/api/eventos`, {
         method: "POST",
-        body: JSON.stringify({ fuente: "dashboard", ...evento }),
+        body: JSON.stringify({
+          fuente: "dashboard",
+          ...evento,
+          workspace,
+        }),
       }),
     proyectar: (horizonte, historial) =>
-      peticion<Proyeccion>(
+      req<Proyeccion>(
         `/api/proyeccion?horizonte_dias=${horizonte}&dias_historial=${historial}`,
-        token,
         { method: "POST" },
       ),
     proyeccionActual: () =>
-      peticion<Proyeccion>(`/api/proyeccion/actual`, token),
+      req<Proyeccion>(`/api/proyeccion/actual`),
     listarObjetivos: (estado = "activo", rama = "main") =>
-      peticion<Objetivo[]>(
+      req<Objetivo[]>(
         `/api/objetivos?estado=${encodeURIComponent(estado)}&rama=${encodeURIComponent(rama)}`,
-        token,
       ),
     crearObjetivo: (objetivo: NuevoObjetivo) =>
-      peticion<Objetivo>(`/api/objetivos`, token, {
+      req<Objetivo>(`/api/objetivos`, {
         method: "POST",
-        body: JSON.stringify(objetivo),
+        body: JSON.stringify({ ...objetivo, workspace }),
       }),
     actualizarObjetivo: (id, parche: ParcheObjetivo) =>
-      peticion<Objetivo>(
+      req<Objetivo>(
         `/api/objetivos/${encodeURIComponent(id)}`,
-        token,
         { method: "PATCH", body: JSON.stringify(parche) },
       ),
     cerrarObjetivo: (id, estado, resolucion) =>
-      peticion<Objetivo>(
+      req<Objetivo>(
         `/api/objetivos/${encodeURIComponent(id)}/cerrar`,
-        token,
         {
           method: "POST",
           body: JSON.stringify({ estado, resolucion }),
@@ -146,70 +163,63 @@ export function crearClienteNous(token: string): PuertoMemoria {
     benchmarks: (nombre, limite = 50) => {
       const params = new URLSearchParams({ limite: String(limite) });
       if (nombre) params.set("nombre", nombre);
-      return peticion<BenchmarkRun[]>(`/api/benchmarks?${params}`, token);
+      return req<BenchmarkRun[]>(`/api/benchmarks?${params}`);
     },
     actividad: (limite = 50) =>
-      peticion<EventoActividad[]>(
+      req<EventoActividad[]>(
         `/api/actividad?limite=${limite}`,
-        token,
       ),
     leerPreferencias: (clave) =>
-      peticion<Preferencias>(
+      req<Preferencias>(
         `/api/preferencias/${encodeURIComponent(clave)}`,
-        token,
       ),
     guardarPreferencias: async (clave, valor) => {
-      await peticion<{ guardado: boolean }>(
+      await req<{ guardado: boolean }>(
         `/api/preferencias/${encodeURIComponent(clave)}`,
-        token,
         { method: "PUT", body: JSON.stringify(valor) },
       );
     },
     listarProveedoresIA: () =>
-      peticion<ProveedorIA[]>(`/api/ia/proveedores`, token),
+      req<ProveedorIA[]>(`/api/ia/proveedores`),
     guardarProveedorIA: (id, datos: NuevoProveedorIA) =>
-      peticion<ProveedorIA>(
+      req<ProveedorIA>(
         `/api/ia/proveedores/${encodeURIComponent(id)}`,
-        token,
         { method: "PUT", body: JSON.stringify(datos) },
       ),
     eliminarProveedorIA: async (id) => {
-      await peticion<{ eliminado: boolean }>(
+      await req<{ eliminado: boolean }>(
         `/api/ia/proveedores/${encodeURIComponent(id)}`,
-        token,
         { method: "DELETE" },
       );
     },
     probarProveedorIA: (id) =>
-      peticion<PruebaProveedor>(
+      req<PruebaProveedor>(
         `/api/ia/proveedores/${encodeURIComponent(id)}/probar`,
-        token,
         { method: "POST" },
       ),
     predecirIA: (entrada) =>
-      peticion<PrediccionIA>(`/api/ia/predecir`, token, {
+      req<PrediccionIA>(`/api/ia/predecir`, {
         method: "POST",
         body: JSON.stringify(entrada),
       }),
     listarLlamadas: (limite = 200, ruta) =>
-      peticion<Llamada[]>(
+      req<Llamada[]>(
         `/api/llamadas?limite=${limite}` +
           (ruta ? `&ruta=${encodeURIComponent(ruta)}` : ""),
-        token,
       ),
     statsLlamadas: () =>
-      peticion<LlamadasStats>(`/api/llamadas/stats`, token),
+      req<LlamadasStats>(`/api/llamadas/stats`),
     ping: () =>
-      peticion<{ status: string; ts: number }>(`/api/ping`, token, {
+      req<{ status: string; ts: number }>(`/api/ping`, {
         method: "POST",
       }),
     importarMemoria: (params) =>
-      peticion<ResultadoImportacion>(`/api/importar`, token, {
+      req<ResultadoImportacion>(`/api/importar`, {
         method: "POST",
         body: JSON.stringify(params),
       }),
     historialImportaciones: () =>
-      peticion<HistorialImportacion[]>(`/api/importar/historial`, token),
+      req<HistorialImportacion[]>(`/api/importar/historial`),
   };
 }
 
@@ -230,6 +240,70 @@ export function crearAuth(): PuertoAuth {
         headers: { Authorization: `Bearer ${token}` },
       });
       return res.ok;
+    },
+  };
+}
+
+/** Crea el adaptador de identidad multi-tenant. */
+export function crearClienteIdentidad(token: string): PuertoIdentidad {
+  const req = <T,>(ruta: string, init?: RequestInit): Promise<T> =>
+    peticion<T>(ruta, token, init);
+  return {
+    identidad: () => req<Identidad>(`/api/identidad`),
+    crearWorkspace: (slug, nombre) =>
+      req<Workspace>(`/api/workspaces`, {
+        method: "POST",
+        body: JSON.stringify({ slug, nombre }),
+      }),
+    listarMiembros: (ref) =>
+      req<Miembro[]>(`/api/workspaces/${encodeURIComponent(ref)}/miembros`),
+    cambiarRol: async (ref, usuarioId, rol: RolWorkspace) => {
+      await req<unknown>(
+        `/api/workspaces/${encodeURIComponent(ref)}/miembros/${encodeURIComponent(usuarioId)}`,
+        { method: "PATCH", body: JSON.stringify({ rol }) },
+      );
+    },
+    quitarMiembro: async (ref, usuarioId) => {
+      await req<unknown>(
+        `/api/workspaces/${encodeURIComponent(ref)}/miembros/${encodeURIComponent(usuarioId)}`,
+        { method: "DELETE" },
+      );
+    },
+    invitar: (ref, rol, dias = 7) =>
+      req<{ token: string }>(
+        `/api/workspaces/${encodeURIComponent(ref)}/invitaciones`,
+        { method: "POST", body: JSON.stringify({ rol, dias }) },
+      ),
+    listarLlaves: () => req<Llave[]>(`/api/llaves`),
+    crearLlave: (nombre, workspaceDefaultId) =>
+      req<{ key: string }>(`/api/llaves`, {
+        method: "POST",
+        body: JSON.stringify({
+          nombre: nombre ?? null,
+          workspace_default_id: workspaceDefaultId ?? null,
+        }),
+      }),
+    revocarLlave: async (ref) => {
+      await req<unknown>(`/api/llaves/${encodeURIComponent(ref)}`, {
+        method: "DELETE",
+      });
+    },
+  };
+}
+
+/** Canje público de invitación — sin Bearer; el token es la prueba. */
+export function crearClienteInvitacion(): PuertoInvitacion {
+  return {
+    canjear: async (entrada) => {
+      const res = await fetch(`${BASE_URL}/api/invitaciones/canjear`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(entrada),
+      });
+      if (!res.ok) {
+        throw new Error(`Canje ${res.status}: ${await res.text()}`);
+      }
+      return (await res.json()) as ResultadoCanje;
     },
   };
 }

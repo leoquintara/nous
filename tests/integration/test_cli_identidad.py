@@ -23,7 +23,6 @@ from src.core.identidad import (
     crear_workspace,
     emitir_key_usuario,
     listar_keys,
-    listar_usuarios,
     listar_workspaces,
     resolver_contexto,
     revocar_key_usuario,
@@ -227,7 +226,7 @@ class TestKeys:
     ) -> None:
         u = await crear_usuario(engine, "cli-key2", "Key Dos")
         try:
-            key = await emitir_key_usuario(engine, u.id)
+            await emitir_key_usuario(engine, u.id)
             filas = await listar_keys(engine, u.id)
             assert len(filas) == 1
             assert await revocar_key_usuario(engine, str(filas[0].id))

@@ -37,6 +37,9 @@ function evento(parcial: Partial<Evento> = {}): Evento {
     expira_en: parcial.expira_en ?? null,
     reemplazado_por: parcial.reemplazado_por ?? null,
     con_quien: parcial.con_quien ?? null,
+    scope: parcial.scope ?? "personal",
+    workspace_id: parcial.workspace_id ?? null,
+    autor_id: parcial.autor_id ?? null,
   };
 }
 

@@ -30,6 +30,12 @@ export interface Evento {
   reemplazado_por: string | null;
   /** Contraparte del compromiso (solo tipo="compromiso"). */
   con_quien: string | null;
+  /** Visibilidad: personal = solo el autor; workspace = el equipo. */
+  scope: "personal" | "workspace";
+  /** Workspace dueño del evento (null en datos previos al tenant). */
+  workspace_id: string | null;
+  /** Autor del evento (null en datos previos al tenant). */
+  autor_id: string | null;
 }
 
 /** Tag agregado con su frecuencia de uso. */
@@ -279,4 +285,57 @@ export interface CandidatoPredictivo {
   nombre: string;
   probabilidad: number;
   descripcion: string;
+}
+
+/* ── Identidad multi-tenant ─────────────────────────────── */
+
+/** Rol de un usuario dentro de un workspace. */
+export type RolWorkspace = "owner" | "member" | "viewer";
+
+/** Workspace con el rol del llamante en él. */
+export interface Workspace {
+  id: string;
+  slug: string;
+  nombre: string;
+  rol: RolWorkspace;
+}
+
+/** Datos públicos del usuario autenticado. */
+export interface Usuario {
+  id: string;
+  handle: string;
+  nombre: string | null;
+  email: string | null;
+}
+
+/** Respuesta de /identidad: quién soy y a qué pertenezco. */
+export interface Identidad {
+  usuario: Usuario | null;
+  workspace_activo: Workspace;
+  workspaces: Workspace[];
+}
+
+/** Miembro del roster de un workspace. */
+export interface Miembro {
+  usuario_id: string;
+  handle: string;
+  nombre: string | null;
+  rol: RolWorkspace;
+}
+
+/** Metadata de una API key (nunca el secreto ni el hash). */
+export interface Llave {
+  id: string;
+  prefijo: string;
+  nombre: string | null;
+  workspace_default_id: string | null;
+  revocada: boolean;
+  ultimo_uso: string | null;
+  creado_en: string;
+}
+
+/** Resultado del canje de invitación: la key nueva en claro. */
+export interface ResultadoCanje {
+  handle: string;
+  key: string;
 }

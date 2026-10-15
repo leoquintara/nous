@@ -515,6 +515,7 @@ export default function PaginaUniverso() {
             <p className="mt-2 text-sm leading-snug">{sel.contenido}</p>
             <p className="texto-suave mt-2 text-[0.65rem]">
               {fechaCorta(sel.timestamp_unix)} · {sel.fuente} · rama {sel.rama}
+              {sel.scope === "personal" && " · personal"}
             </p>
             {sel.tags.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1">

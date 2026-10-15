@@ -297,3 +297,103 @@ class HistorialImportacion(BaseModel):
     fuente: str
     ruta: str
     resultado: dict[str, Any]
+
+
+# ── Identidad multi-tenant ──────────────────────────────────────
+
+
+class UsuarioResumen(BaseModel):
+    """Datos públicos de un usuario."""
+
+    id: str
+    handle: str
+    nombre: str | None = None
+    email: str | None = None
+
+
+class WorkspaceResumen(BaseModel):
+    """Workspace con el rol del llamante en él."""
+
+    id: str
+    slug: str
+    nombre: str
+    rol: str
+
+
+class IdentidadResponse(BaseModel):
+    """Quién es el llamante y a qué workspaces pertenece."""
+
+    usuario: UsuarioResumen | None
+    workspace_activo: WorkspaceResumen
+    workspaces: list[WorkspaceResumen]
+
+
+class WorkspaceRequest(BaseModel):
+    """Cuerpo para crear un workspace nuevo."""
+
+    slug: str = Field(min_length=1, max_length=64)
+    nombre: str = Field(min_length=1, max_length=200)
+
+
+class MiembroResumen(BaseModel):
+    """Miembro de un workspace con su rol."""
+
+    usuario_id: str
+    handle: str
+    nombre: str | None
+    rol: str
+
+
+class MiembroPatch(BaseModel):
+    """Cambio de rol de un miembro (owner no asignable)."""
+
+    rol: Literal["member", "viewer"]
+
+
+class InvitacionRequest(BaseModel):
+    """Cuerpo para emitir una invitación canjeable."""
+
+    rol: Literal["member", "viewer"] = "member"
+    dias: int = Field(default=7, ge=1, le=30)
+
+
+class InvitacionResponse(BaseModel):
+    """Token de invitación en claro — se muestra una sola vez."""
+
+    token: str
+    expira_dias: int
+
+
+class CanjearRequest(BaseModel):
+    """Canje de invitación: crea el usuario del invitado."""
+
+    token: str = Field(min_length=8, max_length=128)
+    handle: str = Field(min_length=1, max_length=64)
+    nombre: str = Field(min_length=1, max_length=200)
+    email: str | None = Field(default=None, max_length=320)
+
+
+class CanjearResponse(BaseModel):
+    """Resultado del canje: key del nuevo usuario en claro."""
+
+    handle: str
+    key: str
+
+
+class LlaveRequest(BaseModel):
+    """Cuerpo para emitir una key propia nueva."""
+
+    nombre: str | None = Field(default=None, max_length=80)
+    workspace_default_id: str | None = Field(default=None)
+
+
+class LlaveResponse(BaseModel):
+    """Metadata de una key (nunca el hash ni el secreto)."""
+
+    id: str
+    prefijo: str
+    nombre: str | None
+    workspace_default_id: str | None
+    revocada: bool
+    ultimo_uso: datetime | None
+    creado_en: datetime

@@ -3,6 +3,7 @@
 import hmac
 import re
 import time
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -11,6 +12,8 @@ from src.api.auth import requerir_escritura, verificar_token
 from src.api.rate_limit import LimitadorIntentos
 from src.api.schemas import (
     BenchmarkResponse,
+    CanjearRequest,
+    CanjearResponse,
     CerrarLoopRequest,
     CerrarObjetivoRequest,
     EventoRequest,
@@ -20,14 +23,21 @@ from src.api.schemas import (
     FuenteResponse,
     HealthResponse,
     HistorialImportacion,
+    IdentidadResponse,
     ImportarRequest,
     ImportarResponse,
+    InvitacionRequest,
+    InvitacionResponse,
     LlamadaOrigenStats,
     LlamadaResponse,
     LlamadaRutaStats,
     LlamadasStatsResponse,
+    LlaveRequest,
+    LlaveResponse,
     LoginRequest,
     LoginResponse,
+    MiembroPatch,
+    MiembroResumen,
     ObjetivoPatch,
     ObjetivoRequest,
     PingsStats,
@@ -36,10 +46,14 @@ from src.api.schemas import (
     RamificarRequest,
     RelacionResponse,
     TagResponse,
+    UsuarioResumen,
+    WorkspaceRequest,
+    WorkspaceResumen,
 )
 from src.cli.transferencia import importar as importar_memoria
 from src.config import get_settings
 from src.core import ia
+from src.core import identidad as idn
 from src.core.identidad import contexto_actual
 from src.mcp import tools as tools_impl
 from src.storage.database import get_session, obtener_engine
@@ -848,3 +862,290 @@ async def historial_importaciones() -> list[HistorialImportacion]:
         )
     items = valor["items"] if isinstance(valor, dict) else []
     return [HistorialImportacion(**i) for i in items]
+
+
+# ── Identidad multi-tenant ──────────────────────────────────────
+
+
+def _ws_resumen(w: idn.WorkspaceConRol) -> WorkspaceResumen:
+    """Traduce el dataclass de dominio al schema REST."""
+    return WorkspaceResumen(
+        id=str(w.id), slug=w.slug, nombre=w.nombre, rol=w.rol
+    )
+
+
+async def _ctx_owner_en(ref: str) -> tuple[idn.Contexto, idn.Contexto]:
+    """Resuelve el contexto actual y exige rol owner en ``ref``.
+
+    Returns:
+        (contexto actual, contexto en el workspace destino).
+
+    Raises:
+        PermisoDenegadoError: Sin membresía o rol inferior a owner.
+        ErrorValidacion: Workspace inexistente.
+    """
+    from src.core.exceptions import PermisoDenegadoError
+
+    engine = obtener_engine()
+    ctx = await contexto_actual(engine)
+    ctx_ws = await idn.resolver_workspace(engine, ctx, ref)
+    if ctx_ws.rol != "owner":
+        raise PermisoDenegadoError(
+            "se requiere rol owner en el workspace"
+        )
+    return ctx, ctx_ws
+
+
+@router.get("/identidad", dependencies=[Depends(verificar_token)])
+async def identidad_actual() -> IdentidadResponse:
+    """Quién es el llamante y a qué workspaces pertenece."""
+    engine = obtener_engine()
+    ctx = await contexto_actual(engine)
+    workspaces = await idn.listar_workspaces_con_rol(
+        engine, ctx.usuario_id
+    )
+    activo = next(
+        (w for w in workspaces if w.id == ctx.workspace_id), None
+    )
+    if activo is None:
+        activo = idn.WorkspaceConRol(
+            id=ctx.workspace_id, slug="", nombre="", rol=ctx.rol
+        )
+    usuario: UsuarioResumen | None = None
+    if ctx.usuario_id is not None:
+        from sqlalchemy import select as _sel
+
+        from src.storage.models import UsuarioModel
+
+        async with get_session(engine) as session:
+            u = (
+                await session.execute(
+                    _sel(UsuarioModel).where(
+                        UsuarioModel.id == ctx.usuario_id
+                    )
+                )
+            ).scalar_one_or_none()
+        if u is not None:
+            usuario = UsuarioResumen(
+                id=str(u.id),
+                handle=u.handle,
+                nombre=u.nombre,
+                email=u.email,
+            )
+    return IdentidadResponse(
+        usuario=usuario,
+        workspace_activo=_ws_resumen(activo),
+        workspaces=[_ws_resumen(w) for w in workspaces],
+    )
+
+
+@router.post(
+    "/workspaces",
+    dependencies=[Depends(requerir_escritura)],
+    status_code=201,
+)
+async def crear_ws(peticion: WorkspaceRequest) -> WorkspaceResumen:
+    """Crea un workspace; el llamante queda como owner."""
+    engine = obtener_engine()
+    ctx = await contexto_actual(engine)
+    owner_id = ctx.usuario_id or idn.USUARIO_OWNER_ID
+    ws = await idn.crear_workspace(
+        engine, peticion.slug, peticion.nombre, owner_id
+    )
+    return WorkspaceResumen(
+        id=str(ws.id), slug=ws.slug, nombre=ws.nombre, rol="owner"
+    )
+
+
+@router.get(
+    "/workspaces/{ref}/miembros",
+    dependencies=[Depends(verificar_token)],
+)
+async def listar_miembros(ref: str) -> list[MiembroResumen]:
+    """Roster del workspace — cualquier miembro lo puede leer."""
+    engine = obtener_engine()
+    ctx = await contexto_actual(engine)
+    ctx_ws = await idn.resolver_workspace(engine, ctx, ref)
+    return [
+        MiembroResumen(
+            usuario_id=str(m.usuario_id),
+            handle=m.handle,
+            nombre=m.nombre,
+            rol=m.rol,
+        )
+        for m in await idn.listar_miembros(engine, ctx_ws.workspace_id)
+    ]
+
+
+@router.patch(
+    "/workspaces/{ref}/miembros/{uid}",
+    dependencies=[Depends(requerir_escritura)],
+    status_code=204,
+)
+async def cambiar_rol_miembro(ref: str, uid: str, patch: MiembroPatch) -> None:
+    """Cambia el rol de un miembro — solo owners."""
+    _ctx, ctx_ws = await _ctx_owner_en(ref)
+    await idn.cambiar_rol(
+        obtener_engine(), ctx_ws.workspace_id, _uuid(uid), patch.rol
+    )
+
+
+@router.delete(
+    "/workspaces/{ref}/miembros/{uid}",
+    dependencies=[Depends(requerir_escritura)],
+    status_code=204,
+)
+async def quitar_miembro_endpoint(ref: str, uid: str) -> None:
+    """Expulsa un miembro — solo owners; sus memorias permanecen."""
+    _ctx, ctx_ws = await _ctx_owner_en(ref)
+    await idn.quitar_miembro(
+        obtener_engine(), ctx_ws.workspace_id, _uuid(uid)
+    )
+
+
+def _uuid(ref: str) -> uuid.UUID:
+    """Parsea un UUID de path o lanza 422."""
+    try:
+        return uuid.UUID(ref)
+    except ValueError:
+        raise HTTPException(422, f"UUID inválido: {ref!r}") from None
+
+
+@router.post(
+    "/workspaces/{ref}/invitaciones",
+    dependencies=[Depends(requerir_escritura)],
+    status_code=201,
+)
+async def crear_invitacion_ws(
+    ref: str, peticion: InvitacionRequest
+) -> InvitacionResponse:
+    """Emite un token de invitación — solo owners; se ve una vez."""
+    ctx, ctx_ws = await _ctx_owner_en(ref)
+    token = await idn.crear_invitacion(
+        obtener_engine(),
+        ctx_ws.workspace_id,
+        peticion.rol,
+        dias=peticion.dias,
+        creada_por=ctx.usuario_id,
+    )
+    return InvitacionResponse(token=token, expira_dias=peticion.dias)
+
+
+_limitador_canje = LimitadorIntentos(max_intentos=5, ventana_segundos=60)
+
+
+@router.post("/invitaciones/canjear", status_code=201)
+async def canjear(peticion: CanjearRequest, request: Request) -> CanjearResponse:
+    """Canje público de invitación — sin Bearer: el token es la prueba.
+
+    Rate-limited por IP como /login. Devuelve la key del usuario
+    nuevo una sola vez.
+    """
+    ip = request.client.host if request.client else "desconocida"
+    if not _limitador_canje.permite(ip):
+        raise HTTPException(
+            status_code=429,
+            detail="Demasiados intentos; espera un minuto",
+        )
+    usuario, key = await idn.canjear_invitacion(
+        obtener_engine(),
+        peticion.token,
+        peticion.handle,
+        peticion.nombre,
+        email=peticion.email,
+    )
+    return CanjearResponse(handle=usuario.handle, key=key)
+
+
+def _llave_resumen(k: object) -> LlaveResponse:
+    """Traduce ApiKeyModel al schema (sin exponer el hash)."""
+    from src.storage.models import ApiKeyModel
+
+    assert isinstance(k, ApiKeyModel)
+    return LlaveResponse(
+        id=str(k.id),
+        prefijo=k.prefijo,
+        nombre=k.nombre or None,
+        workspace_default_id=(
+            str(k.workspace_default_id)
+            if k.workspace_default_id is not None
+            else None
+        ),
+        revocada=k.revocada,
+        ultimo_uso=k.ultimo_uso,
+        creado_en=k.creado_en,
+    )
+
+
+@router.get("/llaves", dependencies=[Depends(verificar_token)])
+async def listar_llaves() -> list[LlaveResponse]:
+    """Keys de API del llamante (nunca el hash ni el secreto)."""
+    engine = obtener_engine()
+    ctx = await contexto_actual(engine)
+    return [
+        _llave_resumen(k)
+        for k in await idn.listar_keys(engine, ctx.usuario_id)
+    ]
+
+
+@router.post(
+    "/llaves",
+    dependencies=[Depends(requerir_escritura)],
+    status_code=201,
+)
+async def crear_llave(peticion: LlaveRequest) -> dict[str, str]:
+    """Emite una key nueva para el llamante — en claro una vez."""
+    engine = obtener_engine()
+    ctx = await contexto_actual(engine)
+    if ctx.usuario_id is None:
+        raise HTTPException(
+            422, "sin identidad de usuario (modo desarrollo)"
+        )
+    ws_default = (
+        _uuid(peticion.workspace_default_id)
+        if peticion.workspace_default_id
+        else ctx.workspace_id
+    )
+    if peticion.workspace_default_id is not None:
+        await idn.resolver_workspace(
+            engine, ctx, peticion.workspace_default_id
+        )
+    key = await idn.emitir_key_usuario(
+        engine, ctx.usuario_id, ws_default, peticion.nombre
+    )
+    return {"key": key}
+
+
+@router.delete(
+    "/llaves/{ref}",
+    dependencies=[Depends(verificar_token)],
+    status_code=204,
+)
+async def revocar_llave(ref: str) -> None:
+    """Revoca una key — solo si pertenece al llamante."""
+    from sqlalchemy import select as _sel
+
+    from src.storage.models import ApiKeyModel
+
+    engine = obtener_engine()
+    ctx = await contexto_actual(engine)
+    if ctx.usuario_id is None:
+        raise HTTPException(
+            422, "sin identidad de usuario (modo desarrollo)"
+        )
+    async with get_session(engine) as session:
+        try:
+            key_id = _uuid(ref)
+            cond = ApiKeyModel.id == key_id
+        except HTTPException:
+            cond = ApiKeyModel.prefijo == ref
+        fila = (
+            await session.execute(
+                _sel(ApiKeyModel.id).where(
+                    cond, ApiKeyModel.usuario_id == ctx.usuario_id
+                )
+            )
+        ).scalar_one_or_none()
+    if fila is None:
+        raise HTTPException(404, "key no encontrada")
+    await idn.revocar_key_usuario(engine, ref)

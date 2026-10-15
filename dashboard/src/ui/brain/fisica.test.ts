@@ -117,12 +117,14 @@ describe("integración con eventosAGrafo", () => {
         contenido: "x", amplitud: 0.5, frecuencia: null, refuerzos: 0,
         tags: [], rama: "main", tipo: "evento", expira_en: null,
         reemplazado_por: null, con_quien: null,
+        scope: "personal", workspace_id: null, autor_id: null,
       },
       {
         id: "b", timestamp_unix: 2, dimension: "somatica", fuente: "t",
         contenido: "y", amplitud: 0.5, frecuencia: null, refuerzos: 0,
         tags: [], rama: "main", tipo: "evento", expira_en: null,
         reemplazado_por: null, con_quien: null,
+        scope: "personal", workspace_id: null, autor_id: null,
       },
     ]);
     const vel = g.pts.map(() => ({ x: 0, y: 0, z: 0 }));
