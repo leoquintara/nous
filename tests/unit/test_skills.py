@@ -54,6 +54,24 @@ def test_skill_universo_documenta_objetivos_y_loops(tmp_path: Path) -> None:
         assert tool in texto
 
 
+def test_skills_somaticos_cubren_ritual_y_mapa(tmp_path: Path) -> None:
+    """checkin/mirror/somatic documentan dimensiones y señales."""
+    skills.instalar(".agents", tmp_path)
+    checkin = (
+        tmp_path / ".agents" / "skills" / "nous-checkin" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    somatica = (
+        tmp_path / ".agents" / "skills" / "nous-somatic" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    mirror = (
+        tmp_path / ".agents" / "agents" / "nous-mirror.md"
+    ).read_text(encoding="utf-8")
+    assert "somatica" in checkin and "amplitud" in checkin
+    for patron in ("absolutismos", "Frustración", "Flow", "conductual"):
+        assert patron in somatica
+    assert "diagnosticar" in mirror or "clínicas" in mirror
+
+
 def test_cmd_skills_list_retorna_cero(
     tmp_path: Path, capsys
 ) -> None:

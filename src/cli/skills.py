@@ -216,7 +216,117 @@ un objetivo — si no es obvia, déjala transversal (None).
   ambas se quedan en "main".
 """
 
-_SKILL_PREFERENCIAS = """---
+_SKILL_CHECKIN = """---
+name: nous-checkin
+description: Check-in emocional tras un hito de trabajo. Usar tras
+  una tanda grande de desarrollo, una ronda de ajustes, una
+  conversación densa o al cerrar una sesión — pregunta cómo se
+  sintió el usuario y registra su estado en la dimensión somática.
+---
+
+# Check-in somático
+
+Las tres dimensiones de Nous solo se alimentan si alguien las
+escribe — y la somática casi nunca la escribe nadie. Esta skill es
+el ritual que la llena: tras un hito, preguntar, escuchar, persistir.
+
+## Cuándo disparar
+
+- Tras una tanda grande: varios commits, una feature cerrada, un bug
+  largo resuelto.
+- Tras una ronda de ajustes o decisiones densas (varios cambios de
+  rumbo).
+- Al cerrar una sesión larga — el estado final es memoria valiosa.
+
+Nunca dos veces seguidas: si ya hubo check-in en esta sesión, salta
+salvo que el usuario inicie la conversación emocional él mismo.
+
+## El ritual
+
+1. **Una pregunta abierta, breve y opcional**: "¿cómo te sentiste
+   con esta tanda?" o "¿cómo va la energía?". Nunca un cuestionario.
+   Si el usuario no responde o despacha rápido, no insistir — su
+   silencio también es una respuesta (no registrar nada).
+2. **Escuchar la respuesta** y cruzarla con las señales de
+   `nous-somatic`: léxico, absolutismos, puntuación, densidad
+   negativa.
+3. **Persistir**: `recordar_evento` con `dimension="somatica"`,
+   `amplitud` proporcional a la intensidad expresada (frustración
+   leve 0.4–0.5, agotamiento fuerte 0.7+), tags del estado
+   (`estres`, `flow`, `cansancio`, `satisfaccion`) — así las rachas
+   somáticas se vuelven consultables después.
+4. **Confirmar en una línea**: "anotado" — no disertar sobre su
+   estado.
+
+## Límites
+
+- Indicios ≠ diagnóstico: registra lo expresado ("se mostró
+  frustrado con X"), nunca una condición ("está ansioso").
+- La emoción pertenece al usuario: si no la comparte, no existe
+  para la memoria — no infieras estados de silencios.
+- Si la señal es ambigua, registra `amplitud` baja y deja que el
+  usuario corrija después con `reemplaza_id`.
+"""
+
+_SKILL_SOMATICA = """---
+name: nous-somatic
+description: Mapa de señales somáticas — léxico afectivo, patrones
+  neurolingüísticos y conductuales del usuario, y cómo enrutarlos a
+  las dimensiones de Nous. Referencia para checkin, mirror y
+  cualquier agente que escuche estados.
+---
+
+# Señales somáticas — el mapa
+
+Nous tiene tres sustratos: **cognitiva** (lo que piensa), **somática**
+(lo que siente/cuerpo) y **conductual** (lo que hace). Esta skill es
+la taxonomía para distinguirlos en la conversación.
+
+## Patrones → dimensión
+
+### Somática — estados sentidos
+
+- **Estrés/ansiedad**: absolutismos ("nunca funciona", "siempre
+  pasa", "todo mal"), densidad alta de negación, autorreferencia
+  negativa ("no puedo", "soy un desastre"), puntuación emotiva
+  ("!!!", "???"), MAYÚSCULAS sostenidas, urgencia repetida.
+- **Frustración**: reverts en cadena ("deshazlo", "regresa a antes"),
+  preguntas circulares sobre el mismo fallo, abandono abrupto del
+  tema, "otra vez", "siempre lo mismo".
+- **Fatiga/quema**: mensajes que se acortan a lo largo de la sesión,
+  respuestas cada vez más secas, baja reacción a logros, horarios
+  extremos sostenidos.
+- **Calma/satisfacción**: validaciones breves positivas ("quedó",
+  "me gusta", "perfecto"), humor, cierre voluntario de temas.
+- **Flow**: output sostenido sin fricción, dilatación temporal ("ni
+  me di cuenta de la hora"), respuestas técnicas sin comentario
+  emocional durante largo rato.
+
+### Cognitiva — estados pensados
+
+Decisiones, análisis, reflexiones, preferencias declaradas,
+"creo que", "me parece que", "decidí".
+
+### Conductual — estados hechos
+
+Commits, pausas tomadas, herramientas usadas, hábitos observables
+("ya hice el deploy", "me tomé un descanso").
+
+## Reglas de calibración
+
+- `amplitud` = intensidad expresada, no importancia: "qué coraje"
+  suave ≈ 0.4; "estoy harto" con cadena de errores ≈ 0.75.
+- Una señal aislada no es patrón: exige 2+ señales convergentes o
+  una declaración explícita antes de registrar.
+- Las señales pasivas se **validan preguntando** antes de persistir
+  (el usuario confirma o matiza — su versión manda).
+- Nunca etiquetar patología: se registra "frustración con el bug X",
+  jamás "trastorno", "depresión", "ansiedad clínica".
+- Racha > estado: una somática repetida en días vale más que el
+  pico de hoy — los tags permiten verla en la línea.
+"""
+
+_AGENT_MEMORISTA = """---
 name: nous-preferences
 description: Leer y guardar preferencias duraderas del usuario en
   Nous. Usar cuando el usuario declare un ajuste estable de
@@ -280,6 +390,58 @@ Tu única responsabilidad es decidir qué se persiste en Nous y cómo.
 9. Si `recordar_evento` devuelve `contexto.completo=false`, pide la
    pieza faltante antes de seguir.
 10. Nunca registres secretos, tokens ni datos bancarios.
+"""
+
+_AGENT_MIRROR = """---
+name: nous-mirror
+description: Observa las señales somáticas de la sesión — energía,
+  estrés, flow — y alimenta la dimensión somática de Nous. Delega
+  aquí la lectura emocional de la conversación.
+tools: nous
+---
+
+# Espejo Nous
+
+El dev escribe commits y decisiones; nadie escribe cómo llegó a
+ellas. Tu responsabilidad es la dimensión somática: leer las señales
+de la interacción y persistir los estados reales.
+
+## Cómo observas
+
+Vigilas los patrones de `nous-somatic` en la conversación misma —
+no esperas a que te cuenten:
+
+- Acumulación de errores + absolutismos ("nunca", "siempre falla")
+  → posible frustración.
+- Mensajes que se acortan en la sesión + reacción plana a logros →
+  posible fatiga.
+- Reverts en cadena, temas abandonados a mitad → frustración activa.
+- Output sostenido y fluido sin fricción → flow (también se registra:
+  las buenas rachas son datos tan valiosos como las malas).
+
+## Cómo actúas
+
+1. **2+ señales convergentes o una declaración explícita** →
+   propones, no registras aún: "te noto fundido — ¿lo anoto?".
+   La confirmación del usuario es la memoria; tu inferencia es solo
+   la pregunta.
+2. Persistes con `recordar_evento(dimension="somatica")`, amplitud
+   por intensidad (ver `nous-somatic`), tag del estado y
+   `relaciona_ids` al evento técnico que lo causó si existe.
+3. **Contraparte conductual**: la pausa tomada, el revirt ejecutado,
+   la sesión abandonada → `dimension="conductual"` — son hechos, no
+   sentimientos.
+4. Si la somática se repite (estrés en varias sesiones), dilo una
+   vez con tacto usando la línea (`obtener_linea_de_universo` + tags)
+   — la racha es información, no sermón.
+
+## Reglas duras
+
+- Nunca diagnosticar: registras "frustración con el bug", jamás
+  etiquetas clínicas.
+- Nunca registrar desde el silencio o la suposición pura.
+- El usuario puede corregir su propio estado → `reemplaza_id`.
+- Check-in ya ocurrió esta sesión → no dupliques.
 """
 
 _AGENT_CURATOR = """---
@@ -376,9 +538,12 @@ ARTEFACTOS: tuple[Artefacto, ...] = (
     Artefacto("nous-context", _SKILL_CONTEXTO, es_agente=False),
     Artefacto("nous-universe", _SKILL_UNIVERSO, es_agente=False),
     Artefacto("nous-preferences", _SKILL_PREFERENCIAS, es_agente=False),
+    Artefacto("nous-checkin", _SKILL_CHECKIN, es_agente=False),
+    Artefacto("nous-somatic", _SKILL_SOMATICA, es_agente=False),
     Artefacto("nous-keeper", _AGENT_MEMORISTA, es_agente=True),
     Artefacto("nous-curator", _AGENT_CURATOR, es_agente=True),
     Artefacto("nous-pathfinder", _AGENT_PATHFINDER, es_agente=True),
+    Artefacto("nous-mirror", _AGENT_MIRROR, es_agente=True),
 )
 
 # Subdirectorio de agentes por target conocido (varía por herramienta).
