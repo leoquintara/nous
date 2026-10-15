@@ -26,5 +26,9 @@ class ProveedorNoDisponibleError(NousError):
     """Un modelo o servicio local no pudo inicializarse o responder."""
 
 
+class CupoExcedidoError(NousError):
+    """El plan libre self-hosted alcanzó su límite (sin licencia)."""
+
+
 class PermisoDenegadoError(NousError):
     """El rol del llamante no permite la operación (viewer escribiendo, etc.)."""

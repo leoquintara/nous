@@ -353,8 +353,119 @@ def reiniciar_contexto_proceso() -> None:
 
 # ── Gestión de identidad (CLI y dashboard) ──────────────────────
 
-from src.core.exceptions import ErrorValidacion  # noqa: E402
+from src.core.exceptions import (  # noqa: E402
+    CupoExcedidoError,
+    ErrorValidacion,
+)
 from src.storage.models import InvitacionModel  # noqa: E402
+
+# ── Feature gate de la edición libre (grill-me Q11) ─────────────
+
+
+def licencia_activa() -> bool:
+    """True si ``NOUS_LICENSE_KEY`` está configurada.
+
+    El gate es sistema de honor: el código AGPL permite quitarlo,
+    pero el self-hosted honesto queda limitado a 1 usuario y 3
+    workspaces — el uso de equipo real pasa por cloud o licencia.
+    """
+    from src.config import get_settings
+
+    return bool(get_settings().license_key)
+
+
+async def _contar_usuarios(engine: AsyncEngine) -> int:
+    """Cuenta usuarios reales (excluye el sistema sentinel)."""
+    async with get_session(engine) as session:
+        return int(
+            (
+                await session.execute(
+                    select(func.count())
+                    .select_from(UsuarioModel)
+                    .where(UsuarioModel.id != USUARIO_SISTEMA_ID)
+                )
+            ).scalar_one()
+        )
+
+
+async def _contar_workspaces(engine: AsyncEngine) -> int:
+    """Cuenta workspaces existentes (incluye ``personal``)."""
+    async with get_session(engine) as session:
+        return int(
+            (
+                await session.execute(
+                    select(func.count()).select_from(WorkspaceModel)
+                )
+            ).scalar_one()
+        )
+
+
+async def _verificar_cupo_usuarios(engine: AsyncEngine) -> None:
+    """Exige cupo para un usuario nuevo en la edición libre.
+
+    Raises:
+        CupoExcedidoError: Sin licencia y ``max_usuarios_libres``
+            alcanzado.
+    """
+    if licencia_activa():
+        return
+    from src.config import get_settings
+
+    maximo = get_settings().max_usuarios_libres
+    if await _contar_usuarios(engine) >= maximo:
+        raise CupoExcedidoError(
+            f"edición libre limitada a {maximo} usuario(s) — "
+            "activa NOUS_LICENSE_KEY para desbloquear el equipo"
+        )
+
+
+async def _verificar_cupo_workspaces(engine: AsyncEngine) -> None:
+    """Exige cupo para un workspace nuevo en la edición libre.
+
+    Raises:
+        CupoExcedidoError: Sin licencia y ``max_workspaces_libres``
+            alcanzado.
+    """
+    if licencia_activa():
+        return
+    from src.config import get_settings
+
+    maximo = get_settings().max_workspaces_libres
+    if await _contar_workspaces(engine) >= maximo:
+        raise CupoExcedidoError(
+            f"edición libre limitada a {maximo} workspaces — "
+            "activa NOUS_LICENSE_KEY para crear más"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EstadoLicencia:
+    """Estado del feature gate para exponer en la API/dashboard."""
+
+    licenciado: bool
+    usuarios: int
+    max_usuarios: int | None
+    workspaces: int
+    max_workspaces: int | None
+
+
+async def estado_licencia(engine: AsyncEngine) -> EstadoLicencia:
+    """Resume el uso actual contra los límites del plan."""
+    from src.config import get_settings
+
+    licenciado = licencia_activa()
+    s = get_settings()
+    return EstadoLicencia(
+        licenciado=licenciado,
+        usuarios=await _contar_usuarios(engine),
+        max_usuarios=(
+            None if licenciado else s.max_usuarios_libres
+        ),
+        workspaces=await _contar_workspaces(engine),
+        max_workspaces=(
+            None if licenciado else s.max_workspaces_libres
+        ),
+    )
 
 
 async def crear_usuario(
@@ -383,6 +494,7 @@ async def crear_usuario(
         raise ErrorValidacion(
             f"handle inválido: {handle!r} — minúsculas, números, ._-"
         )
+    await _verificar_cupo_usuarios(engine)
     async with get_session(engine) as session:
         existe = (
             await session.execute(
@@ -439,6 +551,7 @@ async def crear_workspace(
         raise ErrorValidacion(
             f"slug inválido: {slug!r} — minúsculas, números y guiones"
         )
+    await _verificar_cupo_workspaces(engine)
     async with get_session(engine) as session:
         existe = (
             await session.execute(
@@ -588,6 +701,9 @@ async def crear_invitacion(
         raise ErrorValidacion(
             f"rol invitable: {rol!r} — solo member|viewer"
         )
+    # La invitación implica un usuario nuevo al canjearse: fallar
+    # aquí ahorra emitir un token condenado a expirar sin uso.
+    await _verificar_cupo_usuarios(engine)
     token = generar_token_invitacion()
     expira = datetime.now(UTC) + timedelta(
         days=min(max(dias, 1), 30)
@@ -630,7 +746,9 @@ async def canjear_invitacion(
     Raises:
         ErrorValidacion: Token inválido, vencido, canjeado o handle
             ocupado.
+        CupoExcedidoError: Sin licencia y cupo de usuarios lleno.
     """
+    await _verificar_cupo_usuarios(engine)
     async with get_session(engine) as session:
         inv = (
             await session.execute(

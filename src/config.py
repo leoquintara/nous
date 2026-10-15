@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     dashboard_password: str | None = None
     clave_cifrado: str | None = None
     log_level: str = "INFO"
+    # Feature gate (grill-me Q11): sin licencia, self-hosted queda
+    # limitado a 1 usuario y 3 workspaces — el código multi-tenant
+    # completo está en el repo; la llave lo desbloquea (honor system,
+    # AGPL). Ajustables para despliegues con convenio propio.
+    license_key: str | None = None
+    max_usuarios_libres: int = 1
+    max_workspaces_libres: int = 3
 
     @field_validator("api_token")
     @classmethod

@@ -28,6 +28,7 @@ from src.api.schemas import (
     ImportarResponse,
     InvitacionRequest,
     InvitacionResponse,
+    LicenciaResumen,
     LlamadaOrigenStats,
     LlamadaResponse,
     LlamadaRutaStats,
@@ -932,10 +933,18 @@ async def identidad_actual() -> IdentidadResponse:
                 nombre=u.nombre,
                 email=u.email,
             )
+    lic = await idn.estado_licencia(engine)
     return IdentidadResponse(
         usuario=usuario,
         workspace_activo=_ws_resumen(activo),
         workspaces=[_ws_resumen(w) for w in workspaces],
+        licencia=LicenciaResumen(
+            licenciado=lic.licenciado,
+            usuarios=lic.usuarios,
+            max_usuarios=lic.max_usuarios,
+            workspaces=lic.workspaces,
+            max_workspaces=lic.max_workspaces,
+        ),
     )
 
 

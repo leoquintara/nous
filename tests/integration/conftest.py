@@ -1,7 +1,7 @@
 """Fixtures compartidos de los tests de integración."""
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
 import pytest_asyncio
@@ -30,3 +30,23 @@ async def session() -> AsyncIterator[AsyncSession]:
         yield session
         await session.rollback()
     await engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _licencia_test() -> Iterator[None]:
+    """Licencia activa por defecto en toda la suite de integración.
+
+    El feature gate (1 usuario/3 workspaces sin licencia) haría
+    fallar cualquier test que cree identidades — los tests del
+    propio gate desactivan la licencia explícitamente.
+    """
+
+    from src.config import get_settings
+
+    s = get_settings()
+    prev = s.license_key
+    s.license_key = "test-suite"
+    try:
+        yield
+    finally:
+        s.license_key = prev

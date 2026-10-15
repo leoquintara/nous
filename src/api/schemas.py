@@ -320,12 +320,23 @@ class WorkspaceResumen(BaseModel):
     rol: str
 
 
+class LicenciaResumen(BaseModel):
+    """Uso actual contra los límites de la edición libre."""
+
+    licenciado: bool
+    usuarios: int
+    max_usuarios: int | None
+    workspaces: int
+    max_workspaces: int | None
+
+
 class IdentidadResponse(BaseModel):
     """Quién es el llamante y a qué workspaces pertenece."""
 
     usuario: UsuarioResumen | None
     workspace_activo: WorkspaceResumen
     workspaces: list[WorkspaceResumen]
+    licencia: LicenciaResumen | None = None
 
 
 class WorkspaceRequest(BaseModel):

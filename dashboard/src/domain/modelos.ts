@@ -308,11 +308,21 @@ export interface Usuario {
   email: string | null;
 }
 
+/** Uso actual contra los límites de la edición libre. */
+export interface Licencia {
+  licenciado: boolean;
+  usuarios: number;
+  max_usuarios: number | null;
+  workspaces: number;
+  max_workspaces: number | null;
+}
+
 /** Respuesta de /identidad: quién soy y a qué pertenezco. */
 export interface Identidad {
   usuario: Usuario | null;
   workspace_activo: Workspace;
   workspaces: Workspace[];
+  licencia: Licencia | null;
 }
 
 /** Miembro del roster de un workspace. */

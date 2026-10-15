@@ -124,6 +124,19 @@ export default function PaginaEquipo() {
           </div>
         </header>
 
+        {yo?.licencia && !yo.licencia.licenciado && (
+          <p
+            className="vidrio rounded-xl px-4 py-2.5 text-xs"
+            style={{ color: "var(--texto-suave)" }}
+          >
+            Edición libre: {yo.licencia.usuarios}/
+            {yo.licencia.max_usuarios} usuarios ·{" "}
+            {yo.licencia.workspaces}/{yo.licencia.max_workspaces}{" "}
+            workspaces — configura <code>NOUS_LICENSE_KEY</code> para
+            desbloquear el equipo.
+          </p>
+        )}
+
         {error && (
           <p role="alert" className="text-sm" style={{ color: "var(--danger)" }}>
             {error}

@@ -149,10 +149,18 @@ def crear_app_http() -> ASGIApp:
     async def _error_dominio(
         _request: Request, exc: NousError
     ) -> JSONResponse:
-        """Traduce errores de dominio a 422 (o 403 en permisos)."""
-        from src.core.exceptions import PermisoDenegadoError
+        """Traduce errores de dominio a 422/403/402 según el tipo."""
+        from src.core.exceptions import (
+            CupoExcedidoError,
+            PermisoDenegadoError,
+        )
 
-        status = 403 if isinstance(exc, PermisoDenegadoError) else 422
+        if isinstance(exc, CupoExcedidoError):
+            status = 402
+        elif isinstance(exc, PermisoDenegadoError):
+            status = 403
+        else:
+            status = 422
         return JSONResponse(
             status_code=status, content={"detail": str(exc)}
         )
