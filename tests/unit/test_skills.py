@@ -38,6 +38,22 @@ def test_contenido_skill_documenta_contexto_incompleto(tmp_path: Path) -> None:
     assert "tags" in texto
 
 
+def test_skill_universo_documenta_objetivos_y_loops(tmp_path: Path) -> None:
+    """El skill universe cubre objetivos, proyección y compromisos."""
+    skills.instalar(".agents", tmp_path)
+    texto = (
+        tmp_path / ".agents" / "skills" / "nous-universe" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    for tool in (
+        "crear_objetivo",
+        "listar_objetivos",
+        "proyectar_trayectoria",
+        "compromisos_abiertos",
+        "cerrar_compromiso",
+    ):
+        assert tool in texto
+
+
 def test_cmd_skills_list_retorna_cero(
     tmp_path: Path, capsys
 ) -> None:
