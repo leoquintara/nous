@@ -139,7 +139,6 @@ export function UniversoCanvas({
     let cancelado = false;
     void (async () => {
       const N = rio.eventos.length;
-      if (N === 0) return;
 
       const W = wrap.clientWidth || 1;
       const H = wrap.clientHeight || 1;
