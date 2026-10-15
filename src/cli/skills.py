@@ -326,7 +326,7 @@ Commits, pausas tomadas, herramientas usadas, hábitos observables
   pico de hoy — los tags permiten verla en la línea.
 """
 
-_AGENT_MEMORISTA = """---
+_SKILL_PREFERENCIAS = """---
 name: nous-preferences
 description: Leer y guardar preferencias duraderas del usuario en
   Nous. Usar cuando el usuario declare un ajuste estable de
