@@ -505,12 +505,39 @@ export function UniversoCanvas({
       }
 
       // ── Playhead + línea del ahora ───────────────────────────
+      // Banda de luz suave: un gradiente vertical que nace fuerte en
+      // el cauce y se disuelve hacia arriba/abajo — marca el instante
+      // sin competir con los orbes resaltados.
+      const texturaPlayhead = (() => {
+        const c = document.createElement("canvas");
+        c.width = 64;
+        c.height = 256;
+        const g = c.getContext("2d")!;
+        const grad = g.createLinearGradient(0, 256, 0, 0);
+        grad.addColorStop(0, "rgba(134,197,255,0)");
+        grad.addColorStop(0.42, "rgba(134,197,255,0.55)");
+        grad.addColorStop(0.5, "rgba(210,235,255,0.95)");
+        grad.addColorStop(0.58, "rgba(134,197,255,0.55)");
+        grad.addColorStop(1, "rgba(134,197,255,0)");
+        g.fillStyle = grad;
+        g.fillRect(0, 0, 64, 256);
+        const gradX = g.createLinearGradient(0, 0, 64, 0);
+        gradX.addColorStop(0, "rgba(0,0,0,0)");
+        gradX.addColorStop(0.5, "rgba(0,0,0,1)");
+        gradX.addColorStop(1, "rgba(0,0,0,0)");
+        g.globalCompositeOperation = "destination-in";
+        g.fillStyle = gradX;
+        g.fillRect(0, 0, 64, 256);
+        const tex = new THREE.CanvasTexture(c);
+        return tex;
+      })();
       const playhead = new THREE.Mesh(
-        new THREE.PlaneGeometry(1.6, 140),
+        new THREE.PlaneGeometry(14, 150),
         new THREE.MeshBasicMaterial({
-          color: 0x86c5ff,
+          map: texturaPlayhead,
+          color: 0x9fd2ff,
           transparent: true,
-          opacity: 0.5,
+          opacity: 0.55,
           blending: THREE.AdditiveBlending,
           depthWrite: false,
           side: THREE.DoubleSide,
@@ -518,6 +545,26 @@ export function UniversoCanvas({
       );
       playhead.visible = false;
       scene.add(playhead);
+      // Ecos del cursor: dos anillos que se expanden suaves desde el
+      // punto del cauce — el "aquí está el observador" sin barra dura.
+      const ecos: { mesh: THREE.Mesh; fase: number }[] = [];
+      for (let k = 0; k < 2; k++) {
+        const eco = new THREE.Mesh(
+          new THREE.RingGeometry(0.92, 1.0, 48),
+          new THREE.MeshBasicMaterial({
+            color: 0x9fd2ff,
+            transparent: true,
+            opacity: 0,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            side: THREE.DoubleSide,
+          }),
+        );
+        eco.rotation.x = -Math.PI / 2;
+        eco.visible = false;
+        scene.add(eco);
+        ecos.push({ mesh: eco, fase: k * 0.5 });
+      }
       const ahora = new THREE.Mesh(
         new THREE.PlaneGeometry(0.8, 140),
         new THREE.MeshBasicMaterial({
@@ -706,20 +753,32 @@ export function UniversoCanvas({
           ? Math.min(1, Math.max(0, (cur - ctx.tMax) / rio.horizonte))
           : 0;
 
-        // Orbes: latido por amplitud + atenuación tras el cursor.
+        // Orbes: latido por amplitud + atenuación tras el cursor +
+        // zona de foco — los eventos cercanos al instante observado
+        // reciben un boost sutil que no tapa a los resaltados.
+        const ventanaFoco = ctx.span * 0.035;
         for (let i = 0; i < N; i++) {
           const n = nodos[i];
           const nac = n.ev.timestamp_unix <= tCur ? 1 : 0.18;
           const latido = 1 + 0.07 * Math.sin(tNow * 0.003 + i * 0.7) * n.ev.amplitud;
+          const foco =
+            cur != null && nac === 1
+              ? Math.max(
+                  0,
+                  1 - Math.abs(n.ev.timestamp_unix - tCur) / ventanaFoco,
+                )
+              : 0;
           dummy.position.copy(n.pos);
-          dummy.scale.setScalar(Math.max(0.0001, n.escala * latido * Math.max(nac, 0.12)));
+          dummy.scale.setScalar(
+            Math.max(0.0001, n.escala * latido * Math.max(nac, 0.12) * (1 + foco * 0.35)),
+          );
           dummy.updateMatrix();
           malla.setMatrixAt(i, dummy.matrix);
           malla.setColorAt(
             i,
             tmpC
               .set(colDims.get(n.ev.dimension) ?? n.color)
-              .multiplyScalar(0.35 + 0.65 * nac),
+              .multiplyScalar((0.35 + 0.65 * nac) * (1 + foco * 0.45)),
           );
         }
         malla.instanceMatrix.needsUpdate = true;
@@ -730,8 +789,22 @@ export function UniversoCanvas({
           playhead.visible = true;
           playhead.position.x = xEnTiempo(Math.min(tCur, ctx.tMax + rio.horizonte), ctx);
           (playhead.material as THREE.MeshBasicMaterial).opacity =
-            0.4 + 0.15 * Math.sin(tNow * 0.004);
-        } else playhead.visible = false;
+            0.45 + 0.1 * Math.sin(tNow * 0.003);
+          // Ecos: anillos que nacen pequeños en el cauce y se disuelven
+          // expandiéndose — respiración continua del punto observado.
+          const pEco = posEnRio(Math.min(tCur, ctx.tMax + rio.horizonte), 0, null, ctx);
+          for (const e of ecos) {
+            e.mesh.visible = true;
+            const f = (tSec * 0.4 + e.fase) % 1;
+            e.mesh.position.set(pEco.x, pEco.y + 0.4, pEco.z);
+            e.mesh.scale.setScalar(3 + f * 26);
+            (e.mesh.material as THREE.MeshBasicMaterial).opacity =
+              0.4 * (1 - f) * (1 - f);
+          }
+        } else {
+          playhead.visible = false;
+          for (const e of ecos) e.mesh.visible = false;
+        }
 
         // Sedimentos: cada partícula viaja el afluente de su fuente.
         const posAttr = afGeo.getAttribute("position") as THREE.BufferAttribute;
