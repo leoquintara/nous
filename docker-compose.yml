@@ -10,7 +10,9 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - nous_pgdata:/var/lib/postgresql/data
+      # postgres:18+ versiona el PGDATA en subdirectorios — el mount
+      # va en la raíz, no en /data (error "unused mount/volume").
+      - nous_pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
@@ -20,13 +22,25 @@ services:
   app:
     build: .
     container_name: nous-app
+    restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
     environment:
       NOUS_DATABASE_URL: postgresql+asyncpg://${NOUS_DB_USER:-nous}:${NOUS_DB_PASSWORD:-nous}@db:5432/${NOUS_DB_NAME:-nous}
+      # Obligatorio: sin token la API queda abierta a la red.
+      NOUS_API_TOKEN: ${NOUS_API_TOKEN:?Define NOUS_API_TOKEN en .env (ns_ + 64 hex)}
+      NOUS_MCP_TRANSPORT: http
+      NOUS_API_HOST: 0.0.0.0
+      NOUS_HF_OFFLINE: "true"
     ports:
       - "8720:8720"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8720/health', timeout=3)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     profiles: ["app"]
 
 volumes:

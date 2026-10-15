@@ -1,0 +1,3 @@
+# Los entrypoints de shell deben mantener LF — el contenedor Linux
+# rompe con CRLF en shebang y en `set -e`.
+*.sh text eol=lf

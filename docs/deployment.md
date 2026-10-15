@@ -21,12 +21,28 @@ poetry run nous serve --transport http
 El servicio `app` está detrás del profile `app`:
 
 ```bash
-docker-compose --profile app up -d
+# .env: define NOUS_API_TOKEN (obligatorio — el build falla sin él)
+docker compose --profile app up -d
 ```
 
 levanta `nous-db` (pgvector/pgvector:pg18, volumen `nous_pgdata`) y
-`nous-app` (REST + MCP HTTP en :8720). La imagen se construye con el
-`Dockerfile` raíz.
+`nous-app` — una imagen multi-stage (~9.7GB) que incluye **todo**:
+API REST + MCP HTTP + dashboard estático + modelos ONNX horneados
+(embeddings MiniLM + reranker). Un solo puerto: `http://localhost:8720`
+sirve `/` (dashboard), `/api/*` y `/mcp`. El entrypoint corre
+`alembic upgrade head` en cada arranque — DB fresca migra sola.
+
+Notas de la imagen:
+
+- Stage 1 compila el dashboard (`npm ci` + `build:export`) — el
+  contenedor no necesita que `src/dashboard_static` exista en el host.
+- Los modelos se descargan UNA vez en el build
+  (`NOUS_HF_OFFLINE=false` solo ahí); el contenedor corre con
+  `HF_OFFLINE=true` y funciona sin red.
+- Volumen postgres: mount en `/var/lib/postgresql` (postgres:18+
+  versiona el PGDATA en subdirectorios — montar `/data` rompe).
+- Healthchecks en ambos servicios; `docker compose ps` muestra
+  `(healthy)` cuando está listo.
 
 ## Instalación como comando global (pipx)
 
