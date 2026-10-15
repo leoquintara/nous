@@ -24,7 +24,8 @@ from src.core.clasificador import ClasificadorDimensiones
 from src.core.contexto import analizar_contexto, fusionar_tags, parsear_ttl
 from src.core.embeddings import GeneradorEmbeddings
 from src.core.episodios import GAP_MAX_DEFECTO_SEGUNDOS, segmentar
-from src.core.exceptions import ErrorValidacion
+from src.core.exceptions import ErrorValidacion, PermisoDenegadoError
+from src.core.identidad import Contexto, contexto_actual, resolver_workspace
 from src.core.modelos import Evento, ResultadoBusqueda, Trayectoria
 from src.core.reranker import ReordenadorLocal
 from src.core.temporal import detectar_trayectorias, proyectar
@@ -102,17 +103,46 @@ def actividad_reciente(limite: int = 50) -> list[dict[str, Any]]:
     return list(_actividad)[: max(1, min(limite, _ACTIVIDAD_MAX))]
 
 
+async def _ctx(workspace: str | None = None) -> Contexto:
+    """Resuelve el contexto de identidad de la llamada en curso.
+
+    En HTTP lo fija el BearerTokenMiddleware por request; en stdio es
+    la identidad del proceso (NOUS_API_KEY o el owner local).
+
+    ``workspace`` (slug o UUID) permite a una tool operar sobre otro
+    workspace del mismo usuario — la membresía en el destino fija el
+    rol efectivo (grill-me Q6, opción C).
+    """
+    engine = obtener_engine()
+    ctx = await contexto_actual(engine)
+    if workspace is not None:
+        ctx = await resolver_workspace(engine, ctx, workspace)
+    return ctx
+
+
+async def _ctx_escritura(workspace: str | None = None) -> Contexto:
+    """Contexto con permiso de escritura; rechaza viewers."""
+    ctx = await _ctx(workspace)
+    if not ctx.puede_escribir:
+        raise PermisoDenegadoError(
+            "rol de solo lectura: sin permiso de escritura"
+        )
+    return ctx
+
+
 async def _preferencia_leer(clave: str) -> dict[str, Any]:
     """Lee un documento de preferencias persistido en PostgreSQL."""
+    ctx = await _ctx()
     async with get_session(obtener_engine()) as session:
-        valor = await ConfiguracionRepository(session).obtener(clave)
+        valor = await ConfiguracionRepository(session, ctx).obtener(clave)
     return valor if isinstance(valor, dict) else {}
 
 
 async def _preferencia_guardar(clave: str, valor: dict[str, Any]) -> None:
     """Persiste (upsert) un documento de preferencias en PostgreSQL."""
+    ctx = await _ctx_escritura()
     async with get_session(obtener_engine()) as session:
-        await ConfiguracionRepository(session).guardar(clave, valor)
+        await ConfiguracionRepository(session, ctx).guardar(clave, valor)
         await session.commit()
 
 
@@ -258,6 +288,9 @@ def _modelo_a_dict(modelo: EventoModel) -> dict[str, Any]:
             str(modelo.reemplazado_por) if modelo.reemplazado_por else None
         ),
         "con_quien": modelo.con_quien,
+        "scope": modelo.scope,
+        "workspace_id": str(modelo.workspace_id),
+        "autor_id": str(modelo.autor_id) if modelo.autor_id else None,
     }
 
 
@@ -308,6 +341,8 @@ async def _recordar(
     ttl: str | int | None = None,
     reemplaza_id: str | None = None,
     con_quien: str | None = None,
+    scope: Literal["personal", "workspace"] = "personal",
+    workspace: str | None = None,
 ) -> dict[str, Any]:
     """Persiste un evento con indexación write-behind.
 
@@ -321,6 +356,7 @@ async def _recordar(
     abre un loop que permanece abierto hasta que un evento lo cierre
     (relación ``cierra``). ``ttl`` acepta "30d"/"12h"/epoch.
     """
+    ctx = await _ctx_escritura(workspace)
     if not 0.0 <= amplitud <= 1.0:
         raise ErrorValidacion("amplitud debe estar entre 0.0 y 1.0")
     if frecuencia is not None and frecuencia <= 0.0:
@@ -344,7 +380,7 @@ async def _recordar(
         respuesta["dimension_dudosa"] = resultado.dudoso
     tags_final = fusionar_tags(tags, contenido)
     async with get_session(obtener_engine()) as session:
-        repo = EventoRepository(session)
+        repo = EventoRepository(session, ctx)
         evento = EventoModel(
             timestamp_unix=ts,
             dimension=dimension,
@@ -358,14 +394,17 @@ async def _recordar(
             tipo=tipo,
             expira_en=expira_en,
             con_quien=con_quien,
+            workspace_id=ctx.workspace_id,
+            autor_id=ctx.usuario_id,
+            scope=scope,
         )
         await repo.crear(evento)
-        await FuenteRepository(session).crear(fuente, tipo="agente")
+        await FuenteRepository(session, ctx).crear(fuente, tipo="agente")
         respuesta["contexto"] = await analizar_contexto(
-            session, contenido, excluir_id=evento.id
+            session, contenido, excluir_id=evento.id, ctx=ctx
         )
         vinculos = 0
-        relaciones = RelacionRepository(session)
+        relaciones = RelacionRepository(session, ctx)
         if reemplaza_id:
             try:
                 viejo_id = uuid.UUID(str(reemplaza_id))
@@ -476,15 +515,20 @@ async def _consolidar_luego(engine: AsyncEngine, eventos_ids: list[uuid.UUID]) -
 
 
 async def _consultar(
-    consulta: str, top_n: int, rama: str | None = None
+    consulta: str,
+    top_n: int,
+    rama: str | None = None,
+    workspace: str | None = None,
 ) -> list[dict[str, Any]]:
     """Ejecuta la búsqueda híbrida 4D y serializa los resultados."""
+    ctx = await _ctx(workspace)
     async with get_session(obtener_engine()) as session:
         resultados = await _obtener_busqueda().buscar(
             session,
             consulta,
             top_n=max(1, min(top_n, 50)),
             rama=rama,
+            ctx=ctx,
         )
     _encolar_fondo(_ItemConsolidacion(tuple(uuid.UUID(r.evento_id) for r in resultados)))
     if resultados:
@@ -492,17 +536,19 @@ async def _consultar(
     return [_resultado_a_dict(r) for r in resultados]
 
 
-async def _tags(limite: int) -> list[dict[str, Any]]:
+async def _tags(limite: int, workspace: str | None = None) -> list[dict[str, Any]]:
     """Lista los tags agregados con su frecuencia de uso."""
+    ctx = await _ctx(workspace)
     async with get_session(obtener_engine()) as session:
-        pares = await EventoRepository(session).listar_tags(limite)
+        pares = await EventoRepository(session, ctx).listar_tags(limite)
     return [{"tag": tag, "eventos": n} for tag, n in pares]
 
 
-async def _fuentes() -> list[dict[str, Any]]:
+async def _fuentes(workspace: str | None = None) -> list[dict[str, Any]]:
     """Lista las fuentes registradas con su conteo de eventos."""
+    ctx = await _ctx(workspace)
     async with get_session(obtener_engine()) as session:
-        filas = await FuenteRepository(session).listar()
+        filas = await FuenteRepository(session, ctx).listar()
         # Fuentes usadas pero nunca registradas (datos antiguos).
         registradas = {f.nombre for f, _ in filas}
         resultado = [
@@ -519,6 +565,7 @@ async def _fuentes() -> list[dict[str, Any]]:
         ]
         crudo = await session.execute(
             select(EventoModel.fuente, func.count())
+            .where(EventoModel.workspace_id == ctx.workspace_id)
             .group_by(EventoModel.fuente)
         )
         for nombre, n in crudo.all():
@@ -543,13 +590,16 @@ async def _crear_fuente(
     namespace: str,
     rama_origen: str,
     metadata: dict[str, Any],
+    workspace: str | None = None,
 ) -> dict[str, Any]:
     """Registra una fuente de datos (idempotente por nombre)."""
+    ctx = await _ctx_escritura(workspace)
     async with get_session(obtener_engine()) as session:
-        fuente = await FuenteRepository(session).crear(
+        fuente = await FuenteRepository(session, ctx).crear(
             nombre, tipo=tipo, namespace=namespace,
             rama_origen=rama_origen, extra=metadata,
         )
+        fuente.autor_id = ctx.usuario_id
         await session.commit()
     return {
         "nombre": fuente.nombre,
@@ -560,18 +610,20 @@ async def _crear_fuente(
     }
 
 
-async def _estado_fuente(nombre: str, estado: str) -> bool:
+async def _estado_fuente(nombre: str, estado: str, workspace: str | None = None) -> bool:
     """Activa o archiva una fuente registrada."""
+    ctx = await _ctx_escritura(workspace)
     async with get_session(obtener_engine()) as session:
-        ok = await FuenteRepository(session).cambiar_estado(nombre, estado)
+        ok = await FuenteRepository(session, ctx).cambiar_estado(nombre, estado)
         await session.commit()
     return ok
 
 
-async def _eliminar_fuente(nombre: str) -> bool:
+async def _eliminar_fuente(nombre: str, workspace: str | None = None) -> bool:
     """Borra el registro de una fuente (sus eventos quedan intactos)."""
+    ctx = await _ctx_escritura(workspace)
     async with get_session(obtener_engine()) as session:
-        ok = await FuenteRepository(session).eliminar(nombre)
+        ok = await FuenteRepository(session, ctx).eliminar(nombre)
         await session.commit()
     return ok
 
@@ -585,8 +637,9 @@ async def _ramificar_fuente(
     se registren en ella viven en la línea paralela ``rama`` sin tocar
     la principal (comparten todo el pasado).
     """
+    ctx = await _ctx_escritura()
     async with get_session(obtener_engine()) as session:
-        repo = FuenteRepository(session)
+        repo = FuenteRepository(session, ctx)
         origen = await repo.obtener(nombre)
         if origen is None:
             return None
@@ -607,10 +660,11 @@ async def _ramificar_fuente(
     }
 
 
-async def _relaciones(limite: int) -> list[dict[str, Any]]:
+async def _relaciones(limite: int, workspace: str | None = None) -> list[dict[str, Any]]:
     """Lista los vínculos entre eventos (explícitos y semánticos)."""
+    ctx = await _ctx(workspace)
     async with get_session(obtener_engine()) as session:
-        filas = await RelacionRepository(session).listar(
+        filas = await RelacionRepository(session, ctx).listar(
             min(max(limite, 1), 5000)
         )
     return [
@@ -630,21 +684,24 @@ async def _linea(
     limite: int,
     rama: str | None = None,
     repartir: bool = False,
+    workspace: str | None = None,
 ) -> list[dict[str, Any]]:
     """Devuelve los eventos del rango temporal en orden cronológico."""
     if desde_unix > hasta_unix:
         raise ErrorValidacion("desde_unix debe ser <= hasta_unix")
+    ctx = await _ctx(workspace)
     async with get_session(obtener_engine()) as session:
-        eventos = await EventoRepository(session).listar_por_rango(
+        eventos = await EventoRepository(session, ctx).listar_por_rango(
             desde_unix, hasta_unix, min(max(limite, 1), 4000), rama, repartir
         )
     return [_modelo_a_dict(e) for e in eventos]
 
 
-async def _open_loops(rama: str = "main") -> list[dict[str, Any]]:
+async def _open_loops(rama: str = "main", workspace: str | None = None) -> list[dict[str, Any]]:
     """Lista los compromisos abiertos — quién espera respuesta tuya."""
+    ctx = await _ctx(workspace)
     async with get_session(obtener_engine()) as session:
-        loops = await EventoRepository(session).listar_compromisos_abiertos(rama)
+        loops = await EventoRepository(session, ctx).listar_compromisos_abiertos(rama)
     ahora = int(time.time())
     return [
         {
@@ -666,6 +723,7 @@ async def _cerrar_loop(
     en la línea de universo enlazado por una relación ``cierra`` al
     evento de resolución, nunca borrado.
     """
+    ctx = await _ctx_escritura()
     try:
         cid = uuid.UUID(str(compromiso_id))
     except (ValueError, AttributeError) as e:
@@ -673,7 +731,7 @@ async def _cerrar_loop(
             f"compromiso_id no es un UUID válido: {compromiso_id!r}"
         ) from e
     async with get_session(obtener_engine()) as session:
-        repo = EventoRepository(session)
+        repo = EventoRepository(session, ctx)
         compromiso = await repo.obtener(cid)
         if compromiso is None:
             raise ErrorValidacion(f"compromiso no encontrado: {compromiso_id}")
@@ -709,6 +767,7 @@ async def _olvidar(evento_id: str) -> dict[str, Any]:
     de la línea de universo. Para correcciones con historia usa
     ``reemplaza_id`` en ``recordar_evento`` en su lugar.
     """
+    ctx = await _ctx_escritura()
     try:
         eid = uuid.UUID(str(evento_id))
     except (ValueError, AttributeError) as e:
@@ -716,8 +775,21 @@ async def _olvidar(evento_id: str) -> dict[str, Any]:
             f"evento_id no es un UUID válido: {evento_id!r}"
         ) from e
     async with get_session(obtener_engine()) as session:
+        # Borrado ajeno solo para owners: un member puede olvidar
+        # sus propias memorias, no las del resto del workspace.
+        repo = EventoRepository(session, ctx)
+        objetivo_borrar = await repo.obtener(eid)
+        if (
+            objetivo_borrar is not None
+            and not ctx.es_owner
+            and objetivo_borrar.autor_id is not None
+            and objetivo_borrar.autor_id != ctx.usuario_id
+        ):
+            raise PermisoDenegadoError(
+                "solo el owner puede borrar memorias de otros miembros"
+            )
         vinculos = await RelacionRepository(session).eliminar_de(eid)
-        ok = await EventoRepository(session).eliminar(eid)
+        ok = await repo.eliminar(eid)
         await session.commit()
     return {
         "id": str(eid),
@@ -743,11 +815,14 @@ def _objetivo_a_dict(o: ObjetivoModel) -> dict[str, Any]:
 
 
 async def _objetivos(
-    estado: str | None = "activo", rama: str = "main"
+    estado: str | None = "activo",
+    rama: str = "main",
+    workspace: str | None = None,
 ) -> list[dict[str, Any]]:
     """Lista objetivos del usuario filtrados por estado y rama."""
+    ctx = await _ctx(workspace)
     async with get_session(obtener_engine()) as session:
-        filas = await ObjetivoRepository(session).listar(estado, rama)
+        filas = await ObjetivoRepository(session, ctx).listar(estado, rama)
     return [_objetivo_a_dict(o) for o in filas]
 
 
@@ -757,6 +832,8 @@ async def _crear_objetivo(
     dimension: str | None,
     descripcion: str | None,
     rama: str,
+    scope: Literal["personal", "workspace"] = "personal",
+    workspace: str | None = None,
 ) -> dict[str, Any]:
     """Persiste un objetivo que ancla una proyección futura."""
     titulo = titulo.strip()
@@ -769,14 +846,18 @@ async def _crear_objetivo(
             f"dimension inválida: {dimension!r} "
             "(cognitiva|somatica|conductual)"
         )
+    ctx = await _ctx_escritura(workspace)
     async with get_session(obtener_engine()) as session:
-        objetivo = await ObjetivoRepository(session).crear(
+        objetivo = await ObjetivoRepository(session, ctx).crear(
             ObjetivoModel(
                 titulo=titulo,
                 descripcion=descripcion,
                 dimension=dimension,
                 fecha_objetivo=fecha_objetivo,
                 rama=rama,
+                workspace_id=ctx.workspace_id,
+                autor_id=ctx.usuario_id,
+                scope=scope,
             )
         )
         await session.commit()
@@ -787,6 +868,7 @@ async def _actualizar_objetivo(
     objetivo_id: str, cambios: dict[str, Any]
 ) -> dict[str, Any]:
     """Aplica cambios parciales a un objetivo existente."""
+    ctx = await _ctx_escritura()
     try:
         oid = uuid.UUID(str(objetivo_id))
     except (ValueError, AttributeError) as e:
@@ -794,7 +876,7 @@ async def _actualizar_objetivo(
             f"objetivo_id no es un UUID válido: {objetivo_id!r}"
         ) from e
     async with get_session(obtener_engine()) as session:
-        objetivo = await ObjetivoRepository(session).actualizar(oid, cambios)
+        objetivo = await ObjetivoRepository(session, ctx).actualizar(oid, cambios)
         if objetivo is None:
             raise ErrorValidacion(f"objetivo no encontrado: {objetivo_id}")
         await session.commit()
@@ -829,7 +911,9 @@ async def _cumplir_objetivo(
     return await _actualizar_objetivo(objetivo_id, cambios)
 
 
-async def _contexto_inicial(top_n: int = 8) -> dict[str, Any]:
+async def _contexto_inicial(
+    top_n: int = 8, workspace: str | None = None
+) -> dict[str, Any]:
     """Pack de arranque de sesión: memoria núcleo + loops + hechos
     calientes — cero LLM, todo consultas locales (estilo context_pack).
 
@@ -844,13 +928,17 @@ async def _contexto_inicial(top_n: int = 8) -> dict[str, Any]:
     n = min(max(top_n, 1), 16)
     ahora = int(time.time())
     semana = ahora - 7 * 86_400
+    ctx = await _ctx(workspace)
     async with get_session(obtener_engine()) as session:
-        repo = EventoRepository(session)
+        repo = EventoRepository(session, ctx)
         recientes = await repo.listar_por_rango(semana, ahora, 500)
         loops = await repo.listar_compromisos_abiertos("main", ahora)
+        vis = repo._vis()
         total = int(
             (
-                await session.execute(select(func.count(EventoModel.id)))
+                await session.execute(
+                    select(func.count(EventoModel.id)).where(*vis)
+                )
             ).scalar_one()
         )
     vigentes = [
@@ -880,17 +968,22 @@ async def _contexto_inicial(top_n: int = 8) -> dict[str, Any]:
     }
 
 
-async def _proyectar(horizonte_dias: int, dias_historial: int) -> dict[str, Any]:
+async def _proyectar(
+    horizonte_dias: int,
+    dias_historial: int,
+    workspace: str | None = None,
+) -> dict[str, Any]:
     """Detecta trayectorias, proyecta la dimensión futura y la persiste."""
+    ctx = await _ctx_escritura(workspace)
     ahora = int(time.time())
     desde = ahora - min(max(dias_historial, 1), 365) * 86_400
     horizonte = min(max(horizonte_dias, 1), 90)
     async with get_session(obtener_engine()) as session:
-        modelos = await EventoRepository(session).listar_por_rango(desde, ahora, 500)
+        modelos = await EventoRepository(session, ctx).listar_por_rango(desde, ahora, 500)
         eventos = [Evento.desde_modelo(m) for m in modelos]
         proyeccion = proyectar(eventos, horizonte, ahora)
         trayectorias = detectar_trayectorias(eventos)
-        persistida = await ProyeccionRepository(session).registrar(
+        persistida = await ProyeccionRepository(session, ctx).registrar(
             ProyeccionModel(
                 horizonte_dias=horizonte,
                 variable_objetivo=proyeccion.variable_objetivo,
@@ -901,6 +994,8 @@ async def _proyectar(horizonte_dias: int, dias_historial: int) -> dict[str, Any]
                     key=lambda d: proyeccion.vector_proyectado[d],
                 ),
                 basada_en_eventos=list(proyeccion.basada_en_eventos),
+                workspace_id=ctx.workspace_id,
+                autor_id=ctx.usuario_id,
             )
         )
         await session.commit()
@@ -930,6 +1025,8 @@ async def recordar_evento(
     ttl: str | int | None = None,
     reemplaza_id: str | None = None,
     con_quien: str | None = None,
+    scope: Literal["personal", "workspace"] = "personal",
+    workspace: str | None = None,
 ) -> dict[str, Any]:
     """Guarda un evento nuevo en la memoria persistente 4D del usuario.
 
@@ -983,6 +1080,11 @@ async def recordar_evento(
             para arqueología en la línea; el nuevo encabeza la cadena.
         con_quien: Solo con tipo="compromiso" — la contraparte que
             espera respuesta (persona, equipo, sistema).
+        scope: "personal" (solo tú lo ves, default — nada se filtra al
+            equipo por accidente) o "workspace" (visible para todo el
+            equipo del workspace).
+        workspace: Slug o UUID del workspace destino (override del
+            default de la key). Requiere membresía en el destino.
 
     Returns:
         Dict con "id", "timestamp_unix", "dimension" usada,
@@ -1008,12 +1110,15 @@ async def recordar_evento(
         ttl,
         reemplaza_id,
         con_quien,
+        scope,
+        workspace,
     )
 
 
 @mcp_server.tool()
 async def compromisos_abiertos(
     rama: str = "main",
+    workspace: str | None = None,
 ) -> list[dict[str, Any]]:
     """Lista los compromisos abiertos — quién espera respuesta tuya.
 
@@ -1024,12 +1129,14 @@ async def compromisos_abiertos(
 
     Args:
         rama: Línea de universo a consultar ("main" por defecto).
+        workspace: Slug o UUID del workspace a consultar (override
+            del default de la key).
 
     Returns:
         Compromisos con id, contenido, con_quien (contraparte),
         timestamp_unix y dias_abierto — los más antiguos primero.
     """
-    return await _open_loops(rama)
+    return await _open_loops(rama, workspace)
 
 
 @mcp_server.tool()
@@ -1060,6 +1167,7 @@ async def cerrar_compromiso(
 @mcp_server.tool()
 async def contexto_inicial(
     top_n: int = 8,
+    workspace: str | None = None,
 ) -> dict[str, Any]:
     """Pack de arranque de sesión: qué traigo a esta conversación.
 
@@ -1070,19 +1178,21 @@ async def contexto_inicial(
 
     Args:
         top_n: Eventos núcleo y hechos calientes a incluir (máx. 16).
+        workspace: Slug o UUID del workspace a consultar.
 
     Returns:
         Dict con "nucleo" (recientes de mayor amplitud), "loops"
         (compromisos abiertos con contraparte y días de espera),
         "calientes" (más reforzados de la semana) y "stats" globales.
     """
-    return await _contexto_inicial(top_n)
+    return await _contexto_inicial(top_n, workspace)
 
 
 @mcp_server.tool()
 async def listar_objetivos(
     estado: str = "activo",
     rama: str = "main",
+    workspace: str | None = None,
 ) -> list[dict[str, Any]]:
     """Lista los objetivos del usuario — las metas que anclan el futuro.
 
@@ -1095,12 +1205,13 @@ async def listar_objetivos(
         estado: Filtro de ciclo de vida ("activo" default,
             "cumplido", "abandonado", "*" para todos).
         rama: Línea de universo a consultar ("main" por defecto).
+        workspace: Slug o UUID del workspace a consultar.
 
     Returns:
         Objetivos con id, titulo, dimension, fecha_objetivo, estado —
         ordenados por fecha límite, el más próximo primero.
     """
-    return await _objetivos(None if estado == "*" else estado, rama)
+    return await _objetivos(None if estado == "*" else estado, rama, workspace)
 
 
 @mcp_server.tool()
@@ -1110,6 +1221,8 @@ async def crear_objetivo(
     dimension: str | None = None,
     descripcion: str | None = None,
     rama: str = "main",
+    scope: Literal["personal", "workspace"] = "personal",
+    workspace: str | None = None,
 ) -> dict[str, Any]:
     """Fija una meta en la línea de universo — las proyecciones
     fantasma convergen hacia ella.
@@ -1124,12 +1237,15 @@ async def crear_objetivo(
         dimension: cognitiva|somatica|conductual, o None transversal.
         descripcion: Detalle opcional de la meta.
         rama: Línea de universo donde vive ("main" por defecto).
+        scope: "personal" (solo tú la ves, default) o "workspace"
+            (meta del equipo, visible para todos).
+        workspace: Slug o UUID del workspace destino.
 
     Returns:
         El objetivo creado con su id.
     """
     return await _crear_objetivo(
-        titulo, fecha_objetivo, dimension, descripcion, rama
+        titulo, fecha_objetivo, dimension, descripcion, rama, scope, workspace
     )
 
 
@@ -1164,6 +1280,7 @@ async def consultar_memoria(
     consulta: str,
     top_n: int = 10,
     rama: str = "main",
+    workspace: str | None = None,
 ) -> list[dict[str, Any]]:
     """Busca memorias del usuario por TEMA con búsqueda híbrida 4D.
 
@@ -1181,6 +1298,8 @@ async def consultar_memoria(
         rama: Línea de universo a consultar — "main" por defecto, así
             los escenarios en ramas alternativas no contaminan el
             recuerdo de la línea real. Usa "*" para todas las ramas.
+        workspace: Slug o UUID del workspace a consultar (override del
+            default de la key). Requiere membresía.
 
     Returns:
         Resultados ordenados por relevancia; cada uno trae el "evento"
@@ -1188,7 +1307,7 @@ async def consultar_memoria(
         ocurrieron justo antes y después en la línea de tiempo.
     """
     return await _consultar(
-        consulta, top_n, None if rama == "*" else rama
+        consulta, top_n, None if rama == "*" else rama, workspace
     )
 
 
@@ -1198,6 +1317,7 @@ async def obtener_linea_de_universo(
     hasta_unix: int,
     limite: int = 100,
     rama: str = "main",
+    workspace: str | None = None,
 ) -> list[dict[str, Any]]:
     """Devuelve los eventos de la línea temporal en un rango de fechas.
 
@@ -1214,25 +1334,31 @@ async def obtener_linea_de_universo(
         limite: Máximo de eventos a devolver (1-500). Default 100.
         rama: Línea de universo a recorrer ("main" por defecto;
             "*" para todas las ramas).
+        workspace: Slug o UUID del workspace a consultar.
 
     Returns:
         Eventos {"id","timestamp_unix","dimension","fuente","contenido",
         "amplitud","frecuencia"} ordenados cronológicamente.
     """
     return await _linea(
-        desde_unix, hasta_unix, limite, None if rama == "*" else rama
+        desde_unix, hasta_unix, limite, None if rama == "*" else rama,
+        workspace=workspace,
     )
 
 
 async def _episodios(
-    desde_unix: int, hasta_unix: int, gap_max_segundos: int
+    desde_unix: int,
+    hasta_unix: int,
+    gap_max_segundos: int,
+    workspace: str | None = None,
 ) -> list[dict[str, Any]]:
     """Agrupa los eventos del rango en episodios por huecos temporales."""
     if desde_unix > hasta_unix:
         raise ErrorValidacion("desde_unix debe ser <= hasta_unix")
     gap = min(max(gap_max_segundos, 60), 86_400)
+    ctx = await _ctx(workspace)
     async with get_session(obtener_engine()) as session:
-        modelos = await EventoRepository(session).listar_por_rango(desde_unix, hasta_unix, 500)
+        modelos = await EventoRepository(session, ctx).listar_por_rango(desde_unix, hasta_unix, 500)
     episodios = segmentar([Evento.desde_modelo(m) for m in modelos], gap_max_segundos=gap)
     return [
         {
@@ -1251,6 +1377,7 @@ async def obtener_episodios(
     desde_unix: int,
     hasta_unix: int,
     gap_max_segundos: int = GAP_MAX_DEFECTO_SEGUNDOS,
+    workspace: str | None = None,
 ) -> list[dict[str, Any]]:
     """Agrupa la línea temporal en episodios por huecos de inactividad.
 
@@ -1268,12 +1395,13 @@ async def obtener_episodios(
         hasta_unix: Fin del rango, Unix epoch en segundos.
         gap_max_segundos: Hueco que separa dos episodios (60-86400).
             Default 14400 (4 horas).
+        workspace: Slug o UUID del workspace a consultar.
 
     Returns:
         Episodios cronológicos con "inicio", "fin", "eventos",
         "dimension_dominante" y "amplitud_media".
     """
-    return await _episodios(desde_unix, hasta_unix, gap_max_segundos)
+    return await _episodios(desde_unix, hasta_unix, gap_max_segundos, workspace)
 
 
 def _trayectoria_a_dict(t: Trayectoria) -> dict[str, Any]:
@@ -1294,6 +1422,7 @@ def _trayectoria_a_dict(t: Trayectoria) -> dict[str, Any]:
 async def proyectar_trayectoria(
     horizonte_dias: int = 7,
     dias_historial: int = 30,
+    workspace: str | None = None,
 ) -> dict[str, Any]:
     """Proyecta la dimensión probable del futuro del usuario.
 
@@ -1309,13 +1438,14 @@ async def proyectar_trayectoria(
     Args:
         horizonte_dias: Días hacia adelante a proyectar (1-90). Default 7.
         dias_historial: Días de historial a analizar (1-365). Default 30.
+        workspace: Slug o UUID del workspace a consultar.
 
     Returns:
         Dict con "dimension_probable", "probabilidad", "distribucion"
         por dimensión, "trayectorias" detectadas (con flag "activa") e
         "id" de la proyección persistida en la tabla proyecciones.
     """
-    return await _proyectar(horizonte_dias, dias_historial)
+    return await _proyectar(horizonte_dias, dias_historial, workspace)
 
 
 @mcp_server.tool()
@@ -1341,7 +1471,10 @@ async def olvidar_evento(evento_id: str) -> dict[str, Any]:
 
 
 @mcp_server.tool()
-async def listar_tags(limite: int = 100) -> list[dict[str, Any]]:
+async def listar_tags(
+    limite: int = 100,
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
     """Lista los tags de la memoria con su frecuencia de uso.
 
     USAR CUANDO: necesites descubrir los hilos temáticos del usuario
@@ -1350,26 +1483,30 @@ async def listar_tags(limite: int = 100) -> list[dict[str, Any]]:
 
     Args:
         limite: Máximo de tags (1-500). Default 100.
+        workspace: Slug o UUID del workspace a consultar.
 
     Returns:
         [{"tag", "eventos"}] ordenados por frecuencia descendente.
     """
-    return await _tags(min(max(limite, 1), 500))
+    return await _tags(min(max(limite, 1), 500), workspace)
 
 
 @mcp_server.tool()
-async def listar_fuentes() -> list[dict[str, Any]]:
+async def listar_fuentes(workspace: str | None = None) -> list[dict[str, Any]]:
     """Lista las fuentes registradas y las usadas sin registrar.
 
     USAR CUANDO: necesites saber de dónde viene la memoria (qué
     agentes/importaciones escriben) o antes de crear una rama con
     ramificar_fuente — la rama nace como sub-fuente de otra.
 
+    Args:
+        workspace: Slug o UUID del workspace a consultar.
+
     Returns:
         Fuentes con nombre, tipo, estado, namespace, rama_origen y
         conteo de eventos.
     """
-    return await _fuentes()
+    return await _fuentes(workspace)
 
 
 @mcp_server.tool()
@@ -1399,7 +1536,10 @@ async def ramificar_fuente(
 
 
 @mcp_server.tool()
-async def listar_relaciones(limite: int = 500) -> list[dict[str, Any]]:
+async def listar_relaciones(
+    limite: int = 500,
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
     """Lista los vínculos entre memorias — el grafo explícito.
 
     USAR CUANDO: quieras ver cómo se conectan los recuerdos
@@ -1408,12 +1548,13 @@ async def listar_relaciones(limite: int = 500) -> list[dict[str, Any]]:
 
     Args:
         limite: Máximo de vínculos (1-5000). Default 500.
+        workspace: Slug o UUID del workspace a consultar.
 
     Returns:
         [{"origen_id", "destino_id", "tipo", "peso"}] recientes
         primero.
     """
-    return await _relaciones(limite)
+    return await _relaciones(limite, workspace)
 
 
 @mcp_server.tool()

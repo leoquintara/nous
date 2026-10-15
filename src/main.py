@@ -149,9 +149,12 @@ def crear_app_http() -> ASGIApp:
     async def _error_dominio(
         _request: Request, exc: NousError
     ) -> JSONResponse:
-        """Traduce errores de dominio a 422 con detalle legible."""
+        """Traduce errores de dominio a 422 (o 403 en permisos)."""
+        from src.core.exceptions import PermisoDenegadoError
+
+        status = 403 if isinstance(exc, PermisoDenegadoError) else 422
         return JSONResponse(
-            status_code=422, content={"detail": str(exc)}
+            status_code=status, content={"detail": str(exc)}
         )
 
     # El dashboard (Next.js en :3000) es un origen distinto al API (:8720).
@@ -175,6 +178,11 @@ def crear_app_http() -> ASGIApp:
             parar_trazas = asyncio.Event()
             tarea_trazas: asyncio.Task[None] | None = None
             try:
+                # Owner+workspace personal garantizados antes de que
+                # cualquier escritura los referencie (multi-tenant).
+                from src.core.identidad import asegurar_bootstrap
+
+                await asegurar_bootstrap(engine)
                 try:
                     await mcp_server.call_tool(
                         "recordar_evento",

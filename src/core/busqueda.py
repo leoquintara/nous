@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import get_settings
 from src.core.embeddings import GeneradorEmbeddings
+from src.core.identidad import Contexto
 from src.core.modelos import Contexto4D, Evento, ResultadoBusqueda
 from src.core.reranker import ReordenadorLocal
 from src.storage.models import EventoModel
@@ -120,6 +121,7 @@ class BusquedaHibrida4D:
         query: str,
         top_n: int = 10,
         rama: str | None = None,
+        ctx: Contexto | None = None,
     ) -> list[ResultadoBusqueda]:
         """Ejecuta la búsqueda híbrida completa con contexto 4D.
 
@@ -131,12 +133,15 @@ class BusquedaHibrida4D:
                 (None = todas las ramas). El default de las tools es
                 "main" para que los escenarios alternativos no
                 contaminen el recuerdo de la línea real.
+            ctx: Contexto de identidad; acota la búsqueda a la
+                visibilidad del llamante (mías ∪ workspace ∪ sin
+                atribuir). None = sin filtro (tests de capa core).
 
         Returns:
             Resultados ordenados por score_final con contexto temporal.
         """
         vector_query = await self._embeddings.generar(query)
-        repo = EventoRepository(session)
+        repo = EventoRepository(session, ctx)
         hits_texto = await repo.buscar_por_texto(query, rama=rama)
         hits_vector = await repo.buscar_por_vector(vector_query, rama=rama)
 

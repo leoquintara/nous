@@ -12,6 +12,7 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.identidad import Contexto
 from src.storage.repositories import EventoRepository
 
 # Nombres propios / términos capitalizados de ≥4 letras. La primera
@@ -123,6 +124,7 @@ async def analizar_contexto(
     session: AsyncSession,
     contenido: str,
     excluir_id: uuid.UUID | None = None,
+    ctx: Contexto | None = None,
 ) -> dict[str, object]:
     """Evalúa si el evento menciona entidades sin antecedente.
 
@@ -140,7 +142,7 @@ async def analizar_contexto(
         ``{"completo": False, "entidades_nuevas": [...],
         "sugerencia": "..."}`` si las hay.
     """
-    repo = EventoRepository(session)
+    repo = EventoRepository(session, ctx)
     nuevas: list[str] = []
     for entidad in extraer_entidades(contenido):
         if not await repo.existe_mencion(entidad, excluir_id):

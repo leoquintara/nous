@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from src.api.auth import verificar_token
+from src.api.auth import requerir_escritura, verificar_token
 from src.api.rate_limit import LimitadorIntentos
 from src.api.schemas import (
     BenchmarkResponse,
@@ -40,6 +40,7 @@ from src.api.schemas import (
 from src.cli.transferencia import importar as importar_memoria
 from src.config import get_settings
 from src.core import ia
+from src.core.identidad import contexto_actual
 from src.mcp import tools as tools_impl
 from src.storage.database import get_session, obtener_engine
 from src.storage.repositories import (
@@ -116,6 +117,7 @@ async def listar_eventos(
     limite: int = 500,
     rama: str = "main",
     repartir: bool = False,
+    workspace: str | None = None,
 ) -> list[EventoResponse]:
     """Lista eventos de la línea de universo en un rango temporal.
 
@@ -140,11 +142,12 @@ async def listar_eventos(
             limite,
             None if rama == "*" else rama,
             repartir,
+            workspace,
         )
     ]
 
 
-@router.post("/eventos", dependencies=[Depends(verificar_token)])
+@router.post("/eventos", dependencies=[Depends(requerir_escritura)])
 async def crear_evento(peticion: EventoRequest) -> dict[str, Any]:
     """Registra un evento nuevo (equivalente REST de recordar_evento).
 
@@ -168,23 +171,28 @@ async def crear_evento(peticion: EventoRequest) -> dict[str, Any]:
         peticion.ttl,
         peticion.reemplaza_id,
         peticion.con_quien,
+        peticion.scope,
+        peticion.workspace,
     )
 
 
 @router.get("/loops", dependencies=[Depends(verificar_token)])
-async def listar_loops(rama: str = "main") -> list[dict[str, Any]]:
+async def listar_loops(
+    rama: str = "main", workspace: str | None = None
+) -> list[dict[str, Any]]:
     """Lista los compromisos abiertos — quién espera respuesta.
 
     Args:
         rama: Línea de universo a consultar ("main" por defecto).
+        workspace: Slug o UUID del workspace a consultar.
 
     Returns:
         Compromisos abiertos con contraparte y días de espera.
     """
-    return await tools_impl._open_loops(rama)
+    return await tools_impl._open_loops(rama, workspace)
 
 
-@router.post("/loops/{compromiso_id}/cerrar", dependencies=[Depends(verificar_token)])
+@router.post("/loops/{compromiso_id}/cerrar", dependencies=[Depends(requerir_escritura)])
 async def cerrar_loop(
     compromiso_id: str, peticion: CerrarLoopRequest
 ) -> dict[str, Any]:
@@ -200,7 +208,9 @@ async def cerrar_loop(
 
 @router.get("/objetivos", dependencies=[Depends(verificar_token)])
 async def listar_objetivos(
-    estado: str | None = "activo", rama: str = "main"
+    estado: str | None = "activo",
+    rama: str = "main",
+    workspace: str | None = None,
 ) -> list[dict[str, Any]]:
     """Lista los objetivos del usuario — metas que anclan el futuro.
 
@@ -213,11 +223,11 @@ async def listar_objetivos(
         Objetivos ordenados por fecha límite, el más próximo primero.
     """
     return await tools_impl._objetivos(
-        None if estado == "*" else estado, rama
+        None if estado == "*" else estado, rama, workspace
     )
 
 
-@router.post("/objetivos", dependencies=[Depends(verificar_token)])
+@router.post("/objetivos", dependencies=[Depends(requerir_escritura)])
 async def crear_objetivo(peticion: ObjetivoRequest) -> dict[str, Any]:
     """Fija una meta: las proyecciones fantasma convergen hacia ella."""
     return await tools_impl._crear_objetivo(
@@ -226,10 +236,12 @@ async def crear_objetivo(peticion: ObjetivoRequest) -> dict[str, Any]:
         peticion.dimension,
         peticion.descripcion,
         peticion.rama,
+        peticion.scope,
+        peticion.workspace,
     )
 
 
-@router.patch("/objetivos/{objetivo_id}", dependencies=[Depends(verificar_token)])
+@router.patch("/objetivos/{objetivo_id}", dependencies=[Depends(requerir_escritura)])
 async def actualizar_objetivo(
     objetivo_id: str, peticion: ObjetivoPatch
 ) -> dict[str, Any]:
@@ -238,7 +250,7 @@ async def actualizar_objetivo(
     return await tools_impl._actualizar_objetivo(objetivo_id, cambios)
 
 
-@router.post("/objetivos/{objetivo_id}/cerrar", dependencies=[Depends(verificar_token)])
+@router.post("/objetivos/{objetivo_id}/cerrar", dependencies=[Depends(requerir_escritura)])
 async def cerrar_objetivo(
     objetivo_id: str, peticion: CerrarObjetivoRequest
 ) -> dict[str, Any]:
@@ -256,35 +268,42 @@ async def cerrar_objetivo(
 
 
 @router.get("/contexto-inicial", dependencies=[Depends(verificar_token)])
-async def contexto_inicial(top_n: int = 8) -> dict[str, Any]:
+async def contexto_inicial(
+    top_n: int = 8, workspace: str | None = None
+) -> dict[str, Any]:
     """Pack de arranque de sesión: núcleo + loops + hechos calientes.
 
     Una sola llamada devuelve la memoria relevante para abrir una
     conversación — cero LLM, todo consultas locales.
     """
-    return await tools_impl._contexto_inicial(top_n)
+    return await tools_impl._contexto_inicial(top_n, workspace)
 
 
 @router.get("/tags", dependencies=[Depends(verificar_token)])
-async def listar_tags(limite: int = 200) -> list[TagResponse]:
+async def listar_tags(
+    limite: int = 200, workspace: str | None = None
+) -> list[TagResponse]:
     """Lista los tags de la memoria con su frecuencia.
 
     Args:
         limite: Máximo de tags (1-500).
+        workspace: Slug o UUID del workspace a consultar.
 
     Returns:
         Tags ordenados por número de eventos descendente.
     """
-    return [TagResponse(**t) for t in await tools_impl._tags(limite)]
+    return [TagResponse(**t) for t in await tools_impl._tags(limite, workspace)]
 
 
 @router.get("/fuentes", dependencies=[Depends(verificar_token)])
-async def listar_fuentes() -> list[FuenteResponse]:
+async def listar_fuentes(workspace: str | None = None) -> list[FuenteResponse]:
     """Lista las fuentes de datos registradas con su conteo real."""
-    return [FuenteResponse(**f) for f in await tools_impl._fuentes()]
+    return [
+        FuenteResponse(**f) for f in await tools_impl._fuentes(workspace)
+    ]
 
 
-@router.post("/fuentes", dependencies=[Depends(verificar_token)])
+@router.post("/fuentes", dependencies=[Depends(requerir_escritura)])
 async def crear_fuente(peticion: FuenteRequest) -> dict[str, Any]:
     """Registra una fuente nueva (idempotente por nombre)."""
     return await tools_impl._crear_fuente(
@@ -296,7 +315,7 @@ async def crear_fuente(peticion: FuenteRequest) -> dict[str, Any]:
     )
 
 
-@router.patch("/fuentes/{nombre}", dependencies=[Depends(verificar_token)])
+@router.patch("/fuentes/{nombre}", dependencies=[Depends(requerir_escritura)])
 async def estado_fuente(nombre: str, peticion: FuentePatch) -> dict[str, Any]:
     """Activa o archiva una fuente (los eventos no se tocan)."""
     ok = await tools_impl._estado_fuente(nombre, peticion.estado)
@@ -305,7 +324,7 @@ async def estado_fuente(nombre: str, peticion: FuentePatch) -> dict[str, Any]:
     return {"nombre": nombre, "estado": peticion.estado}
 
 
-@router.delete("/fuentes/{nombre}", dependencies=[Depends(verificar_token)])
+@router.delete("/fuentes/{nombre}", dependencies=[Depends(requerir_escritura)])
 async def eliminar_fuente(nombre: str) -> dict[str, Any]:
     """Elimina el registro de la fuente; sus eventos permanecen."""
     ok = await tools_impl._eliminar_fuente(nombre)
@@ -314,7 +333,7 @@ async def eliminar_fuente(nombre: str) -> dict[str, Any]:
     return {"nombre": nombre, "eliminada": True}
 
 
-@router.post("/fuentes/{nombre}/ramificar", dependencies=[Depends(verificar_token)])
+@router.post("/fuentes/{nombre}/ramificar", dependencies=[Depends(requerir_escritura)])
 async def ramificar_fuente(
     nombre: str, peticion: RamificarRequest
 ) -> dict[str, Any]:
@@ -333,7 +352,9 @@ async def ramificar_fuente(
 
 
 @router.get("/relaciones", dependencies=[Depends(verificar_token)])
-async def listar_relaciones(limite: int = 2000) -> list[RelacionResponse]:
+async def listar_relaciones(
+    limite: int = 2000, workspace: str | None = None
+) -> list[RelacionResponse]:
     """Lista los vínculos entre eventos (explícitos y semánticos).
 
     Args:
@@ -345,11 +366,11 @@ async def listar_relaciones(limite: int = 2000) -> list[RelacionResponse]:
     """
     return [
         RelacionResponse(**r)
-        for r in await tools_impl._relaciones(limite)
+        for r in await tools_impl._relaciones(limite, workspace)
     ]
 
 
-@router.delete("/eventos/{evento_id}", dependencies=[Depends(verificar_token)])
+@router.delete("/eventos/{evento_id}", dependencies=[Depends(requerir_escritura)])
 async def olvidar_evento(evento_id: str) -> dict[str, Any]:
     """Borra un evento de la memoria (olvidar_evento).
 
@@ -368,7 +389,10 @@ async def olvidar_evento(evento_id: str) -> dict[str, Any]:
 
 @router.get("/buscar", dependencies=[Depends(verificar_token)])
 async def buscar(
-    q: str, top_n: int = 10, rama: str = "main"
+    q: str,
+    top_n: int = 10,
+    rama: str = "main",
+    workspace: str | None = None,
 ) -> list[dict[str, Any]]:
     """Búsqueda híbrida 4D con contexto temporal (consultar_memoria).
 
@@ -382,11 +406,11 @@ async def buscar(
         Resultados con evento, scores y contexto temporal.
     """
     return await tools_impl._consultar(
-        q, top_n, None if rama == "*" else rama
+        q, top_n, None if rama == "*" else rama, workspace
     )
 
 
-@router.post("/proyeccion", dependencies=[Depends(verificar_token)])
+@router.post("/proyeccion", dependencies=[Depends(requerir_escritura)])
 async def generar_proyeccion(horizonte_dias: int = 7, dias_historial: int = 30) -> dict[str, Any]:
     """Genera y persiste una proyección (proyectar_trayectoria).
 
@@ -407,8 +431,9 @@ async def proyeccion_actual() -> dict[str, Any]:
     Returns:
         Dict con la proyección vigente o {"estado": "sin_proyecciones"}.
     """
+    ctx = await contexto_actual(obtener_engine())
     async with get_session(obtener_engine()) as session:
-        ultima = await ProyeccionRepository(session).ultima()
+        ultima = await ProyeccionRepository(session, ctx).ultima()
     if ultima is None:
         return {"estado": "sin_proyecciones"}
     return {
@@ -455,7 +480,7 @@ async def obtener_preferencia(clave: str) -> dict[str, Any]:
     return await tools_impl._preferencia_leer(_validar_clave(clave))
 
 
-@router.put("/preferencias/{clave}", dependencies=[Depends(verificar_token)])
+@router.put("/preferencias/{clave}", dependencies=[Depends(requerir_escritura)])
 async def guardar_preferencia(clave: str, valor: dict[str, Any]) -> dict[str, Any]:
     """Persiste (upsert) un documento de preferencias en PostgreSQL.
 
@@ -484,7 +509,7 @@ async def listar_proveedores_ia() -> list[dict[str, Any]]:
         return await ia.listar_proveedores(session)
 
 
-@router.put("/ia/proveedores/{pid}", dependencies=[Depends(verificar_token)])
+@router.put("/ia/proveedores/{pid}", dependencies=[Depends(requerir_escritura)])
 async def guardar_proveedor_ia(
     pid: str, peticion: ProveedorIARequest
 ) -> dict[str, Any]:
@@ -503,7 +528,7 @@ async def guardar_proveedor_ia(
     return publico
 
 
-@router.delete("/ia/proveedores/{pid}", dependencies=[Depends(verificar_token)])
+@router.delete("/ia/proveedores/{pid}", dependencies=[Depends(requerir_escritura)])
 async def eliminar_proveedor_ia(pid: str) -> dict[str, Any]:
     """Elimina un proveedor de IA y su key cifrada."""
     async with get_session(obtener_engine()) as session:
@@ -514,14 +539,14 @@ async def eliminar_proveedor_ia(pid: str) -> dict[str, Any]:
     return {"id": pid, "eliminado": True}
 
 
-@router.post("/ia/proveedores/{pid}/probar", dependencies=[Depends(verificar_token)])
+@router.post("/ia/proveedores/{pid}/probar", dependencies=[Depends(requerir_escritura)])
 async def probar_proveedor_ia(pid: str) -> dict[str, Any]:
     """Prueba conectividad con el endpoint (GET /models)."""
     async with get_session(obtener_engine()) as session:
         return await ia.probar_proveedor(session, pid)
 
 
-@router.post("/ia/predecir", dependencies=[Depends(verificar_token)])
+@router.post("/ia/predecir", dependencies=[Depends(requerir_escritura)])
 async def predecir_ia(peticion: PredecirRequest) -> dict[str, Any]:
     """Genera escenarios de futuro con el proveedor de IA habilitado.
 
@@ -657,7 +682,7 @@ async def stats_llamadas() -> LlamadasStatsResponse:
     )
 
 
-@router.post("/ping", dependencies=[Depends(verificar_token)])
+@router.post("/ping", dependencies=[Depends(requerir_escritura)])
 async def ping() -> dict[str, Any]:
     """Registra un ping explícito — queda marcado en el log de llamadas.
 
@@ -667,7 +692,7 @@ async def ping() -> dict[str, Any]:
     return {"status": "ok", "ts": int(time.time())}
 
 
-@router.post("/importar", dependencies=[Depends(verificar_token)])
+@router.post("/importar", dependencies=[Depends(requerir_escritura)])
 async def importar(peticion: ImportarRequest) -> ImportarResponse:
     """Migra memoria externa a Nous desde un archivo/directorio local.
 
@@ -796,8 +821,9 @@ async def _registrar_importacion(
         "ruta": (peticion.url or peticion.ruta or "")[:300],
         "resultado": resultado,
     }
+    ctx = await contexto_actual(obtener_engine())
     async with get_session(obtener_engine()) as session:
-        repo = ConfiguracionRepository(session)
+        repo = ConfiguracionRepository(session, ctx)
         valor = await repo.obtener("importaciones_historial")
         historial: list[dict[str, Any]] = (
             valor["items"] if isinstance(valor, dict) else []
@@ -815,8 +841,9 @@ async def historial_importaciones() -> list[HistorialImportacion]:
     """Devuelve las últimas migraciones ejecutadas (máx. 15)."""
     from src.storage.repositories import ConfiguracionRepository
 
+    ctx = await contexto_actual(obtener_engine())
     async with get_session(obtener_engine()) as session:
-        valor = await ConfiguracionRepository(session).obtener(
+        valor = await ConfiguracionRepository(session, ctx).obtener(
             "importaciones_historial"
         )
     items = valor["items"] if isinstance(valor, dict) else []

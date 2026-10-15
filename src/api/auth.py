@@ -1,16 +1,26 @@
-"""Autenticación por API token (Bearer) para las superficies HTTP de Nous.
+"""Autenticación Bearer para las superficies HTTP de Nous.
 
-Modelo idéntico al de gbrain/memlord: un token estático configurable
-con ``NOUS_API_TOKEN`` que los clientes envían como
-``Authorization: Bearer <token>``.
+Multi-tenant (grill-me Q2/Q10): la credencial es una sola —
+
+- ``NOUS_API_TOKEN`` (``ns_*`` estático) → equivale al owner del
+  workspace bootstrap ``personal``; las instalaciones viejas siguen
+  funcionando sin migrar nada.
+- Keys de usuario ``ns_u_*`` → se resuelven contra la tabla
+  ``api_keys`` a su (usuario, workspace default, rol en ``miembros``).
+
+El contexto resuelto queda accesible en ``request.state.contexto``
+(REST) y en el ContextVar de ``identidad`` (tools MCP / stdio).
 
 Comportamiento:
 
-- Token configurado → toda petición HTTP sin bearer válido recibe 401.
-- Token ausente → modo desarrollo local: se permite el paso y se
-  registra una advertencia UNA vez al arrancar. Nunca usar así en una
-  interfaz expuesta a red.
-- stdio no pasa por este módulo (es un proceso local, sin red).
+- Token configurado → toda petición HTTP a /api o /mcp sin bearer
+  válido recibe 401.
+- Token ausente → modo desarrollo local: se permite el paso como el
+  owner bootstrap y se registra una advertencia UNA vez al arrancar.
+  Nunca usar así en una interfaz expuesta a red.
+- stdio no pasa por este módulo (es un proceso local, sin red); su
+  identidad la resuelve ``identidad.contexto_actual`` vía
+  ``NOUS_API_KEY``.
 """
 
 import hmac
@@ -21,6 +31,14 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from src.config import get_settings
+from src.core.identidad import (
+    USUARIO_OWNER_ID,
+    WORKSPACE_PERSONAL_ID,
+    Contexto,
+    fijar_contexto,
+    resolver_contexto,
+)
+from src.storage.database import obtener_engine
 
 logger = logging.getLogger("nous.auth")
 
@@ -31,6 +49,11 @@ _advertencia_emitida = False
 def token_configurado() -> str | None:
     """Retorna el API token configurado o None en modo desarrollo."""
     return get_settings().api_token
+
+
+def _token_valido(token: str, esperado: str) -> bool:
+    """Compara dos credenciales en tiempo constante."""
+    return hmac.compare_digest(token.encode(), esperado.encode())
 
 
 def _advertir_modo_desarrollo() -> None:
@@ -44,40 +67,104 @@ def _advertir_modo_desarrollo() -> None:
         )
 
 
-def _token_valido(token: str, esperado: str) -> bool:
-    """Compara el token recibido con el configurado en tiempo constante."""
-    return hmac.compare_digest(token.encode(), esperado.encode())
+def _contexto_owner() -> Contexto:
+    """Contexto del owner bootstrap — IDs fijos de la migración 0009."""
+    return Contexto(
+        usuario_id=USUARIO_OWNER_ID,
+        workspace_id=WORKSPACE_PERSONAL_ID,
+        rol="owner",
+    )
 
 
-async def verificar_token(request: Request) -> None:
-    """Dependencia FastAPI que exige bearer token en rutas protegidas.
+async def _resolver(token: str | None) -> Contexto | None:
+    """Resuelve la credencial a contexto; tolera DB inalcanzable.
+
+    ``None`` (modo desarrollo) y el ``NOUS_API_TOKEN`` estático se
+    resuelven sin tocar la base de datos — el owner bootstrap no
+    depende de consulta alguna. Las keys ``ns_u_*`` sí consultan; si
+    PostgreSQL no responde devuelven ``None`` (401).
+    """
+    if token is None:
+        return _contexto_owner()
+    esperado = token_configurado()
+    if esperado is not None and _token_valido(token, esperado):
+        return _contexto_owner()
+    if not token.startswith("ns_u_"):
+        return None
+    try:
+        return await resolver_contexto(obtener_engine(), token)
+    except OSError:
+        logger.warning("Identidad: DB inalcanzable resolviendo key")
+        return None
+
+
+async def verificar_token(request: Request) -> Contexto:
+    """Dependencia FastAPI: exige bearer válido y devuelve el contexto.
 
     Args:
         request: Petición entrante.
 
+    Returns:
+        Contexto de identidad (usuario, workspace, rol) del llamante.
+
     Raises:
-        HTTPException: 401 si falta el header o el token no coincide.
+        HTTPException: 401 si la credencial no resuelve.
     """
-    esperado = token_configurado()
-    if esperado is None:
+    if token_configurado() is None:
         _advertir_modo_desarrollo()
-        return
+        ctx = await _resolver(None)
+        if ctx is None:  # pragma: no cover — _resolver(None) nunca falla
+            raise HTTPException(status_code=401, detail="Sin contexto")
+        request.state.contexto = ctx
+        return ctx
     credenciales: HTTPAuthorizationCredentials | None = await _bearer(request)
-    if credenciales is None or not _token_valido(
-        credenciales.credentials, esperado
-    ):
+    ctx = await _resolver(
+        credenciales.credentials if credenciales else None
+    )
+    if credenciales is None or ctx is None:
         raise HTTPException(
             status_code=401,
             detail="Token de acceso inválido o ausente",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    request.state.contexto = ctx
+    return ctx
+
+
+async def requerir_escritura(
+    request: Request,
+) -> Contexto:
+    """Dependencia FastAPI: exige rol con permiso de escritura.
+
+    Encadena ``verificar_token`` (401 sin credencial válida) y
+    responde 403 a viewers. Usar en lugar de ``verificar_token``
+    en cualquier endpoint que modifique datos.
+
+    Args:
+        request: Petición entrante.
+
+    Returns:
+        El contexto autenticado con permiso de escritura.
+
+    Raises:
+        HTTPException: 401 sin credencial; 403 si el rol es viewer.
+    """
+    ctx = await verificar_token(request)
+    if not ctx.puede_escribir:
+        raise HTTPException(
+            status_code=403,
+            detail="Rol de solo lectura: sin permiso de escritura",
+        )
+    return ctx
 
 
 class BearerTokenMiddleware:
-    """Middleware ASGI que exige bearer token en toda la app envuelta.
+    """Middleware ASGI que exige bearer token en las superficies de datos.
 
-    Se usa para proteger el transporte streamable-http del servidor
-    MCP, que no pasa por dependencias FastAPI.
+    Resuelve el token a un :class:`Contexto` y lo deja en
+    ``scope["state"]["contexto"]`` y en el ContextVar de identidad,
+    para que el transporte streamable-http del MCP (que no pasa por
+    dependencias FastAPI) conozca quién llama.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -115,9 +202,12 @@ class BearerTokenMiddleware:
         if prefijo not in ("api", "mcp"):
             await self._app(scope, receive, send)
             return
-        esperado = token_configurado()
-        if esperado is None:
+        if token_configurado() is None:
             _advertir_modo_desarrollo()
+            ctx = await _resolver(None)
+            if ctx is not None:
+                scope.setdefault("state", {})["contexto"] = ctx
+                fijar_contexto(ctx)
             await self._app(scope, receive, send)
             return
         cabeceras = {
@@ -126,10 +216,19 @@ class BearerTokenMiddleware:
         }
         autorizacion = cabeceras.get("authorization", "")
         esquema, _, token = autorizacion.partition(" ")
-        if esquema.lower() != "bearer" or not _token_valido(token, esperado):
+        if esquema.lower() != "bearer":
             await self._responder_401(send)
             return
-        await self._app(scope, receive, send)
+        ctx = await _resolver(token)
+        if ctx is None:
+            await self._responder_401(send)
+            return
+        scope.setdefault("state", {})["contexto"] = ctx
+        fijar_contexto(ctx)
+        try:
+            await self._app(scope, receive, send)
+        finally:
+            fijar_contexto(None)
 
     @staticmethod
     async def _responder_401(

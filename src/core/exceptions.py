@@ -24,3 +24,7 @@ class HistorialInsuficienteError(NousError, ValueError):
 
 class ProveedorNoDisponibleError(NousError):
     """Un modelo o servicio local no pudo inicializarse o responder."""
+
+
+class PermisoDenegadoError(NousError):
+    """El rol del llamante no permite la operación (viewer escribiendo, etc.)."""

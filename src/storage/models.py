@@ -32,6 +32,159 @@ class Base(DeclarativeBase):
     """Base declarativa para todos los modelos de Nous."""
 
 
+class UsuarioModel(Base):
+    """Persona con acceso a Nous — identidad de keys y autoría."""
+
+    __tablename__ = "usuarios"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    handle: Mapped[str] = mapped_column(String(64), unique=True)
+    nombre: Mapped[str | None] = mapped_column(String(200))
+    email: Mapped[str | None] = mapped_column(String(320), unique=True)
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class WorkspaceModel(Base):
+    """Límite de aislamiento multi-tenant: cada memoria vive en uno."""
+
+    __tablename__ = "workspaces"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    slug: Mapped[str] = mapped_column(String(80), unique=True)
+    nombre: Mapped[str] = mapped_column(String(200), nullable=False)
+    owner_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("usuarios.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class MiembroModel(Base):
+    """Pertenencia de un usuario a un workspace con su rol."""
+
+    __tablename__ = "miembros"
+
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    usuario_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("usuarios.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    rol: Mapped[str] = mapped_column(String(20), server_default="member")
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "rol IN ('owner','member','viewer')", name="ck_miembros_rol"
+        ),
+    )
+
+
+class ApiKeyModel(Base):
+    """Llave ``ns_u_*`` de un usuario — la key ES la credencial.
+
+    Solo se persiste el hash SHA-256: la key en claro se entrega una
+    vez al crearla. ``workspace_default_id`` es el destino de las
+    llamadas MCP/REST que no declaren workspace explícito.
+    """
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    hash: Mapped[str] = mapped_column(String(64), unique=True)
+    prefijo: Mapped[str] = mapped_column(String(16))
+    usuario_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("usuarios.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    workspace_default_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="SET NULL"),
+    )
+    nombre: Mapped[str] = mapped_column(String(100), server_default="")
+    ultimo_uso: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    revocada: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class InvitacionModel(Base):
+    """Llave canjeable de un solo uso para unirse a un workspace.
+
+    El owner la genera (CLI o dashboard); el invitado la canjea con su
+    handle — crea su usuario, su membresía y su primera API key. Sin
+    SMTP: la llave se transporta por cualquier canal (Signal, papel).
+    """
+
+    __tablename__ = "invitaciones"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        server_default=text(
+            "'00000000-0000-0000-0000-000000000002'::uuid"
+        ),
+        nullable=False,
+    )
+    rol: Mapped[str] = mapped_column(String(20), server_default="member")
+    creado_por: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("usuarios.id", ondelete="SET NULL"),
+    )
+    expira_en: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    canjeada_por: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("usuarios.id", ondelete="SET NULL"),
+    )
+    canjeada_en: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "rol IN ('member','viewer')", name="ck_invitaciones_rol"
+        ),
+    )
+
+
 class EventoModel(Base):
     """Evento atómico en la línea de universo 4D del usuario."""
 
@@ -41,6 +194,21 @@ class EventoModel(Base):
         UUID(as_uuid=True),
         primary_key=True,
         server_default=func.gen_random_uuid(),
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        server_default=text(
+            "'00000000-0000-0000-0000-000000000002'::uuid"
+        ),
+        nullable=False,
+    )
+    scope: Mapped[str] = mapped_column(
+        String(20), server_default="personal", nullable=False
+    )
+    autor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("usuarios.id", ondelete="SET NULL"),
     )
     timestamp_unix: Mapped[int] = mapped_column(BigInteger, nullable=False)
     dimension: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -85,7 +253,13 @@ class EventoModel(Base):
             "tipo IN ('evento','hecho','creencia','compromiso','preferencia')",
             name="ck_eventos_tipo",
         ),
+        CheckConstraint(
+            "scope IN ('personal','workspace')", name="ck_eventos_scope"
+        ),
         Index("ix_eventos_timestamp", "timestamp_unix"),
+        Index("ix_eventos_workspace", "workspace_id"),
+        Index("ix_eventos_scope", "scope"),
+        Index("ix_eventos_autor", "autor_id"),
         Index("ix_eventos_tipo", "tipo"),
         Index("ix_eventos_dimension", "dimension"),
         Index("ix_eventos_fuente", "fuente"),
@@ -128,6 +302,18 @@ class RelacionModel(Base):
         ForeignKey("eventos.id", ondelete="CASCADE"),
         nullable=False,
     )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        server_default=text(
+            "'00000000-0000-0000-0000-000000000002'::uuid"
+        ),
+        nullable=False,
+    )
+    autor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("usuarios.id", ondelete="SET NULL"),
+    )
     tipo: Mapped[str] = mapped_column(String(20), nullable=False)
     peso: Mapped[float] = mapped_column(Float, server_default="1.0")
     creado_en: Mapped[datetime] = mapped_column(
@@ -160,6 +346,19 @@ class FuenteModel(Base):
     __tablename__ = "fuentes"
 
     nombre: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        server_default=text(
+            "'00000000-0000-0000-0000-000000000002'::uuid"
+        ),
+        nullable=False,
+        primary_key=True,
+    )
+    autor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("usuarios.id", ondelete="SET NULL"),
+    )
     tipo: Mapped[str] = mapped_column(String(20), server_default="manual")
     estado: Mapped[str] = mapped_column(String(20), server_default="activa")
     namespace: Mapped[str] = mapped_column(String(128), server_default="")
@@ -182,6 +381,21 @@ class TrayectoriaModel(Base):
         primary_key=True,
         server_default=func.gen_random_uuid(),
     )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        server_default=text(
+            "'00000000-0000-0000-0000-000000000002'::uuid"
+        ),
+        nullable=False,
+    )
+    scope: Mapped[str] = mapped_column(
+        String(20), server_default="personal", nullable=False
+    )
+    autor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("usuarios.id", ondelete="SET NULL"),
+    )
     tipo: Mapped[str] = mapped_column(String(30), nullable=False)
     fecha_inicio: Mapped[int] = mapped_column(BigInteger, nullable=False)
     fecha_fin: Mapped[int | None] = mapped_column(BigInteger)
@@ -195,6 +409,14 @@ class TrayectoriaModel(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
+    __table_args__ = (
+        CheckConstraint(
+            "scope IN ('personal','workspace')",
+            name="ck_trayectorias_scope",
+        ),
+        Index("ix_trayectorias_workspace", "workspace_id"),
+    )
+
 
 class ProyeccionModel(Base):
     """Futuro probable proyectado a partir de la trayectoria del usuario."""
@@ -206,6 +428,21 @@ class ProyeccionModel(Base):
         primary_key=True,
         server_default=func.gen_random_uuid(),
     )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        server_default=text(
+            "'00000000-0000-0000-0000-000000000002'::uuid"
+        ),
+        nullable=False,
+    )
+    scope: Mapped[str] = mapped_column(
+        String(20), server_default="personal", nullable=False
+    )
+    autor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("usuarios.id", ondelete="SET NULL"),
+    )
     creado_en: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -216,6 +453,14 @@ class ProyeccionModel(Base):
     rama_decision: Mapped[str | None] = mapped_column(Text)
     basada_en_eventos: Mapped[list[str]] = mapped_column(
         JSONB, server_default=text("'[]'::jsonb")
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "scope IN ('personal','workspace')",
+            name="ck_proyecciones_scope",
+        ),
+        Index("ix_proyecciones_workspace", "workspace_id"),
     )
 
 
@@ -233,6 +478,14 @@ class BenchmarkRunModel(Base):
         UUID(as_uuid=True),
         primary_key=True,
         server_default=func.gen_random_uuid(),
+    )
+    workspace_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+    )
+    autor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("usuarios.id", ondelete="SET NULL"),
     )
     nombre: Mapped[str] = mapped_column(String(50), nullable=False)
     escenario: Mapped[str | None] = mapped_column(String(200))
@@ -269,6 +522,21 @@ class ObjetivoModel(Base):
         primary_key=True,
         server_default=func.gen_random_uuid(),
     )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        server_default=text(
+            "'00000000-0000-0000-0000-000000000002'::uuid"
+        ),
+        nullable=False,
+    )
+    scope: Mapped[str] = mapped_column(
+        String(20), server_default="personal", nullable=False
+    )
+    autor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("usuarios.id", ondelete="SET NULL"),
+    )
     titulo: Mapped[str] = mapped_column(String(200), nullable=False)
     descripcion: Mapped[str | None] = mapped_column(Text)
     dimension: Mapped[str | None] = mapped_column(String(20))
@@ -295,6 +563,11 @@ class ObjetivoModel(Base):
             "estado IN ('activo','cumplido','abandonado')",
             name="ck_objetivos_estado",
         ),
+        CheckConstraint(
+            "scope IN ('personal','workspace')",
+            name="ck_objetivos_scope",
+        ),
+        Index("ix_objetivos_workspace", "workspace_id"),
         Index("ix_objetivos_estado", "estado"),
         Index("ix_objetivos_fecha", "fecha_objetivo"),
     )
@@ -306,6 +579,22 @@ class ConfiguracionModel(Base):
     __tablename__ = "configuracion"
 
     clave: Mapped[str] = mapped_column(String(100), primary_key=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        server_default=text(
+            "'00000000-0000-0000-0000-000000000002'::uuid"
+        ),
+        nullable=False,
+        primary_key=True,
+    )
+    # Sentinel zero-UUID = config de workspace; un usuario real =
+    # preferencia personal suya dentro de ese workspace.
+    usuario_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("usuarios.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
     valor: Mapped[dict[str, Any]] = mapped_column(
         JSONB, server_default=text("'{}'::jsonb")
     )
@@ -321,6 +610,14 @@ class LlamadaModel(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    workspace_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+    )
+    autor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("usuarios.id", ondelete="SET NULL"),
     )
     ts: Mapped[int] = mapped_column(BigInteger, nullable=False)
     metodo: Mapped[str] = mapped_column(String(10), nullable=False)

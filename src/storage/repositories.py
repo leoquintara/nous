@@ -9,11 +9,17 @@ import uuid
 from collections.abc import Sequence
 from typing import Any, cast
 
-from sqlalchemy import delete, func, literal, or_, select, union_all, update
+from sqlalchemy import and_, delete, func, literal, or_, select, union_all, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
+from src.core.identidad import (
+    USUARIO_SISTEMA_ID,
+    WORKSPACE_PERSONAL_ID,
+    Contexto,
+)
 from src.storage.models import (
     BenchmarkRunModel,
     ConfiguracionModel,
@@ -26,16 +32,64 @@ from src.storage.models import (
 )
 
 
+def _vis_eventos(ctx: Contexto | None) -> ColumnElement[bool] | None:
+    """Cláusula de visibilidad multi-tenant sobre ``eventos``.
+
+    Regla (grill-me Q3/Q7): dentro del workspace activo, lo visible
+    es ``scope='workspace'`` ∪ lo propio (``autor_id=me``) ∪ lo sin
+    atribuir (``autor_id IS NULL``, filas de importaciones/scripts).
+    El workspace es el límite de aislamiento — nada cruza fronteras.
+    Con ``ctx=None`` devuelve ``None`` — sin filtro (CLI, importers,
+    tests de capa storage).
+    """
+    if ctx is None:
+        return None
+    return and_(
+        EventoModel.workspace_id == ctx.workspace_id,
+        or_(
+            EventoModel.scope == "workspace",
+            EventoModel.autor_id == ctx.usuario_id,
+            EventoModel.autor_id.is_(None),
+        ),
+    )
+
+
+def _vis_generico(
+    modelo: Any, ctx: Contexto | None
+) -> ColumnElement[bool] | None:
+    """Misma regla de visibilidad para entidades con scope+autor."""
+    if ctx is None:
+        return None
+    return and_(
+        modelo.workspace_id == ctx.workspace_id,
+        or_(
+            modelo.scope == "workspace",
+            modelo.autor_id == ctx.usuario_id,
+            modelo.autor_id.is_(None),
+        ),
+    )
+
+
 class EventoRepository:
     """Acceso a datos de los eventos de la línea de universo."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self, session: AsyncSession, ctx: Contexto | None = None
+    ) -> None:
         """Inicializa el repositorio con una sesión async.
 
         Args:
             session: Sesión async de SQLAlchemy.
+            ctx: Contexto de identidad; si se pasa, toda lectura se
+                filtra por la visibilidad del llamante.
         """
         self._session = session
+        self._ctx = ctx
+
+    def _vis(self) -> list[ColumnElement[bool]]:
+        """Filtros de visibilidad a incluir en las lecturas."""
+        clausula = _vis_eventos(self._ctx)
+        return [clausula] if clausula is not None else []
 
     async def crear(self, evento: EventoModel) -> EventoModel:
         """Persiste un evento y lo retorna con su id asignado.
@@ -60,9 +114,10 @@ class EventoRepository:
             evento_id: UUID del evento.
 
         Returns:
-            El evento o None si no existe.
+            El evento o None si no existe o no es visible.
         """
-        return await self._session.get(EventoModel, evento_id)
+        stmt = select(EventoModel).where(EventoModel.id == evento_id, *self._vis())
+        return (await self._session.execute(stmt)).scalar_one_or_none()
 
     async def listar_por_rango(
         self,
@@ -89,7 +144,8 @@ class EventoRepository:
             Eventos ordenados por timestamp ascendente.
         """
         filtros: list[Any] = [
-            EventoModel.timestamp_unix.between(desde, hasta)
+            EventoModel.timestamp_unix.between(desde, hasta),
+            *self._vis(),
         ]
         if rama is not None:
             filtros.append(EventoModel.rama == rama)
@@ -191,6 +247,7 @@ class EventoRepository:
                     EventoModel.expira_en > ahora,
                 ),
                 ~cierre.exists(),
+                *self._vis(),
             )
             .order_by(EventoModel.timestamp_unix)
         )
@@ -225,6 +282,7 @@ class EventoRepository:
         tag = func.unnest(EventoModel.tags).label("tag")
         stmt = (
             select(tag, func.count().label("n"))
+            .where(*self._vis())
             .group_by(tag)
             .order_by(func.count().desc())
             .limit(limite)
@@ -263,6 +321,7 @@ class EventoRepository:
                 EventoModel.expira_en.is_(None),
                 EventoModel.expira_en > ahora,
             ),
+            *self._vis(),
         ]
         if rama is not None:
             filtros.append(EventoModel.rama == rama)
@@ -298,6 +357,7 @@ class EventoRepository:
                 EventoModel.expira_en.is_(None),
                 EventoModel.expira_en > ahora,
             ),
+            *self._vis(),
         ]
         if rama is not None:
             filtros.append(EventoModel.rama == rama)
@@ -331,7 +391,8 @@ class EventoRepository:
         """
         tsquery = func.plainto_tsquery("spanish", termino)
         stmt = select(EventoModel.id).where(
-            EventoModel.contenido_tsv.op("@@")(tsquery)
+            EventoModel.contenido_tsv.op("@@")(tsquery),
+            *self._vis(),
         )
         if excluir_id is not None:
             stmt = stmt.where(EventoModel.id != excluir_id)
@@ -375,6 +436,7 @@ class EventoRepository:
             EventoModel.timestamp_unix < antes_de,
             EventoModel.amplitud <= amplitud_max,
             EventoModel.refuerzos <= refuerzos_max,
+            *self._vis(),
         )
         return int((await self._session.execute(stmt)).scalar_one())
 
@@ -393,6 +455,7 @@ class EventoRepository:
             EventoModel.timestamp_unix < antes_de,
             EventoModel.amplitud <= amplitud_max,
             EventoModel.refuerzos <= refuerzos_max,
+            *self._vis(),
         )
         resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
         return resultado.rowcount
@@ -412,13 +475,13 @@ class EventoRepository:
         """
         stmt_previos = (
             select(EventoModel)
-            .where(EventoModel.timestamp_unix < timestamp_unix)
+            .where(EventoModel.timestamp_unix < timestamp_unix, *self._vis())
             .order_by(EventoModel.timestamp_unix.desc())
             .limit(cantidad)
         )
         stmt_siguientes = (
             select(EventoModel)
-            .where(EventoModel.timestamp_unix > timestamp_unix)
+            .where(EventoModel.timestamp_unix > timestamp_unix, *self._vis())
             .order_by(EventoModel.timestamp_unix)
             .limit(cantidad)
         )
@@ -453,7 +516,7 @@ class EventoRepository:
                     literal(i).label("ancla"),
                     literal(0).label("lado"),
                 )
-                .where(EventoModel.timestamp_unix < ts)
+                .where(EventoModel.timestamp_unix < ts, *self._vis())
                 .order_by(EventoModel.timestamp_unix.desc())
                 .limit(cantidad)
             )
@@ -463,7 +526,7 @@ class EventoRepository:
                     literal(i).label("ancla"),
                     literal(1).label("lado"),
                 )
-                .where(EventoModel.timestamp_unix > ts)
+                .where(EventoModel.timestamp_unix > ts, *self._vis())
                 .order_by(EventoModel.timestamp_unix)
                 .limit(cantidad)
             )
@@ -529,13 +592,24 @@ class EventoRepository:
 class RelacionRepository:
     """Acceso a datos de los vínculos entre eventos."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self, session: AsyncSession, ctx: Contexto | None = None
+    ) -> None:
         """Inicializa el repositorio con una sesión async.
 
         Args:
             session: Sesión async de SQLAlchemy.
+            ctx: Contexto de identidad; filtra los vínculos a los del
+                workspace del llamante.
         """
         self._session = session
+        self._ctx = ctx
+
+    def _vis(self) -> list[ColumnElement[bool]]:
+        """Filtros de visibilidad a incluir en las lecturas."""
+        if self._ctx is None:
+            return []
+        return [RelacionModel.workspace_id == self._ctx.workspace_id]
 
     async def vincular(
         self,
@@ -587,6 +661,7 @@ class RelacionRepository:
         """
         stmt = (
             select(RelacionModel)
+            .where(*self._vis())
             .order_by(RelacionModel.creado_en.desc())
             .limit(limite)
         )
@@ -618,13 +693,18 @@ class RelacionRepository:
 class FuenteRepository:
     """Acceso a datos de las fuentes administrables."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self, session: AsyncSession, ctx: Contexto | None = None
+    ) -> None:
         """Inicializa el repositorio con una sesión async.
 
         Args:
             session: Sesión async de SQLAlchemy.
+            ctx: Contexto de identidad; las fuentes se acotan a su
+                workspace (default: el bootstrap ``personal``).
         """
         self._session = session
+        self._ws = ctx.workspace_id if ctx is not None else WORKSPACE_PERSONAL_ID
 
     async def listar(
         self, incluir_archivadas: bool = True
@@ -639,12 +719,14 @@ class FuenteRepository:
         """
         conteo = (
             select(EventoModel.fuente, func.count().label("n"))
+            .where(EventoModel.workspace_id == self._ws)
             .group_by(EventoModel.fuente)
             .subquery()
         )
         stmt = (
             select(FuenteModel, func.coalesce(conteo.c.n, 0).label("n"))
             .outerjoin(conteo, conteo.c.fuente == FuenteModel.nombre)
+            .where(FuenteModel.workspace_id == self._ws)
             .order_by(FuenteModel.nombre)
         )
         if not incluir_archivadas:
@@ -679,6 +761,7 @@ class FuenteRepository:
             pg_insert(FuenteModel)
             .values(
                 nombre=nombre,
+                workspace_id=self._ws,
                 tipo=tipo,
                 namespace=namespace,
                 rama_origen=rama_origen,
@@ -687,13 +770,17 @@ class FuenteRepository:
             .on_conflict_do_nothing()
         )
         await self._session.execute(stmt)
-        existente = await self._session.get(FuenteModel, nombre)
+        existente = await self._session.get(
+            FuenteModel, (nombre, self._ws)
+        )
         assert existente is not None
         return existente
 
     async def obtener(self, nombre: str) -> FuenteModel | None:
         """Retorna la fuente por nombre o None."""
-        return await self._session.get(FuenteModel, nombre)
+        return await self._session.get(
+            FuenteModel, (nombre, self._ws)
+        )
 
     async def cambiar_estado(self, nombre: str, estado: str) -> bool:
         """Activa o archiva una fuente.
@@ -707,7 +794,10 @@ class FuenteRepository:
         """
         resultado = await self._session.execute(
             update(FuenteModel)
-            .where(FuenteModel.nombre == nombre)
+            .where(
+                FuenteModel.nombre == nombre,
+                FuenteModel.workspace_id == self._ws,
+            )
             .values(estado=estado)
         )
         return cast(CursorResult[FuenteModel], resultado).rowcount > 0
@@ -722,7 +812,10 @@ class FuenteRepository:
             True si existía.
         """
         resultado = await self._session.execute(
-            delete(FuenteModel).where(FuenteModel.nombre == nombre)
+            delete(FuenteModel).where(
+                FuenteModel.nombre == nombre,
+                FuenteModel.workspace_id == self._ws,
+            )
         )
         return cast(CursorResult[FuenteModel], resultado).rowcount > 0
 
@@ -774,13 +867,20 @@ class BenchmarkRepository:
 class ConfiguracionRepository:
     """Acceso a datos del almacén clave-valor de preferencias."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self, session: AsyncSession, ctx: Contexto | None = None
+    ) -> None:
         """Inicializa el repositorio con una sesión async.
 
         Args:
             session: Sesión async de SQLAlchemy.
+            ctx: Contexto de identidad; la config se acota a su
+                workspace bajo el usuario ``sistema`` (preferencias a
+                nivel workspace; el aislamiento por usuario llega con
+                el dashboard de equipo).
         """
         self._session = session
+        self._ws = ctx.workspace_id if ctx is not None else WORKSPACE_PERSONAL_ID
 
     async def obtener(self, clave: str) -> dict[str, Any] | None:
         """Retorna el documento JSON asociado a la clave.
@@ -791,7 +891,11 @@ class ConfiguracionRepository:
         Returns:
             El documento almacenado, o None si la clave no existe.
         """
-        stmt = select(ConfiguracionModel.valor).where(ConfiguracionModel.clave == clave)
+        stmt = select(ConfiguracionModel.valor).where(
+            ConfiguracionModel.clave == clave,
+            ConfiguracionModel.workspace_id == self._ws,
+            ConfiguracionModel.usuario_id == USUARIO_SISTEMA_ID,
+        )
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
     async def guardar(self, clave: str, valor: dict[str, Any]) -> None:
@@ -803,9 +907,18 @@ class ConfiguracionRepository:
         """
         stmt = (
             pg_insert(ConfiguracionModel)
-            .values(clave=clave, valor=valor)
+            .values(
+                clave=clave,
+                workspace_id=self._ws,
+                usuario_id=USUARIO_SISTEMA_ID,
+                valor=valor,
+            )
             .on_conflict_do_update(
-                index_elements=[ConfiguracionModel.clave],
+                index_elements=[
+                    ConfiguracionModel.clave,
+                    ConfiguracionModel.workspace_id,
+                    ConfiguracionModel.usuario_id,
+                ],
                 set_={"valor": valor, "actualizado_en": func.now()},
             )
         )
@@ -815,13 +928,22 @@ class ConfiguracionRepository:
 class ProyeccionRepository:
     """Acceso a datos de las proyecciones persistidas."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self, session: AsyncSession, ctx: Contexto | None = None
+    ) -> None:
         """Inicializa el repositorio con una sesión async.
 
         Args:
             session: Sesión async de SQLAlchemy.
+            ctx: Contexto de identidad; filtra por visibilidad.
         """
         self._session = session
+        self._ctx = ctx
+
+    def _vis(self) -> list[ColumnElement[bool]]:
+        """Filtros de visibilidad a incluir en las lecturas."""
+        clausula = _vis_generico(ProyeccionModel, self._ctx)
+        return [clausula] if clausula is not None else []
 
     async def registrar(self, proyeccion: ProyeccionModel) -> ProyeccionModel:
         """Persiste una proyección.
@@ -843,7 +965,12 @@ class ProyeccionRepository:
         Returns:
             La última proyección persistida, o None si no hay ninguna.
         """
-        stmt = select(ProyeccionModel).order_by(ProyeccionModel.creado_en.desc()).limit(1)
+        stmt = (
+            select(ProyeccionModel)
+            .where(*self._vis())
+            .order_by(ProyeccionModel.creado_en.desc())
+            .limit(1)
+        )
         resultado = await self._session.execute(stmt)
         return resultado.scalars().first()
 
@@ -856,13 +983,22 @@ class ObjetivoRepository:
     cumplido/abandonado son transiciones persistidas, no borrados.
     """
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self, session: AsyncSession, ctx: Contexto | None = None
+    ) -> None:
         """Inicializa el repositorio con una sesión async.
 
         Args:
             session: Sesión async de SQLAlchemy.
+            ctx: Contexto de identidad; filtra por visibilidad.
         """
         self._session = session
+        self._ctx = ctx
+
+    def _vis(self) -> list[ColumnElement[bool]]:
+        """Filtros de visibilidad a incluir en las lecturas."""
+        clausula = _vis_generico(ObjetivoModel, self._ctx)
+        return [clausula] if clausula is not None else []
 
     async def crear(self, objetivo: ObjetivoModel) -> ObjetivoModel:
         """Persiste un objetivo y lo retorna con su id asignado.
@@ -893,7 +1029,10 @@ class ObjetivoRepository:
             Objetivos ordenados por fecha límite ascendente — primero
             el más próximo, el ancla más cercana del futuro.
         """
-        filtros = [ObjetivoModel.rama == rama]
+        filtros: list[ColumnElement[bool]] = [
+            ObjetivoModel.rama == rama,
+            *self._vis(),
+        ]
         if estado is not None:
             filtros.append(ObjetivoModel.estado == estado)
         stmt = (
@@ -906,7 +1045,9 @@ class ObjetivoRepository:
 
     async def obtener(self, objetivo_id: uuid.UUID) -> ObjetivoModel | None:
         """Retorna el objetivo por id, o None si no existe."""
-        stmt = select(ObjetivoModel).where(ObjetivoModel.id == objetivo_id)
+        stmt = select(ObjetivoModel).where(
+            ObjetivoModel.id == objetivo_id, *self._vis()
+        )
         resultado = await self._session.execute(stmt)
         return resultado.scalars().first()
 

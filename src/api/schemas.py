@@ -55,6 +55,8 @@ class EventoRequest(BaseModel):
     ttl: str | int | None = Field(default=None)
     reemplaza_id: str | None = Field(default=None)
     con_quien: str | None = Field(default=None, max_length=128)
+    scope: Literal["personal", "workspace"] = "personal"
+    workspace: str | None = Field(default=None, max_length=64)
 
 
 class CerrarLoopRequest(BaseModel):
@@ -72,6 +74,8 @@ class ObjetivoRequest(BaseModel):
     dimension: Literal["cognitiva", "somatica", "conductual"] | None = None
     descripcion: str | None = Field(default=None, max_length=10_000)
     rama: str = Field(default="main", min_length=1, max_length=64)
+    scope: Literal["personal", "workspace"] = "personal"
+    workspace: str | None = Field(default=None, max_length=64)
 
 
 class ObjetivoPatch(BaseModel):
@@ -118,6 +122,9 @@ class EventoResponse(BaseModel):
     expira_en: int | None = None
     reemplazado_por: str | None = None
     con_quien: str | None = None
+    scope: str = "personal"
+    workspace_id: str | None = None
+    autor_id: str | None = None
 
 
 class TagResponse(BaseModel):

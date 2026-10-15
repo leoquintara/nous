@@ -164,6 +164,10 @@ def _parser() -> argparse.ArgumentParser:
         help="Elimina de verdad; sin él solo muestra el conteo (dry-run).",
     )
     prune.add_argument("--json", action="store_true", help="Salida JSON.")
+
+    from src.cli.identidad import registrar_subparsers
+
+    registrar_subparsers(sub)
     return p
 
 
@@ -642,6 +646,10 @@ def _despachar(args: argparse.Namespace) -> int:
         return cmd_skills(args.accion, args.target, args.dir)
     if comando == "benchmark":
         return _cmd_benchmark()
+    if comando in ("users", "workspaces", "keys"):
+        from src.cli.identidad import cmd_identidad
+
+        return cmd_identidad(comando, args)
     if comando == "prune":
         datos = asyncio.run(_poda(args.dias, args.amplitud, args.aplicar))
         if args.json:
