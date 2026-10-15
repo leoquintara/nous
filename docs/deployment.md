@@ -26,11 +26,12 @@ docker compose --profile app up -d
 ```
 
 levanta `nous-db` (pgvector/pgvector:pg18, volumen `nous_pgdata`) y
-`nous-app` — una imagen multi-stage (~9.7GB) que incluye **todo**:
-API REST + MCP HTTP + dashboard estático + modelos ONNX horneados
-(embeddings MiniLM + reranker). Un solo puerto: `http://localhost:8720`
-sirve `/` (dashboard), `/api/*` y `/mcp`. El entrypoint corre
-`alembic upgrade head` en cada arranque — DB fresca migra sola.
+`nous-app` — una imagen multi-stage (~1.5GB, ONNX-only sin torch) que
+incluye **todo**: API REST + MCP HTTP + dashboard estático + modelos
+ONNX horneados (embeddings MiniLM + reranker). Un solo puerto:
+`http://localhost:8720` sirve `/` (dashboard), `/api/*` y `/mcp`. El
+entrypoint corre `alembic upgrade head` en cada arranque — DB fresca
+migra sola.
 
 Notas de la imagen:
 
@@ -43,6 +44,10 @@ Notas de la imagen:
   versiona el PGDATA en subdirectorios — montar `/data` rompe).
 - Healthchecks en ambos servicios; `docker compose ps` muestra
   `(healthy)` cuando está listo.
+- `skills` como primer argumento bypasea el servidor: instala los
+  skills/agentes empaquetados en el bind-mount `/agents` sin tocar
+  la DB (ver README §Skills). `NOUS_SKILLS_TARGET` cambia el destino
+  interno si montas en otra ruta.
 
 ## Instalación como comando global (pipx)
 

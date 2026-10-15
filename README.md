@@ -151,6 +151,20 @@ nous skills install --target .agents     # o .claude/.cursor/.opencode
 nous skills list
 ```
 
+Con Docker no hace falta CLI local: el entrypoint de la imagen
+entiende `skills` y escribe al bind-mount `/agents` — monta ahí el
+destino que quieras:
+
+```bash
+# instala en el perfil global del usuario
+docker run --rm -v "$HOME/.agents:/agents" nous-by-quintara-app skills
+
+# o dentro del repo actual (skills de proyecto)
+docker run --rm -v "$PWD/.agents:/agents" nous-by-quintara-app skills
+
+docker run --rm nous-by-quintara-app skills list   # sin mount: solo lista
+```
+
 Skills: `nous-remember` (persistir), `nous-recall` (consultar),
 `nous-context` (contexto incompleto), `nous-universe` (línea 4D),
 `nous-workspaces` (scopes, roles y workspace= multi-tenant),
