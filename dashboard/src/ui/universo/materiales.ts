@@ -170,6 +170,9 @@ export function materialFlujo(
       uColor: { value: new THREE.Color(color) },
       uT: { value: 0 },
       uIntensidad: { value: intensidad },
+      // Fracción recorrida del cauce (0-1 en uv.x): lo ya viajado
+      // luce, lo pendiente se atenúa y el frente tiene cabeza.
+      uRecorrido: { value: 1 },
     },
     vertexShader: `
       varying vec2 vUv;
@@ -189,12 +192,21 @@ export function materialFlujo(
       uniform vec3 uColor;
       uniform float uT;
       uniform float uIntensidad;
+      uniform float uRecorrido;
       void main() {
         // Bandas de corriente viajando hacia el futuro (uv.x crece con t).
         float onda = pow(0.5 + 0.5 * sin(vUv.x * 55.0 - uT * 1.7), 3.0);
         float latido = 0.9 + 0.1 * sin(uT * 1.1 + vUv.x * 18.0);
         float fres = 0.45 + 0.55 * pow(1.0 - abs(dot(normalize(vN), normalize(vV))), 1.6);
-        float energia = (0.16 + onda * 0.85) * latido * fres * uIntensidad;
+        // El camino andado luce entero; más allá del frente queda a
+        // ~1/4 — el cauce muestra por dónde ya se vivió.
+        float borde = 0.018;
+        float recorrido = 1.0 - smoothstep(uRecorrido - borde, uRecorrido + borde, vUv.x);
+        float camino = 0.28 + 0.72 * recorrido;
+        // Cabeza luminosa en el frente del recorrido (faro del ahora).
+        float enFrente = step(0.003, uRecorrido) * step(uRecorrido, 0.997);
+        float cabeza = exp(-pow((vUv.x - uRecorrido) * 22.0, 2.0)) * 0.55 * enFrente;
+        float energia = ((0.16 + onda * 0.85) * latido * camino + cabeza) * fres * uIntensidad;
         gl_FragColor = vec4(uColor * energia, energia);
       }`,
   });

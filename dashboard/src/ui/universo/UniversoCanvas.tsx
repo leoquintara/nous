@@ -240,6 +240,12 @@ export function UniversoCanvas({
       // ── Cauces por rama — corriente luminosa interna ─────────
       // Todos los materiales de flujo comparten el reloj uT.
       const matsFlujo: THREE.ShaderMaterial[] = [];
+      // Cauces con frente de recorrido: tramo [ini, fin] → uv.x.
+      const canalesRecorrido: {
+        mat: THREE.ShaderMaterial;
+        ini: number;
+        fin: number;
+      }[] = [];
       // Capas togglables: cada grupo responde a una opción de `vista`.
       const grupoRamas = new THREE.Group();
       const grupoAfluentes = new THREE.Group();
@@ -263,6 +269,7 @@ export function UniversoCanvas({
           carril === 0 ? 0.55 : 0.34,
         );
         matsFlujo.push(mat);
+        canalesRecorrido.push({ mat, ini, fin: ctx.tMax });
         const tubo = new THREE.Mesh(
           new THREE.TubeGeometry(
             new THREE.CatmullRomCurve3(pts),
@@ -348,6 +355,7 @@ export function UniversoCanvas({
         const color = colorDeFuente(f.id, rio.fuentes);
         const mat = materialFlujo(color, 0.5);
         matsFlujo.push(mat);
+        canalesRecorrido.push({ mat, ini: naci, fin: ctx.tMax });
         const mallaAf = new THREE.Mesh(
           new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 90, 0.45, 6),
           mat,
@@ -752,6 +760,15 @@ export function UniversoCanvas({
         const gp = cur != null
           ? Math.min(1, Math.max(0, (cur - ctx.tMax) / rio.horizonte))
           : 0;
+
+        // Frente del recorrido por cauce: lo ya viajado luce, lo
+        // pendiente se atenúa — el río muestra por dónde se vivió.
+        for (const c of canalesRecorrido) {
+          c.mat.uniforms.uRecorrido.value = Math.min(
+            1,
+            Math.max(0, (tCur - c.ini) / (c.fin - c.ini)),
+          );
+        }
 
         // Orbes: latido por amplitud + atenuación tras el cursor +
         // zona de foco — los eventos cercanos al instante observado
