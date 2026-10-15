@@ -21,7 +21,7 @@ import {
   Planet,
   Plus,
   Settings,
-  X,
+  Xmark,
 } from "iconoir-react";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -499,7 +499,7 @@ export default function PaginaUniverso() {
                 aria-label="Cerrar detalle"
                 className="texto-suave rounded p-0.5 hover:text-(--ink)"
               >
-                <X width={13} height={13} />
+                <Xmark width={13} height={13} />
               </button>
             </div>
             <p className="mt-2 text-sm leading-snug">{sel.contenido}</p>
@@ -686,7 +686,7 @@ function PanelMetas({
               title="Abandonar"
               className="texto-suave rounded p-1 transition-transform hover:scale-110 hover:text-(--danger) active:scale-90"
             >
-              <X width={13} height={13} />
+              <Xmark width={13} height={13} />
             </button>
           </div>
         ))}
@@ -760,7 +760,7 @@ function Tarjeta({
           aria-label="Cerrar detalle"
           className="texto-suave rounded p-0.5 hover:text-(--ink)"
         >
-          <X width={13} height={13} />
+          <Xmark width={13} height={13} />
         </button>
       </div>
       {children}
