@@ -112,6 +112,34 @@ poetry run nous stats            # conteos por dimensión
 ```
 
 Genera el token: `python -c "import secrets; print('ns_' + secrets.token_hex(32))"`.
+El token estático equivale al **owner** del workspace `personal`; para un
+usuario individual genera su key: `nous keys create --usuario <handle>`
+y usa `Bearer ns_u_*` (o `NOUS_API_KEY` en el env del proceso stdio).
+
+### Workspaces y equipo (multi-tenant)
+
+La memoria se aísla por **workspace** — nada cruza entre ellos. Cada
+evento/objetivo lleva además un **scope**: `personal` (solo su autor,
+el default) o `workspace` (visible para el equipo). Las lecturas ven
+`workspace ∪ propios`: los `personal` de otros son invisibles.
+
+- **Roles**: `owner` (gestiona miembros/invitaciones), `member`
+  (escribe), `viewer` (solo lee). El rol se resuelve en cada workspace.
+- **Override**: las tools MCP y la REST aceptan `workspace=<slug|uuid>`
+  para escribir/leer en otro espacio — exige membresía.
+- **Invitaciones**: `nous workspaces invite <slug>` emite un `ns_inv_*`
+  de un solo uso; el invitado lo canjea en `/unirse` y recibe su `ns_u_*`.
+- **Edición libre**: sin `NOUS_LICENSE_KEY`, self-hosted permite 1
+  usuario y 3 workspaces.
+
+```bash
+nous users create --handle ana --nombre "Ana"
+nous workspaces create --slug quintara --nombre "Quintara AI"
+nous workspaces invite quintara --rol member        # → ns_inv_…
+nous keys create --usuario ana --workspace quintara # → ns_u_…
+```
+
+Detalle del modelo: [docs/architecture.md](docs/architecture.md#multi-tenant).
 
 ### Skills y agentes para tu agente
 
@@ -125,6 +153,7 @@ nous skills list
 
 Skills: `nous-remember` (persistir), `nous-recall` (consultar),
 `nous-context` (contexto incompleto), `nous-universe` (línea 4D),
+`nous-workspaces` (scopes, roles y workspace= multi-tenant),
 `nous-preferences`, `nous-checkin` (ritual somático post-hito),
 `nous-somatic` (mapa de señales).
 
@@ -147,6 +176,9 @@ loops/objetivos/fuentes), `nous-pathfinder` (metas → hitos → avance),
 | `nous prune [--dias 90] [--amplitud 0.3]` | Poda recuerdos débiles |
 | `nous benchmark` | Benchmark de búsqueda (persiste resultados) |
 | `nous check-update` / `nous upgrade` | Gestión de versiones |
+| `nous users create\|list` | Usuarios del sistema |
+| `nous workspaces create\|list\|invite\|canjear` | Workspaces e invitaciones `ns_inv_*` |
+| `nous keys create\|list\|revoke` | Keys `ns_u_*` por usuario (en claro una vez) |
 
 Referencia completa: [docs/cli.md](docs/cli.md).
 
@@ -160,8 +192,11 @@ Rutas: `/` cerebro 3D con replay de actividad · `/memoria` búsqueda ·
 `/universo` línea temporal 4D interactiva · `/proyeccion` futuros ·
 `/modelos` proveedores IA (primario + fallback) · `/fuentes` procedencias ·
 `/trazas` (Logs) llamadas y pings · `/importar` migraciones visuales ·
-`/benchmarks`. Acceso: token `ns_*` o usuario+contraseña si defines
-`NOUS_DASHBOARD_USUARIO`/`NOUS_DASHBOARD_PASSWORD`.
+`/benchmarks` · `/equipo` miembros/roles/invitaciones/licencia ·
+`/unirse` canje público de invitación. Acceso: token `ns_*` o
+usuario+contraseña si defines
+`NOUS_DASHBOARD_USUARIO`/`NOUS_DASHBOARD_PASSWORD`. El nav incluye
+switcher de workspace — el activo viaja en todas las llamadas.
 
 Detalle: [docs/dashboard.md](docs/dashboard.md).
 
@@ -180,7 +215,9 @@ Desde la UI `/importar` o `nous import`:
 `POST /api/eventos` · `GET /api/buscar` · `GET /api/eventos` ·
 `DELETE /api/eventos/{id}` · loops, objetivos, contexto-inicial, tags,
 fuentes (+ramificar), relaciones, proyección, preferencias, proveedores IA,
-actividad, benchmarks, llamadas, ping, importar. Referencia:
+actividad, benchmarks, llamadas, ping, importar · identidad
+(`/api/identidad`, `/api/workspaces/*`, `/api/llaves`,
+`/api/invitaciones/canjear` público). Referencia:
 [docs/api.md](docs/api.md).
 
 ## Configuración (`.env`)
@@ -197,6 +234,10 @@ actividad, benchmarks, llamadas, ping, importar. Referencia:
 | `NOUS_PRECALENTAR_MODELOS` | `true` | Warm-up al arrancar |
 | `NOUS_CLAVE_CIFRADO` | derivada del token | Passphrase pgcrypto |
 | `NOUS_COMMIT_SINCRONO` | `false` | fsync por commit |
+| `NOUS_API_KEY` | (owner local) | Key `ns_u_*` para identidad en stdio |
+| `NOUS_LICENSE_KEY` | (vacío = edición libre) | Desbloquea multi-tenant completo |
+| `NOUS_MAX_USUARIOS_LIBRES` | `1` | Límite sin licencia |
+| `NOUS_MAX_WORKSPACES_LIBRES` | `3` | Límite sin licencia |
 
 ## Desarrollo
 

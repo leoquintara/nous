@@ -72,6 +72,19 @@ def test_skills_somaticos_cubren_ritual_y_mapa(tmp_path: Path) -> None:
     assert "diagnosticar" in mirror or "clínicas" in mirror
 
 
+def test_skill_workspaces_documenta_scope_y_override(
+    tmp_path: Path,
+) -> None:
+    """nous-workspaces explica scopes, workspace=, roles y somática."""
+    skills.instalar(".agents", tmp_path)
+    texto = (
+        tmp_path / ".agents" / "skills" / "nous-workspaces" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    for concepto in ("scope", "personal", "workspace=", "viewer", "owner"):
+        assert concepto in texto
+    assert "somátic" in texto
+
+
 def test_cmd_skills_list_retorna_cero(
     tmp_path: Path, capsys
 ) -> None:

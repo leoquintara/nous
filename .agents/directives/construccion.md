@@ -13,6 +13,11 @@
 - Embeddings e inferencia siempre locales; sin llamadas externas por defecto.
 - Nunca loggear contenido de memorias — solo IDs y metadata.
 - Tokens: formato `ns_*`, en `.env`, jamás en código ni docs.
+- Multi-tenant: `scope="personal"` es el default; `workspace` solo por
+  acto explícito del usuario. Lo somático es `personal` SIEMPRE — jamás
+  se escribe con scope de equipo.
+- La visibilidad se filtra en repositorios — nunca hacer queries
+  directas que salten la regla workspace ∪ propios ∪ sin-atribuir.
 
 ## Dashboard
 

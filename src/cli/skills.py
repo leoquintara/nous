@@ -67,6 +67,15 @@ ramas** (líneas temporales paralelas para escenarios).
   contenido también se indexan.
 - `rama`: línea de universo donde registrarlo ("main" por defecto);
   usa otra solo si el usuario pide un escenario alternativo.
+- `scope`: `"personal"` (default — solo lo ve su autor) o
+  `"workspace"` (visible para todo el equipo del workspace).
+  Compartir es SIEMPRE un acto explícito del usuario: pasa
+  `scope="workspace"` solo si dijo "del equipo", "compartido" o
+  "para el workspace". Lo somático (emociones, estrés, energía) va
+  `personal` SIEMPRE — nunca se expone al equipo.
+- `workspace`: slug o UUID para escribir en otro workspace del que
+  el usuario es miembro — solo si pide explícitamente guardar en
+  otro espacio. Sin él, escribe al workspace default de su key.
 - `ttl`: caducidad ("30d", "12h", "2w" o epoch) para recuerdos
   perecederos — expirados dejan de ser evocables pero quedan en la
   línea.
@@ -125,6 +134,17 @@ Elige la tool según la forma de la pregunta:
 - `rama="*"` en `obtener_linea_de_universo` recorre todas las líneas
   de universo, no solo `main`.
 
+## Visibilidad y workspaces
+
+- Todas las tools de lectura aceptan `workspace=` (slug o UUID) para
+  consultar otro workspace del que el usuario es miembro — solo si lo
+  pide; por defecto consultan el workspace de su key.
+- Lo que ves en un workspace: `scope="workspace"` ∪ tus propios
+  eventos `personal`. Los `personal` de otros miembros son
+  invisibles para ti — no existe tool que los lea.
+- Si `workspace=` devuelve error de permisos, el usuario no es
+  miembro ahí — no reintentes con otro identificador, dilo y ya.
+
 ## Interpretar resultados
 
 - `score_final` alto (>0.7) = evidencia fuerte. Cita los eventos.
@@ -175,9 +195,11 @@ con histórico completo, **ramas** (líneas paralelas para escenarios),
 
 ## Objetivos — los destinos del futuro
 
-- `crear_objetivo(titulo, fecha_objetivo, dimension?, descripcion?)` —
-  el usuario declara una meta con plazo ("lanzar Nous en junio").
-  `fecha_objetivo` es Unix epoch en **segundos**.
+- `crear_objetivo(titulo, fecha_objetivo, dimension?, descripcion?,
+  scope?)` — el usuario declara una meta con plazo ("lanzar Nous en
+  junio"). `fecha_objetivo` es Unix epoch en **segundos**. `scope`
+  funciona como en `recordar_evento`: `personal` por defecto;
+  `workspace` solo si la meta es declaradamente del equipo.
 - `listar_objetivos(estado?, rama?)` — activos por defecto; `estado="*"`
   para todos. Ordenados por fecha límite, el más próximo primero.
 - `cerrar_objetivo(id, "cumplido"|"abandonado", resolucion?)` —
@@ -254,7 +276,8 @@ salvo que el usuario inicie la conversación emocional él mismo.
    `amplitud` proporcional a la intensidad expresada (frustración
    leve 0.4–0.5, agotamiento fuerte 0.7+), tags del estado
    (`estres`, `flow`, `cansancio`, `satisfaccion`) — así las rachas
-   somáticas se vuelven consultables después.
+   somáticas se vuelven consultables después. Siempre con
+   `scope="personal"`: lo somático nunca va al workspace.
 4. **Confirmar en una línea**: "anotado" — no disertar sobre su
    estado.
 
@@ -324,6 +347,9 @@ Commits, pausas tomadas, herramientas usadas, hábitos observables
   jamás "trastorno", "depresión", "ansiedad clínica".
 - Racha > estado: una somática repetida en días vale más que el
   pico de hoy — los tags permiten verla en la línea.
+- **Lo somático es sagrado**: siempre `scope="personal"`. Las emociones
+  y el estado corporal del usuario jamás se escriben con
+  `scope="workspace"` — no hay excepción, ni aunque el equipo lo pida.
 """
 
 _SKILL_PREFERENCIAS = """---
@@ -390,6 +416,11 @@ Tu única responsabilidad es decidir qué se persiste en Nous y cómo.
 9. Si `recordar_evento` devuelve `contexto.completo=false`, pide la
    pieza faltante antes de seguir.
 10. Nunca registres secretos, tokens ni datos bancarios.
+11. `scope` siempre `personal` salvo que el usuario diga que es "del
+    equipo"/"compartido" — compartir es su acto, nunca tu default.
+    Lo somático (emoción, estrés, energía) es `personal` SIEMPRE.
+    `workspace=` solo cuando pida escribir en otro espacio del que
+    es miembro.
 """
 
 _AGENT_MIRROR = """---
@@ -425,9 +456,12 @@ no esperas a que te cuenten:
    propones, no registras aún: "te noto fundido — ¿lo anoto?".
    La confirmación del usuario es la memoria; tu inferencia es solo
    la pregunta.
-2. Persistes con `recordar_evento(dimension="somatica")`, amplitud
-   por intensidad (ver `nous-somatic`), tag del estado y
-   `relaciona_ids` al evento técnico que lo causó si existe.
+2. Persistes con `recordar_evento(dimension="somatica",
+   scope="personal")`, amplitud por intensidad (ver `nous-somatic`),
+   tag del estado y `relaciona_ids` al evento técnico que lo causó
+   si existe. Lo somático jamás lleva `scope="workspace"` — el
+   estado emocional del usuario no es visible para su equipo,
+   punto.
 3. **Contraparte conductual**: la pausa tomada, el revirt ejecutado,
    la sesión abandonada → `dimension="conductual"` — son hechos, no
    sentimientos.
@@ -523,6 +557,81 @@ lejos está.
 """
 
 
+_SKILL_WORKSPACES = """---
+name: nous-workspaces
+description: Modelo multi-tenant de Nous — workspaces, scopes
+  (personal/workspace), roles y el parámetro workspace= de las
+  tools. Usar cuando el usuario mencione su equipo, otro workspace,
+  compartir memorias o permisos.
+---
+
+# Workspaces — el modelo multi-tenant de Nous
+
+La memoria vive dentro de **workspaces**: contenedores aislados con
+su propio equipo. Ningún dato cruza workspaces jamás. El usuario
+puede pertenecer a varios (su `personal` bootstrap + los de sus
+equipos).
+
+## Scope — quién ve cada memoria
+
+Cada evento/objetivo lleva `scope`:
+
+- `personal` (default): solo lo ve su autor dentro del workspace.
+  **Nada se filtra al equipo por accidente.**
+- `workspace`: visible para todos los miembros del workspace.
+
+Las lecturas devuelven `scope=workspace` ∪ los `personal` propios.
+Los `personal` de otros miembros son invisibles — no hay tool que
+los lea, ni siquiera para el owner.
+
+**Regla de oro**: compartir es siempre acto explícito del usuario.
+Solo pasa `scope="workspace"` si dijo "del equipo", "compartido"
+o "para el workspace". Ante la duda: `personal` — después puede
+corregir con `reemplaza_id` y un evento `scope="workspace"`.
+
+**Lo somático jamás es workspace**: emociones, estrés, energía y
+estado corporal son `personal` siempre, sin excepción.
+
+## `workspace=` — escribir/leer en otro espacio
+
+Todas las tools de lectura y escritura aceptan `workspace=` (slug o
+UUID) como override del workspace default de la key:
+
+- `recordar_evento(..., workspace="proyecto-x")` — guarda en ese
+  workspace (exige membresía; error de permisos si no).
+- `consultar_memoria(..., workspace="proyecto-x")` — busca ahí.
+
+Solo pásalo si el usuario lo pide o el contexto lo deja claro
+("esto es del workspace de Quintara"). Si el error es de permisos,
+el usuario no es miembro — informa, no reintentes.
+
+## Roles (afectan lo que puedes hacer)
+
+| Acción | owner | member | viewer |
+|---|---|---|---|
+| Leer (scope permitido) | sí | sí | sí |
+| Escribir eventos/objetivos | sí | sí | **no** |
+| Invitar / gestionar miembros | sí | no | no |
+
+El rol se resuelve en el workspace destino: un usuario owner en un
+workspace puede ser viewer en otro. Si una escritura devuelve 403,
+el usuario es viewer ahí — dilo, no insistas.
+
+## Invitaciones y llaves (fuera de las tools MCP)
+
+Las tools MCP no gestionan identidad — se hace por CLI o dashboard:
+
+- `nous workspaces invite <slug>` emite un `ns_inv_*` canjeable una
+  sola vez (en `/unirse` o `POST /api/invitaciones/canjear`).
+- `nous keys create --usuario <handle>` emite una `ns_u_*` — se
+  muestra en claro UNA vez; en la DB solo queda su hash.
+- El dashboard `/equipo` gestiona miembros, roles e invitaciones.
+
+Nunca pidas ni registres una `ns_inv_*`/`ns_u_*` en la memoria —
+son credenciales.
+"""
+
+
 @dataclass(frozen=True, slots=True)
 class Artefacto:
     """Un skill o agente empaquetado listo para instalar."""
@@ -537,6 +646,7 @@ ARTEFACTOS: tuple[Artefacto, ...] = (
     Artefacto("nous-recall", _SKILL_CONSULTAR, es_agente=False),
     Artefacto("nous-context", _SKILL_CONTEXTO, es_agente=False),
     Artefacto("nous-universe", _SKILL_UNIVERSO, es_agente=False),
+    Artefacto("nous-workspaces", _SKILL_WORKSPACES, es_agente=False),
     Artefacto("nous-preferences", _SKILL_PREFERENCIAS, es_agente=False),
     Artefacto("nous-checkin", _SKILL_CHECKIN, es_agente=False),
     Artefacto("nous-somatic", _SKILL_SOMATICA, es_agente=False),

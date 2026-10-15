@@ -11,3 +11,6 @@ Revisor del dashboard Nous. Antes de cada commit en `dashboard/` verifica:
 6. **Accesibilidad**: contraste AA en ambos temas, foco visible, `aria-label`
    en botones de solo icono.
 7. **Tipado**: `any` explícito → rechazar. `strict` de tsconfig activo.
+8. **Workspace**: llamada a la API sin `?workspace=` del workspace activo
+   → verificar (el adaptador lo inyecta vía `crearClienteNous`). Escrituras
+   de eventos/objetivos deben enviar `scope`.
