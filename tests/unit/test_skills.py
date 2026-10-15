@@ -62,3 +62,5 @@ def test_cmd_skills_list_retorna_cero(
     salida = capsys.readouterr().out
     assert "nous-remember" in salida
     assert "nous-keeper" in salida
+    assert "nous-pathfinder" in salida
+    assert "nous-preferences" in salida
