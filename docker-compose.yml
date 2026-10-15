@@ -38,6 +38,10 @@ services:
       NOUS_DATABASE_URL: ${NOUS_DATABASE_URL_DOCKER:-postgresql+asyncpg://${NOUS_DB_USER:-nous}:${NOUS_DB_PASSWORD:-nous}@db:5432/${NOUS_DB_NAME:-nous}}
       # Obligatorio: sin token la API queda abierta a la red.
       NOUS_API_TOKEN: ${NOUS_API_TOKEN:?Define NOUS_API_TOKEN en .env (ns_ + 64 hex)}
+      # Licencia comercial — vacío = edición libre (ver .env.example).
+      NOUS_LICENSE_KEY: ${NOUS_LICENSE_KEY:-}
+      NOUS_MAX_USUARIOS_LIBRES: ${NOUS_MAX_USUARIOS_LIBRES:-1}
+      NOUS_MAX_WORKSPACES_LIBRES: ${NOUS_MAX_WORKSPACES_LIBRES:-3}
       NOUS_MCP_TRANSPORT: http
       NOUS_API_HOST: 0.0.0.0
       NOUS_HF_OFFLINE: "true"
