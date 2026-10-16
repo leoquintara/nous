@@ -99,6 +99,13 @@ export default function PaginaLogin() {
               required
               className="vidrio rounded-xl px-3 py-2 outline-none"
             />
+            <span className="texto-suave text-xs">
+              Tu token de servicio es el valor de{" "}
+              <code className="font-mono">NOUS_API_TOKEN</code> en el{" "}
+              <code className="font-mono">.env</code> del servidor — o una
+              llave <code className="font-mono">ns_u_*</code> creada en
+              Equipo.
+            </span>
           </label>
         ) : (
           <>

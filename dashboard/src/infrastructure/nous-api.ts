@@ -44,7 +44,25 @@ import type {
   Workspace,
 } from "@/domain/modelos";
 
-const BASE_URL = process.env.NEXT_PUBLIC_NOUS_API ?? "http://127.0.0.1:8720";
+// El dashboard lo sirve el propio servidor Nous: misma origen siempre.
+// Así funciona idéntico por localhost, 127.0.0.1, IP LAN o dominio,
+// sin violar el CSP `connect-src 'self'` ni mezclar orígenes.
+const BASE_URL =
+  process.env.NEXT_PUBLIC_NOUS_API ??
+  (typeof window !== "undefined"
+    ? window.location.origin
+    : "http://127.0.0.1:8720");
+
+/** Fetch con diagnóstico: un TypeError de red se traduce a causa probable. */
+async function fetchNous(url: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch {
+    throw new Error(
+      `No se pudo contactar a Nous en ${BASE_URL} — ¿está corriendo el servidor?`,
+    );
+  }
+}
 
 /** Añade el override de workspace a una ruta con o sin query. */
 function conWorkspace(ruta: string, workspace?: string | null): string {
@@ -60,7 +78,7 @@ async function peticion<T>(
   init?: RequestInit,
   workspace?: string | null,
 ): Promise<T> {
-  const res = await fetch(`${BASE_URL}${conWorkspace(ruta, workspace)}`, {
+  const res = await fetchNous(`${BASE_URL}${conWorkspace(ruta, workspace)}`, {
     ...init,
     headers: {
       Authorization: `Bearer ${token}`,
@@ -226,7 +244,7 @@ export function crearClienteNous(
 export function crearAuth(): PuertoAuth {
   return {
     login: async (usuario, password) => {
-      const res = await fetch(`${BASE_URL}/api/login`, {
+      const res = await fetchNous(`${BASE_URL}/api/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ usuario, password }),
@@ -235,7 +253,7 @@ export function crearAuth(): PuertoAuth {
       return ((await res.json()) as { token: string }).token;
     },
     verificarToken: async (token) => {
-      const res = await fetch(`${BASE_URL}/api/eventos?limite=1`, {
+      const res = await fetchNous(`${BASE_URL}/api/eventos?limite=1`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       return res.ok;
@@ -294,7 +312,7 @@ export function crearClienteIdentidad(token: string): PuertoIdentidad {
 export function crearClienteInvitacion(): PuertoInvitacion {
   return {
     canjear: async (entrada) => {
-      const res = await fetch(`${BASE_URL}/api/invitaciones/canjear`, {
+      const res = await fetchNous(`${BASE_URL}/api/invitaciones/canjear`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(entrada),
