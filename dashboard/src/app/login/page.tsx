@@ -12,6 +12,8 @@ import { useState } from "react";
 
 import { usarApp } from "@/ui/proveedor-app";
 import { crearAuth } from "@/infrastructure/nous-api";
+import { FondoUniverso } from "@/ui/fondo/FondoUniverso";
+import { Logo } from "@/ui/logo";
 
 export default function PaginaLogin() {
   const { fijarToken } = usarApp();
@@ -47,13 +49,16 @@ export default function PaginaLogin() {
   }
 
   return (
-    <main className="flex min-h-dvh items-center justify-center p-6">
+    <main className="relative flex min-h-dvh items-center justify-center overflow-hidden p-6">
+      <FondoUniverso />
       <form
         onSubmit={entrar}
-        className="vidrio-fuerte flex w-full max-w-sm flex-col gap-5 p-8"
+        className="vidrio-fuerte relative z-10 flex w-full max-w-sm flex-col gap-5 p-8"
       >
         <div>
-          <h1 className="text-2xl font-semibold">Nous</h1>
+          <h1 className="text-2xl font-semibold">
+            <Logo />
+          </h1>
           <p className="texto-suave text-sm">
             Acceso a tu memoria 4D
           </p>

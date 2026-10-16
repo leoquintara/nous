@@ -14,6 +14,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 
 import { usarApp } from "@/ui/proveedor-app";
+import { Logo } from "@/ui/logo";
 import { crearClienteInvitacion } from "@/infrastructure/nous-api";
 
 /** Formulario de canje (envuelto en Suspense por useSearchParams). */
@@ -55,7 +56,9 @@ function FormularioCanje() {
     <main className="flex min-h-dvh items-center justify-center p-6">
       <div className="vidrio-fuerte flex w-full max-w-sm flex-col gap-5 p-8">
         <div>
-          <h1 className="text-2xl font-semibold">Nous</h1>
+          <h1 className="text-2xl font-semibold">
+            <Logo />
+          </h1>
           <p className="texto-suave text-sm">
             {key ? "Bienvenido al equipo" : "Únete a un workspace"}
           </p>
