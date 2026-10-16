@@ -10,13 +10,13 @@ import { Cpu, Timer } from "iconoir-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-import { usarApp } from "@/ui/proveedor-app";
+import { useApp } from "@/ui/proveedor-app";
 import { PanelIA } from "@/ui/panel-ia";
 import { Shell } from "@/ui/shell";
 import type { PrediccionIA, Proyeccion } from "@/domain/modelos";
 
 export default function PaginaProyeccion() {
-  const { memoria } = usarApp();
+  const { memoria } = useApp();
   const [proy, setProy] = useState<Proyeccion | null>(null);
   const [horizonte, setHorizonte] = useState(30);
   const [cargando, setCargando] = useState(false);

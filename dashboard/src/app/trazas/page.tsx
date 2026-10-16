@@ -14,7 +14,7 @@ import { Activity, Refresh } from "iconoir-react";
 import { useCallback, useEffect, useState } from "react";
 
 import type { Llamada, LlamadasStats } from "@/domain/modelos";
-import { usarApp } from "@/ui/proveedor-app";
+import { useApp } from "@/ui/proveedor-app";
 import { Shell } from "@/ui/shell";
 
 /** Color de status: 2xx verde, 3xx azul, 4xx ámbar, 5xx rojo. */
@@ -37,7 +37,7 @@ function hora(ts: number): string {
 }
 
 export default function PaginaTrazas() {
-  const { memoria } = usarApp();
+  const { memoria } = useApp();
   const [llamadas, setLlamadas] = useState<Llamada[]>([]);
   const [stats, setStats] = useState<LlamadasStats | null>(null);
   const [filtro, setFiltro] = useState("");
@@ -63,13 +63,18 @@ export default function PaginaTrazas() {
   }, [memoria, filtro]);
 
   useEffect(() => {
-    void recargar();
+    // La primera carga se difiere: recargar() hace setCargando(true)
+    // síncrono, que React desaconseja en el cuerpo del efecto.
+    const inicial = setTimeout(() => void recargar(), 0);
     // El auto-refresh se pausa con la pestaña oculta — si no, la propia
     // página genera ruido en el registro que está mostrando.
     const t = setInterval(() => {
       if (!document.hidden) void recargar();
     }, 5000);
-    return () => clearInterval(t);
+    return () => {
+      clearTimeout(inicial);
+      clearInterval(t);
+    };
   }, [recargar]);
 
   return (

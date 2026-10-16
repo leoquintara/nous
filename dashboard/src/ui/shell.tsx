@@ -30,7 +30,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { Logo } from "@/ui/logo";
-import { usarApp } from "@/ui/proveedor-app";
+import { useApp } from "@/ui/proveedor-app";
 
 const ENLACES = [
   { href: "/", etiqueta: "Cerebro", Icono: Brain },
@@ -57,7 +57,7 @@ export function Shell({
   fluid?: boolean;
 }) {
   const { tema, alternarTema, token, cerrarSesion, yo, workspace, fijarWorkspace } =
-    usarApp();
+    useApp();
   const pathname = usePathname();
   const router = useRouter();
   const [pantalla, setPantalla] = useState(false);

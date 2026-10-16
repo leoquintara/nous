@@ -7,12 +7,12 @@
 import { Refresh } from "iconoir-react";
 import { useEffect, useState } from "react";
 
-import { usarApp } from "@/ui/proveedor-app";
+import { useApp } from "@/ui/proveedor-app";
 import { Shell } from "@/ui/shell";
 import type { BenchmarkRun } from "@/domain/modelos";
 
 export default function PaginaBenchmarks() {
-  const { memoria } = usarApp();
+  const { memoria } = useApp();
   const [corridas, setCorridas] = useState<BenchmarkRun[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -28,7 +28,10 @@ export default function PaginaBenchmarks() {
   }
 
   useEffect(() => {
-    void cargar();
+    // La carga inicial se difiere — cargar() hace setState y React
+    // desaconseja setState síncrono en el cuerpo del efecto.
+    const t = setTimeout(() => void cargar(), 0);
+    return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [memoria]);
 

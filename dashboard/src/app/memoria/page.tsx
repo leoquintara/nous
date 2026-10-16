@@ -11,7 +11,7 @@ import { motion } from "motion/react";
 import { Search } from "iconoir-react";
 import { useCallback, useEffect, useState } from "react";
 
-import { usarApp } from "@/ui/proveedor-app";
+import { useApp } from "@/ui/proveedor-app";
 import { Shell } from "@/ui/shell";
 import type { Evento, ResultadoBusqueda } from "@/domain/modelos";
 
@@ -56,7 +56,7 @@ function ChipScope({ scope }: { scope: Evento["scope"] }) {
 
 /** Página de consulta y memoria fresca. */
 export default function PaginaMemoria() {
-  const { memoria } = usarApp();
+  const { memoria } = useApp();
   const [consulta, setConsulta] = useState("");
   const [resultados, setResultados] = useState<ResultadoBusqueda[]>([]);
   const [buscando, setBuscando] = useState(false);

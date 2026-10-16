@@ -23,7 +23,7 @@ import {
 } from "iconoir-react";
 import { useCallback, useEffect, useState } from "react";
 
-import { usarApp } from "@/ui/proveedor-app";
+import { useApp } from "@/ui/proveedor-app";
 import { Shell } from "@/ui/shell";
 import type {
   NuevoProveedorIA,
@@ -68,7 +68,7 @@ function slugDe(nombre: string): string {
 }
 
 export default function PaginaModelos() {
-  const { memoria } = usarApp();
+  const { memoria } = useApp();
   const [proveedores, setProveedores] = useState<ProveedorIA[]>([]);
   const [form, setForm] = useState(FORM_VACIO);
   const [editando, setEditando] = useState<string | null>(null);

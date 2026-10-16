@@ -10,13 +10,13 @@ import { Key, User } from "iconoir-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-import { usarApp } from "@/ui/proveedor-app";
+import { useApp } from "@/ui/proveedor-app";
 import { crearAuth } from "@/infrastructure/nous-api";
 import { FondoUniverso } from "@/ui/fondo/FondoUniverso";
 import { Logo } from "@/ui/logo";
 
 export default function PaginaLogin() {
-  const { fijarToken } = usarApp();
+  const { fijarToken } = useApp();
   const router = useRouter();
   const [modo, setModo] = useState<"token" | "credenciales">("token");
   const [token, setToken] = useState("");

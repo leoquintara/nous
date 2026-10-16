@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 
-import { usarApp } from "@/ui/proveedor-app";
+import { useApp } from "@/ui/proveedor-app";
 import {
   branchCurve,
   campoEstrellas,
@@ -27,7 +27,7 @@ const SEED = 20261015;
  */
 export function FondoUniverso() {
   const ref = useRef<HTMLCanvasElement>(null);
-  const { tema } = usarApp();
+  const { tema } = useApp();
 
   useEffect(() => {
     const canvas = ref.current;

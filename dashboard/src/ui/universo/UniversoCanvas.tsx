@@ -923,6 +923,10 @@ export function UniversoCanvas({
       cancelado = true;
       limpiar?.();
     };
+    // `escenarios` se omite a propósito: el init monta la escena una
+    // vez por `rio`; los cambios de escenarios los remonta el efecto
+    // debounced de arriba — incluirlo aquí recrearía WebGL por tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rio]);
 
   return (

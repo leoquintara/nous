@@ -13,13 +13,13 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 
-import { usarApp } from "@/ui/proveedor-app";
+import { useApp } from "@/ui/proveedor-app";
 import { Logo } from "@/ui/logo";
 import { crearClienteInvitacion } from "@/infrastructure/nous-api";
 
 /** Formulario de canje (envuelto en Suspense por useSearchParams). */
 function FormularioCanje() {
-  const { fijarToken } = usarApp();
+  const { fijarToken } = useApp();
   const router = useRouter();
   const params = useSearchParams();
   const [token, setToken] = useState(params.get("token") ?? "");

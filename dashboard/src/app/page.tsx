@@ -13,7 +13,7 @@ import { Cpu, Settings } from "iconoir-react";
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { usarApp } from "@/ui/proveedor-app";
+import { useApp } from "@/ui/proveedor-app";
 import { Shell } from "@/ui/shell";
 import type { EventoActividad, PrediccionIA } from "@/domain/modelos";
 import { PanelIA } from "@/ui/panel-ia";
@@ -50,7 +50,7 @@ const DIA = 86_400;
 const INTERVALO_ACTIVIDAD_MS = 4000;
 
 export default function PaginaCerebro() {
-  const { memoria } = usarApp();
+  const { memoria } = useApp();
   const { prefs, setPref } = usePrefsCerebro(memoria);
   const [datos, setDatos] = useState<DatosCerebro | null>(null);
   const [sel, setSel] = useState<{ index: number } | null>(null);

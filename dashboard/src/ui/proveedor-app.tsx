@@ -60,29 +60,32 @@ interface ContextoApp {
 const Contexto = createContext<ContextoApp | null>(null);
 
 /** Hook de acceso al contexto global de la app. */
-export function usarApp(): ContextoApp {
+export function useApp(): ContextoApp {
   const ctx = useContext(Contexto);
-  if (!ctx) throw new Error("usarApp debe usarse dentro de ProveedorApp");
+  if (!ctx) throw new Error("useApp debe usarse dentro de ProveedorApp");
   return ctx;
+}
+
+/** Lee una clave de localStorage solo en cliente (export estático). */
+function leerLS(clave: string): string | null {
+  return typeof window === "undefined" ? null : localStorage.getItem(clave);
 }
 
 /** Proveedor raíz de tema, sesión e identidad. */
 export function ProveedorApp({ children }: { children: React.ReactNode }) {
-  const [tema, setTema] = useState<Tema>("dark");
-  const [token, setToken] = useState<string | null>(null);
-  const [workspace, setWorkspace] = useState<string | null>(null);
-  const [yo, setYo] = useState<Identidad | null>(null);
-
-  useEffect(() => {
-    const temaGuardado =
-      (localStorage.getItem("nous.tema") as Tema | null) ??
-      (window.matchMedia("(prefers-color-scheme: dark)").matches
+  const [tema, setTema] = useState<Tema>(
+    () =>
+      (leerLS("nous.tema") as Tema | null) ??
+      (typeof window !== "undefined" &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches
         ? "dark"
-        : "light");
-    setTema(temaGuardado);
-    setToken(localStorage.getItem("nous.token"));
-    setWorkspace(localStorage.getItem("nous.workspace"));
-  }, []);
+        : "light"),
+  );
+  const [token, setToken] = useState<string | null>(() => leerLS("nous.token"));
+  const [workspace, setWorkspace] = useState<string | null>(() =>
+    leerLS("nous.workspace"),
+  );
+  const [yo, setYo] = useState<Identidad | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = tema;
@@ -123,13 +126,19 @@ export function ProveedorApp({ children }: { children: React.ReactNode }) {
       .catch(() => setYo(null));
   }, [identidadApi]);
 
+  // Al cambiar la API (login/logout) la identidad previa queda
+  // obsoleta — ajuste de estado durante render (patrón oficial de
+  // React para resetear estado derivado cuando cambia una entrada).
+  const [apiPrevia, setApiPrevia] = useState(identidadApi);
+  if (apiPrevia !== identidadApi) {
+    setApiPrevia(identidadApi);
+    setYo(null);
+  }
+
   // Resuelve identidad al entrar con sesión; si el workspace
   // persistido ya no existe (expulsado), cae al default del token.
   useEffect(() => {
-    if (!identidadApi) {
-      setYo(null);
-      return;
-    }
+    if (!identidadApi) return;
     let vivo = true;
     identidadApi
       .identidad()

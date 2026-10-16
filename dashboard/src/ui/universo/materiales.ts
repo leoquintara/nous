@@ -10,7 +10,6 @@ import {
   COLORES_ESTADO,
   colorFuente,
 } from "@/ui/brain/tipos";
-import type { Dimension } from "@/domain/modelos";
 import type { Escenario, IdEscenario } from "./geometria";
 
 /** Color semántico por escenario canónico de futuro. */

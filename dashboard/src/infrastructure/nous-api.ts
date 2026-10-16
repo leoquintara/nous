@@ -30,7 +30,6 @@ import type {
   Miembro,
   NuevoProveedorIA,
   Objetivo,
-  ParametrosImportacion,
   PrediccionIA,
   Preferencias,
   ProveedorIA,

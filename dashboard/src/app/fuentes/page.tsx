@@ -19,7 +19,7 @@ import {
 } from "iconoir-react";
 import { useCallback, useEffect, useState } from "react";
 
-import { usarApp } from "@/ui/proveedor-app";
+import { useApp } from "@/ui/proveedor-app";
 import { Shell } from "@/ui/shell";
 import type { FuenteInfo } from "@/domain/modelos";
 
@@ -133,7 +133,7 @@ function FilaFuente({
 
 /** Página del catálogo de fuentes. */
 export default function PaginaFuentes() {
-  const { memoria } = usarApp();
+  const { memoria } = useApp();
   const [fuentes, setFuentes] = useState<FuenteInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creando, setCreando] = useState(false);

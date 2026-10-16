@@ -26,7 +26,7 @@ import type {
   ParametrosImportacion,
   ResultadoImportacion,
 } from "@/domain/modelos";
-import { usarApp } from "@/ui/proveedor-app";
+import { useApp } from "@/ui/proveedor-app";
 import { Shell } from "@/ui/shell";
 
 type Formato = ParametrosImportacion["formato"];
@@ -76,7 +76,7 @@ function fecha(ts: number): string {
 }
 
 export default function PaginaImportar() {
-  const { memoria } = usarApp();
+  const { memoria } = useApp();
   const [formato, setFormato] = useState<Formato>("memlord");
   const [ruta, setRuta] = useState("");
   const [url, setUrl] = useState("");

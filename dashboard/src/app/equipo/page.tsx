@@ -19,7 +19,7 @@ import {
 } from "iconoir-react";
 import { useEffect, useState } from "react";
 
-import { usarApp } from "@/ui/proveedor-app";
+import { useApp } from "@/ui/proveedor-app";
 import { Shell } from "@/ui/shell";
 import type { Llave, Miembro, RolWorkspace } from "@/domain/modelos";
 
@@ -74,7 +74,7 @@ function Secreto({ valor, etiqueta }: { valor: string; etiqueta: string }) {
 
 /** Página de gestión de equipo, workspaces y llaves. */
 export default function PaginaEquipo() {
-  const { yo, workspace, idn, recargarIdentidad } = usarApp();
+  const { yo, workspace, idn, recargarIdentidad } = useApp();
   const wsRef = workspace ?? yo?.workspace_activo.slug ?? "";
   const wsActivo = yo?.workspaces.find((w) => w.slug === wsRef);
   const soyOwner = wsActivo?.rol === "owner";
@@ -100,7 +100,7 @@ export default function PaginaEquipo() {
     idn.listarLlaves().then(setLlaves).catch(() => setLlaves([]));
   }
 
-  useEffect(cargar, [idn, wsRef]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(cargar, [idn, wsRef]);
 
   const fallo = (e: unknown) =>
     setError(e instanceof Error ? e.message : "Error inesperado");

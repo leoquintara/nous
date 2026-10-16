@@ -26,7 +26,7 @@ import {
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { usarApp } from "@/ui/proveedor-app";
+import { useApp } from "@/ui/proveedor-app";
 import { Shell } from "@/ui/shell";
 import type {
   Dimension,
@@ -46,7 +46,6 @@ import {
   type CtxTemporal,
   type Escenario,
   type EventoRio,
-  type StatsDimension,
 } from "@/ui/universo/geometria";
 import { PanelVistaUniverso } from "@/ui/universo/controles";
 import { usePrefsUniverso } from "@/ui/universo/usar-prefs-universo";
@@ -64,7 +63,6 @@ const UniversoCanvas = dynamic(
 
 const DIA = 86_400;
 const LIMITE_HISTORIAL = 4000;
-const DIMENSIONES: Dimension[] = ["cognitiva", "somatica", "conductual"];
 
 const fechaCorta = (t: number) =>
   new Date(t * 1000).toLocaleDateString("es-MX", {
@@ -74,7 +72,7 @@ const fechaCorta = (t: number) =>
   });
 
 export default function PaginaUniverso() {
-  const { memoria } = usarApp();
+  const { memoria } = useApp();
   const { prefs, setPref } = usePrefsUniverso(memoria);
   const [rio, setRio] = useState<DatosRio | null>(null);
   const [objetivos, setObjetivos] = useState<Objetivo[]>([]);
@@ -178,13 +176,18 @@ export default function PaginaUniverso() {
    * del usuario — ni en efectos ni en debounces. La única vía al motor
    * predictivo es el botón «Analizar con IA». Los ajustes se fusionan
    * por id (o nombre) y el río se re-monta con ellos.
+   *
+   * Mover el cursor cambia el instante proyectado: los ajustes y el
+   * análisis previos eran para OTRO origen — se descartan sin red.
+   * Ajuste de estado durante render (patrón oficial de React para
+   * resetear estado derivado cuando cambia una entrada).
    */
-  useEffect(() => {
-    // Mover el cursor cambia el instante proyectado: los ajustes y el
-    // análisis previos eran para OTRO origen — se descartan sin red.
+  const [origenPrevio, setOrigenPrevio] = useState(origenEnfocado);
+  if (origenPrevio !== origenEnfocado) {
+    setOrigenPrevio(origenEnfocado);
     setAjustesIA(new Map());
     setAnalisisIA(null);
-  }, [origenEnfocado]);
+  }
 
   /** Mapa de ajustes por id/nombre a partir de la respuesta del LLM. */
   function mapaDeAjustes(
