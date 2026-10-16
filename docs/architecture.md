@@ -11,13 +11,16 @@ explícitas a proveedores IA configurados por el usuario.
 MCP / REST / CLI  →  Core  →  Storage
 ```
 
-- **`src/mcp/`** — servidor MCP (stdio + streamable-HTTP, 19 tools):
+- **`src/mcp/`** — servidor MCP (stdio + streamable-HTTP, 25 tools):
   `recordar_evento`, `consultar_memoria`, `contexto_inicial`,
   `obtener_linea_de_universo`, `obtener_episodios`,
   `proyectar_trayectoria`, `compromisos_abiertos`, `cerrar_compromiso`,
   `listar/crear/cerrar_objetivo`, `olvidar_evento`, `listar_tags`,
   `listar_relaciones`, `listar_fuentes`, `ramificar_fuente`,
-  `leer/guardar_preferencia`. Solo orquesta; sin lógica de dominio.
+  `leer/guardar_preferencia`, y gestión multi-tenant:
+  `listar/crear_workspace`, `listar_miembros`, `invitar_miembro`,
+  `cambiar_rol_miembro`, `quitar_miembro` (mismas reglas que REST:
+  gestión solo owners del destino). Solo orquesta; sin lógica de dominio.
 - **`src/api/`** — FastAPI: REST para el dashboard + MCP HTTP + auth
   Bearer + CORS restringido a los orígenes configurados.
 - **`src/cli/`** — argparse stdlib sobre `core`/`storage` (nunca duplica

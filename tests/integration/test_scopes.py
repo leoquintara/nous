@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from src.core.exceptions import ErrorValidacion, PermisoDenegadoError
@@ -549,5 +549,200 @@ class TestToolsMCPConScope:
             # Su workspace default sí responde.
             r = await tools.contexto_inicial()
             assert "resumen" in r or isinstance(r, dict)
+        finally:
+            fijar_contexto(None)
+
+
+@pytest.mark.asyncio
+class TestToolsMCPWorkspaces:
+    """Tools MCP de administración de workspaces (F8).
+
+    Paridad con REST: crear deja al llamante owner; roster lo lee
+    cualquier miembro; invitar/cambiar/expulsar exige owner EN EL
+    workspace destino. El handle se resuelve a UUID vía el roster.
+    """
+
+    async def _limpiar_ws(self, engine: AsyncEngine, slug: str) -> None:
+        async with get_session(engine) as s:
+            ws = (
+                await s.execute(
+                    select(WorkspaceModel).where(
+                        WorkspaceModel.slug == slug
+                    )
+                )
+            ).scalar_one_or_none()
+            if ws is not None:
+                await s.execute(
+                    delete(MiembroModel).where(
+                        MiembroModel.workspace_id == ws.id
+                    )
+                )
+                await s.delete(ws)
+                await s.commit()
+
+    def _ctx_owner(self) -> Contexto:
+        return Contexto(
+            usuario_id=USUARIO_OWNER_ID,
+            workspace_id=WORKSPACE_PERSONAL_ID,
+            rol="owner",
+        )
+
+    async def test_crear_workspace_owner_queda_owner(
+        self, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """crear_workspace persiste el ws y el llamante es owner."""
+        from src.core.identidad import fijar_contexto
+        from src.mcp import tools
+
+        monkeypatch.setattr(tools, "obtener_engine", lambda: engine)
+        fijar_contexto(self._ctx_owner())
+        try:
+            r = await tools.crear_workspace(
+                slug="sc-ws-nuevo", nombre="WS Nuevo"
+            )
+        finally:
+            fijar_contexto(None)
+        assert r["slug"] == "sc-ws-nuevo"
+        assert r["rol"] == "owner"
+        lista = await tools.listar_miembros(workspace="sc-ws-nuevo")
+        assert [(m["handle"], m["rol"]) for m in lista] == [
+            ("owner", "owner")
+        ]
+        await self._limpiar_ws(engine, "sc-ws-nuevo")
+
+    async def test_crear_workspace_slug_invalido(
+        self, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Slug fuera de formato → ErrorValidacion."""
+        from src.core.identidad import fijar_contexto
+        from src.mcp import tools
+
+        monkeypatch.setattr(tools, "obtener_engine", lambda: engine)
+        fijar_contexto(self._ctx_owner())
+        try:
+            with pytest.raises(ErrorValidacion):
+                await tools.crear_workspace(slug="Malo!", nombre="X")
+        finally:
+            fijar_contexto(None)
+
+    async def test_listar_workspaces_muestra_rol_por_ws(
+        self,
+        engine: AsyncEngine,
+        escenario: dict[str, object],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """user_b ve personal (member) y sc-ws-b (viewer)."""
+        from src.core.identidad import fijar_contexto
+        from src.mcp import tools
+
+        monkeypatch.setattr(tools, "obtener_engine", lambda: engine)
+        user_b = escenario["user_b"]
+        fijar_contexto(_ctx(user_b, WORKSPACE_PERSONAL_ID, "member"))
+        try:
+            lista = await tools.listar_workspaces()
+        finally:
+            fijar_contexto(None)
+        roles = {w["slug"]: w["rol"] for w in lista}
+        assert roles["personal"] == "member"
+        assert roles["sc-ws-b"] == "viewer"
+
+    async def test_invitar_miembro_exige_owner(
+        self,
+        engine: AsyncEngine,
+        escenario: dict[str, object],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """member no puede invitar; owner sí (token ns_inv_*)."""
+        from src.core.identidad import fijar_contexto
+        from src.mcp import tools
+        from src.storage.models import InvitacionModel
+
+        monkeypatch.setattr(tools, "obtener_engine", lambda: engine)
+        user_b = escenario["user_b"]
+        fijar_contexto(_ctx(user_b, WORKSPACE_PERSONAL_ID, "member"))
+        try:
+            with pytest.raises(PermisoDenegadoError):
+                await tools.invitar_miembro(rol="member")
+        finally:
+            fijar_contexto(None)
+
+        fijar_contexto(self._ctx_owner())
+        try:
+            r = await tools.invitar_miembro(rol="viewer", dias=5)
+        finally:
+            fijar_contexto(None)
+        assert r["token"].startswith("ns_inv_")
+        assert r["expira_dias"] == 5
+        async with get_session(engine) as s:
+            await s.execute(delete(InvitacionModel))
+            await s.commit()
+
+    async def test_cambiar_rol_y_quitar_miembro_por_handle(
+        self,
+        engine: AsyncEngine,
+        escenario: dict[str, object],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """owner cambia sc-b a viewer y lo expulsa; handle malo falla."""
+        from src.core.identidad import fijar_contexto
+        from src.mcp import tools
+
+        monkeypatch.setattr(tools, "obtener_engine", lambda: engine)
+        fijar_contexto(self._ctx_owner())
+        try:
+            with pytest.raises(ErrorValidacion):
+                await tools.cambiar_rol_miembro("no-existe", "viewer")
+
+            r = await tools.cambiar_rol_miembro("sc-b", "viewer")
+            assert r == {"handle": "sc-b", "rol": "viewer"}
+
+            r2 = await tools.quitar_miembro("sc-b")
+            assert r2 == {"handle": "sc-b", "expulsado": True}
+
+            roster = await tools.listar_miembros()
+            assert "sc-b" not in {m["handle"] for m in roster}
+        finally:
+            fijar_contexto(None)
+            # restaurar la membresía del escenario para otros tests
+            async with get_session(engine) as s:
+                existe = (
+                    await s.execute(
+                        select(MiembroModel).where(
+                            MiembroModel.workspace_id
+                            == WORKSPACE_PERSONAL_ID,
+                            MiembroModel.usuario_id
+                            == escenario["user_b"].id,  # type: ignore[attr-defined]
+                        )
+                    )
+                ).scalar_one_or_none()
+                if existe is None:
+                    s.add(
+                        MiembroModel(
+                            workspace_id=WORKSPACE_PERSONAL_ID,
+                            usuario_id=escenario["user_b"].id,  # type: ignore[attr-defined]
+                            rol="member",
+                        )
+                    )
+                    await s.commit()
+
+    async def test_invitar_en_otro_ws_usa_rol_del_destino(
+        self,
+        engine: AsyncEngine,
+        escenario: dict[str, object],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """user_b es viewer en sc-ws-b: no puede invitar ahí aunque
+        sea member en personal."""
+        from src.core.identidad import fijar_contexto
+        from src.mcp import tools
+
+        monkeypatch.setattr(tools, "obtener_engine", lambda: engine)
+        user_b = escenario["user_b"]
+        fijar_contexto(_ctx(user_b, WORKSPACE_PERSONAL_ID, "member"))
+        try:
+            with pytest.raises(PermisoDenegadoError):
+                await tools.invitar_miembro(
+                    rol="member", workspace="sc-ws-b"
+                )
         finally:
             fijar_contexto(None)

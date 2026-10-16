@@ -617,15 +617,24 @@ El rol se resuelve en el workspace destino: un usuario owner en un
 workspace puede ser viewer en otro. Si una escritura devuelve 403,
 el usuario es viewer ahí — dilo, no insistas.
 
-## Invitaciones y llaves (fuera de las tools MCP)
+## Gestión por MCP — tools de workspace
 
-Las tools MCP no gestionan identidad — se hace por CLI o dashboard:
+Las tools MCP sí gestionan workspaces (paridad con `/equipo`):
 
-- `nous workspaces invite <slug>` emite un `ns_inv_*` canjeable una
-  sola vez (en `/unirse` o `POST /api/invitaciones/canjear`).
-- `nous keys create --usuario <handle>` emite una `ns_u_*` — se
-  muestra en claro UNA vez; en la DB solo queda su hash.
-- El dashboard `/equipo` gestiona miembros, roles e invitaciones.
+- `listar_workspaces()` — workspaces del usuario con su rol.
+- `crear_workspace(slug, nombre)` — el llamante queda owner.
+- `listar_miembros(workspace?)` — roster del workspace.
+- `invitar_miembro(rol, dias, workspace?)` — emite `ns_inv_*`
+  canjeable una sola vez (en `/unirse` o
+  `POST /api/invitaciones/canjear`). Solo owners del destino.
+  El token se muestra en claro una vez — pásalo al usuario.
+- `cambiar_rol_miembro(handle, rol, workspace?)` — member|viewer.
+- `quitar_miembro(handle, workspace?)` — sus memorias permanecen.
+
+Las llaves de API siguen fuera del MCP: `nous keys create
+--usuario <handle>` emite una `ns_u_*` (en claro UNA vez; en la
+DB solo queda su hash). El dashboard `/equipo` ofrece la misma
+gestión visual.
 
 Nunca pidas ni registres una `ns_inv_*`/`ns_u_*` en la memoria —
 son credenciales.

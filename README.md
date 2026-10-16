@@ -42,7 +42,7 @@ tags, vínculos explícitos, TTL, rama de universo y supersede auditable.
 ```
 ┌────────────┐  stdio/HTTP   ┌──────────────┐   ┌──────────────┐
 │ Agentes MCP │ ────────────▶ │  src/mcp     │   │  Dashboard   │
-└────────────┘               │  (19 tools)  │   │  Next.js 16  │
+└────────────┘               │  (25 tools)  │   │  Next.js 16  │
                              └──────┬───────┘   └──────┬───────┘
 ┌────────────┐                     │                   │ REST+token
 │  CLI `nous`│ ────────┐     ┌─────▼───────────────────▼─────┐
@@ -127,6 +127,10 @@ el default) o `workspace` (visible para el equipo). Las lecturas ven
   (escribe), `viewer` (solo lee). El rol se resuelve en cada workspace.
 - **Override**: las tools MCP y la REST aceptan `workspace=<slug|uuid>`
   para escribir/leer en otro espacio — exige membresía.
+- **Gestión por MCP**: los agentes pueden administrar workspaces con
+  las tools `listar_workspaces`, `crear_workspace`, `listar_miembros`,
+  `invitar_miembro`, `cambiar_rol_miembro` y `quitar_miembro` — mismas
+  reglas que REST (gestión solo owners del workspace destino).
 - **Invitaciones**: `nous workspaces invite <slug>` emite un `ns_inv_*`
   de un solo uso; el invitado lo canjea en `/unirse` y recibe su `ns_u_*`.
 - **Edición libre**: sin `NOUS_LICENSE_KEY`, self-hosted permite 1

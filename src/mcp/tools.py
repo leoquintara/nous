@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from src.config import get_settings
+from src.core import identidad as idn
 from src.core.busqueda import BusquedaHibrida4D
 from src.core.clasificador import ClasificadorDimensiones
 from src.core.contexto import analizar_contexto, fusionar_tags, parsear_ttl
@@ -1595,3 +1596,201 @@ async def guardar_preferencia(
     """
     await _preferencia_guardar(clave, valor)
     return {"clave": clave, "guardado": True}
+
+
+# ---------------------------------------------------------------------
+# Identidad multi-tenant: workspaces, membresías e invitaciones.
+# Paridad con los endpoints REST /api/workspaces — mismas reglas:
+# leer el roster lo puede cualquier miembro; invitar/cambiar/expulsar
+# exige rol owner EN EL WORKSPACE DESTINO; crear workspace deja al
+# llamante como owner (sujeto al cupo de la edición libre).
+# ---------------------------------------------------------------------
+
+
+async def _ctx_owner_en(workspace: str | None) -> Contexto:
+    """Resuelve el contexto y exige rol owner en el workspace destino.
+
+    Args:
+        workspace: Slug/UUID del workspace, o None para el activo.
+
+    Returns:
+        El contexto con el rol efectivo en el destino.
+
+    Raises:
+        PermisoDenegadoError: Sin membresía o rol inferior a owner.
+        ErrorValidacion: Workspace inexistente.
+    """
+    ctx = await _ctx(workspace)
+    if ctx.rol != "owner":
+        raise PermisoDenegadoError(
+            "se requiere rol owner en el workspace"
+        )
+    return ctx
+
+
+async def _miembro_por_handle(
+    ctx: Contexto, handle: str
+) -> uuid.UUID:
+    """Resuelve un handle de usuario a su UUID dentro del workspace."""
+    engine = obtener_engine()
+    miembros = await idn.listar_miembros(engine, ctx.workspace_id)
+    for m in miembros:
+        if m.handle == handle:
+            return m.usuario_id
+    raise ErrorValidacion(f"handle no es miembro del workspace: {handle!r}")
+
+
+@mcp_server.tool()
+async def listar_workspaces() -> list[dict[str, Any]]:
+    """Lista los workspaces donde el usuario actual es miembro.
+
+    USAR CUANDO: necesites saber a qué workspaces pertenece el usuario,
+    su rol en cada uno, o resolver un slug antes de operar con el
+    parámetro ``workspace=`` de otras tools.
+
+    Returns:
+        Lista de {id, slug, nombre, rol} ordenada por creación.
+    """
+    engine = obtener_engine()
+    ctx = await _ctx()
+    return [
+        {"id": str(w.id), "slug": w.slug, "nombre": w.nombre, "rol": w.rol}
+        for w in await idn.listar_workspaces_con_rol(engine, ctx.usuario_id)
+    ]
+
+
+@mcp_server.tool()
+async def crear_workspace(slug: str, nombre: str) -> dict[str, Any]:
+    """Crea un workspace nuevo; el llamante queda como owner.
+
+    USAR CUANDO: el usuario pida crear un espacio de equipo o proyecto
+    ("crea un workspace para acme"). El slug es inmutable y público —
+    minúsculas, números y guiones. Después de crearlo, otras tools
+    aceptan ``workspace=slug`` y las escrituras usan scope="workspace".
+
+    Args:
+        slug: Identificador único (p. ej. "acme-corp").
+        nombre: Nombre legible (p. ej. "Acme Corp").
+
+    Returns:
+        {id, slug, nombre, rol: "owner"} del workspace creado.
+    """
+    ctx = await _ctx()
+    if ctx.usuario_id is None:
+        raise PermisoDenegadoError(
+            "sin identidad de usuario (modo desarrollo)"
+        )
+    ws = await idn.crear_workspace(
+        obtener_engine(), slug, nombre, ctx.usuario_id
+    )
+    return {
+        "id": str(ws.id),
+        "slug": ws.slug,
+        "nombre": ws.nombre,
+        "rol": "owner",
+    }
+
+
+@mcp_server.tool()
+async def listar_miembros(
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Lista el roster de un workspace — cualquier miembro puede leerlo.
+
+    Args:
+        workspace: Slug o UUID del workspace (default: el activo).
+
+    Returns:
+        Lista de {usuario_id, handle, nombre, rol} por antigüedad.
+    """
+    ctx = await _ctx(workspace)
+    return [
+        {
+            "usuario_id": str(m.usuario_id),
+            "handle": m.handle,
+            "nombre": m.nombre,
+            "rol": m.rol,
+        }
+        for m in await idn.listar_miembros(
+            obtener_engine(), ctx.workspace_id
+        )
+    ]
+
+
+@mcp_server.tool()
+async def invitar_miembro(
+    rol: str = "member",
+    dias: int = 7,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Emite un token de invitación ``ns_inv_*`` para un workspace.
+
+    USAR CUANDO: el usuario quiera sumar a alguien a un workspace.
+    Solo owners del workspace destino. El token se devuelve EN CLARO
+    una única vez — entrégalo al usuario para que lo comparta; el
+    invitado lo canjea en /unirse del dashboard o vía REST.
+
+    Args:
+        rol: Rol del invitado — "member" (escribe) o "viewer" (lee).
+        dias: Días hasta que expire el token (1-30).
+        workspace: Slug o UUID del workspace (default: el activo).
+
+    Returns:
+        {token, expira_dias, workspace, rol}.
+    """
+    ctx = await _ctx_owner_en(workspace)
+    token = await idn.crear_invitacion(
+        obtener_engine(), ctx.workspace_id, rol, dias=dias,
+        creada_por=ctx.usuario_id,
+    )
+    return {
+        "token": token,
+        "expira_dias": dias,
+        "workspace_id": str(ctx.workspace_id),
+        "rol": rol,
+    }
+
+
+@mcp_server.tool()
+async def cambiar_rol_miembro(
+    handle: str,
+    rol: str,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Cambia el rol de un miembro — solo owners del workspace.
+
+    Args:
+        handle: Handle del miembro (visible en listar_miembros).
+        rol: Nuevo rol — "member" o "viewer" (owner no es asignable).
+        workspace: Slug o UUID del workspace (default: el activo).
+
+    Returns:
+        {handle, rol} confirmado.
+    """
+    ctx = await _ctx_owner_en(workspace)
+    uid = await _miembro_por_handle(ctx, handle)
+    await idn.cambiar_rol(obtener_engine(), ctx.workspace_id, uid, rol)
+    return {"handle": handle, "rol": rol}
+
+
+@mcp_server.tool()
+async def quitar_miembro(
+    handle: str,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Expulsa un miembro del workspace — solo owners.
+
+    Sus memorias permanecen intactas (visibles según su scope); solo
+    pierde acceso. El último owner no puede ser expulsado.
+
+    Args:
+        handle: Handle del miembro a expulsar.
+        workspace: Slug o UUID del workspace (default: el activo).
+
+    Returns:
+        {handle, expulsado: true}.
+    """
+    ctx = await _ctx_owner_en(workspace)
+    uid = await _miembro_por_handle(ctx, handle)
+    await idn.quitar_miembro(obtener_engine(), ctx.workspace_id, uid)
+    return {"handle": handle, "expulsado": True}
