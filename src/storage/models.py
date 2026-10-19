@@ -233,6 +233,17 @@ class EventoModel(Base):
         UUID(as_uuid=True), ForeignKey("eventos.id", ondelete="SET NULL")
     )
     con_quien: Mapped[str | None] = mapped_column(String(128))
+    # ADR-003 — patrones neurocognitivos
+    tipo_memoria: Mapped[str | None] = mapped_column(String(20))
+    estado_emocional: Mapped[float | None] = mapped_column(Float)
+    weight: Mapped[float] = mapped_column(Float, server_default="1.0")
+    ultimo_acceso: Mapped[int | None] = mapped_column(BigInteger)
+    archivado: Mapped[bool] = mapped_column(
+        Boolean, server_default="false"
+    )
+    archivado_en: Mapped[int | None] = mapped_column(BigInteger)
+    razon_archivo: Mapped[str | None] = mapped_column(Text)
+    curado: Mapped[bool] = mapped_column(Boolean, server_default="false")
     contenido_tsv: Mapped[str | None] = mapped_column(
         TSVECTOR,
         Computed("to_tsvector('spanish', contenido)", persisted=True),
@@ -256,6 +267,11 @@ class EventoModel(Base):
         CheckConstraint(
             "scope IN ('personal','workspace')", name="ck_eventos_scope"
         ),
+        CheckConstraint(
+            "tipo_memoria IS NULL OR tipo_memoria IN "
+            "('episodica','semantica','procedimental')",
+            name="ck_eventos_tipo_memoria",
+        ),
         Index("ix_eventos_timestamp", "timestamp_unix"),
         Index("ix_eventos_workspace", "workspace_id"),
         Index("ix_eventos_scope", "scope"),
@@ -263,6 +279,12 @@ class EventoModel(Base):
         Index("ix_eventos_tipo", "tipo"),
         Index("ix_eventos_dimension", "dimension"),
         Index("ix_eventos_fuente", "fuente"),
+        Index("ix_eventos_tipo_memoria", "tipo_memoria"),
+        Index("ix_eventos_archivado", "archivado"),
+        Index("ix_eventos_curado", "curado"),
+        Index(
+            "ix_eventos_weight_arch", "workspace_id", "archivado", "weight"
+        ),
         Index("ix_eventos_tsv", "contenido_tsv", postgresql_using="gin"),
         Index(
             "ix_eventos_embedding",
@@ -323,7 +345,8 @@ class RelacionModel(Base):
     __table_args__ = (
         CheckConstraint("origen_id < destino_id", name="ck_relaciones_orden"),
         CheckConstraint(
-            "tipo IN ('explicita', 'semantica', 'reemplaza', 'cierra')",
+            "tipo IN ('explicita', 'semantica', 'reemplaza', 'cierra', "
+            "'contradice')",
             name="ck_relaciones_tipo",
         ),
         UniqueConstraint(
@@ -635,4 +658,131 @@ class LlamadaModel(Base):
         Index("ix_llamadas_ts", "ts"),
         Index("ix_llamadas_ruta", "ruta"),
         Index("ix_llamadas_ping", "es_ping"),
+    )
+
+
+class IntencionProspectivaModel(Base):
+    """Memoria prospectiva: intención pendiente con trigger time/event.
+
+    ``trigger_tipo='time'``: ``trigger_valor = {"ts": <unix>}`` dispara
+    cuando llega la fecha. ``trigger_tipo='event'``: ``trigger_valor =
+    {"query": "<texto>"}`` se evalúa contra eventos entrantes.
+    """
+
+    __tablename__ = "intenciones_prospectivas"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        server_default=text(
+            "'00000000-0000-0000-0000-000000000002'::uuid"
+        ),
+    )
+    autor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("usuarios.id", ondelete="SET NULL"),
+    )
+    creada_en: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    intencion: Mapped[str] = mapped_column(Text, nullable=False)
+    trigger_tipo: Mapped[str] = mapped_column(String(10), nullable=False)
+    trigger_valor: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb")
+    )
+    ejecutada: Mapped[bool] = mapped_column(
+        Boolean, server_default="false"
+    )
+    cancelada: Mapped[bool] = mapped_column(
+        Boolean, server_default="false"
+    )
+    ejecutada_en: Mapped[int | None] = mapped_column(BigInteger)
+    cancelada_en: Mapped[int | None] = mapped_column(BigInteger)
+
+    __table_args__ = (
+        CheckConstraint(
+            "trigger_tipo IN ('time','event')",
+            name="ck_intenciones_trigger_tipo",
+        ),
+        Index("ix_intenciones_workspace", "workspace_id", "ejecutada", "cancelada"),
+        Index("ix_intenciones_trigger", "trigger_tipo"),
+    )
+
+
+class ScriptDetectadoModel(Base):
+    """Patrón de comportamiento recurrente minado de la línea de universo.
+
+    ``pasos`` es un array JSONB de contenidos (o ids de evento) en orden;
+    ``frecuencia`` = soporte relativo, ``confianza`` = qué tan fiel es la
+    secuencia observada al patrón.
+    """
+
+    __tablename__ = "scripts_detectados"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        server_default=text(
+            "'00000000-0000-0000-0000-000000000002'::uuid"
+        ),
+    )
+    autor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("usuarios.id", ondelete="SET NULL"),
+    )
+    nombre: Mapped[str] = mapped_column(String(160), nullable=False)
+    pasos: Mapped[list[Any]] = mapped_column(
+        JSONB, server_default=text("'[]'::jsonb")
+    )
+    frecuencia: Mapped[float] = mapped_column(Float, nullable=False)
+    confianza: Mapped[float] = mapped_column(Float, nullable=False)
+    creado_en: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    actualizado_en: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    __table_args__ = (
+        Index("ix_scripts_workspace", "workspace_id"),
+        Index("ix_scripts_confianza", "confianza"),
+    )
+
+
+class ReporteConsolidacionModel(Base):
+    """Resumen auditable de una corrida de consolidación (sueño).
+
+    El equivalente del dream diary de OpenClaw: cada corrida deja qué se
+    fortaleció, qué se archivó y qué se promovió a curado — revisable
+    por el usuario, nunca silencioso.
+    """
+
+    __tablename__ = "reportes_consolidacion"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        server_default=text(
+            "'00000000-0000-0000-0000-000000000002'::uuid"
+        ),
+    )
+    ejecutado_en: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    fortalecidos: Mapped[int] = mapped_column(Integer, server_default="0")
+    archivados: Mapped[int] = mapped_column(Integer, server_default="0")
+    promovidos: Mapped[int] = mapped_column(Integer, server_default="0")
+    detalle: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb")
+    )
+
+    __table_args__ = (
+        Index("ix_reportes_workspace", "workspace_id", "ejecutado_en"),
     )

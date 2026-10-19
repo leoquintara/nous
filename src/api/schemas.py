@@ -408,3 +408,13 @@ class LlaveResponse(BaseModel):
     revocada: bool
     ultimo_uso: datetime | None
     creado_en: datetime
+
+
+class IntencionRequest(BaseModel):
+    """Cuerpo para registrar una intención prospectiva (ADR-003)."""
+
+    intencion: str = Field(min_length=1, max_length=2_000)
+    en: str | int | None = Field(default=None)
+    cuando: str | None = Field(default=None, max_length=500)
+    umbral: float = Field(default=0.6, gt=0.0, le=1.0)
+    workspace: str | None = Field(default=None, max_length=64)

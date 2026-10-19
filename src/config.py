@@ -66,6 +66,16 @@ class Settings(BaseSettings):
     license_key: str | None = None
     max_usuarios_libres: int = 1
     max_workspaces_libres: int = 3
+    # ADR-002 — proveedores de decisión System One. "none" = sin
+    # provider → heurísticos puros. "auto" intenta Laya local →
+    # Ollama → nada. La API key de Jev (externo) exige además el
+    # flag de privacidad — nunca sale dato sin doble consentimiento.
+    decision_provider: Literal["none", "auto", "laya", "ollama", "jev"] = "auto"
+    ollama_endpoint: str = "http://localhost:11434"
+    ollama_model: str = "tev1:0.8b"
+    jev_api_key: str | None = None
+    jev_endpoint: str = "https://api.typesafe.ai"
+    privacy_permitir_externos: bool = False
 
     @field_validator("api_token")
     @classmethod

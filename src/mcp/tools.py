@@ -27,19 +27,47 @@ from src.core.embeddings import GeneradorEmbeddings
 from src.core.episodios import GAP_MAX_DEFECTO_SEGUNDOS, segmentar
 from src.core.exceptions import ErrorValidacion, PermisoDenegadoError
 from src.core.identidad import Contexto, contexto_actual, resolver_workspace
+from src.core.memoria.consolidacion import (
+    EventoConsolidable,
+    decidir_consolidacion,
+    resumen_legible,
+)
+from src.core.memoria.interferencia import detectar_conflicto
+from src.core.memoria.prospectiva import (
+    Intencion,
+    TriggerTipo,
+    disparada_por_evento,
+)
+from src.core.memoria.scripts import (
+    EventoSecuencia,
+)
+from src.core.memoria.scripts import (
+    minar_scripts as _minar_patrones,
+)
+from src.core.memoria.tipos import clasificar_tipo_memoria
 from src.core.modelos import Evento, ResultadoBusqueda, Trayectoria
 from src.core.reranker import ReordenadorLocal
 from src.core.temporal import detectar_trayectorias, proyectar
 from src.mcp.server import mcp_server
 from src.storage.database import crear_engine, get_session, obtener_engine
-from src.storage.models import EventoModel, ObjetivoModel, ProyeccionModel
+from src.storage.models import (
+    EventoModel,
+    IntencionProspectivaModel,
+    ObjetivoModel,
+    ProyeccionModel,
+    ReporteConsolidacionModel,
+    ScriptDetectadoModel,
+)
 from src.storage.repositories import (
     ConfiguracionRepository,
     EventoRepository,
     FuenteRepository,
+    IntencionProspectivaRepository,
     ObjetivoRepository,
     ProyeccionRepository,
     RelacionRepository,
+    ReporteConsolidacionRepository,
+    ScriptRepository,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,6 +76,8 @@ _embeddings: GeneradorEmbeddings | None = None
 _busqueda: BusquedaHibrida4D | None = None
 _clasificador: ClasificadorDimensiones | None = None
 _reordenador: ReordenadorLocal | None = None
+_provider_decision: Any = None
+_provider_resuelto = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +88,8 @@ class _ItemIndexacion:
     contenido: str
     ts: int
     amplitud: float
+    workspace_id: uuid.UUID
+    autor_id: uuid.UUID | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,8 +268,34 @@ def _obtener_clasificador() -> ClasificadorDimensiones:
     """Retorna el clasificador de dimensiones compartido del proceso."""
     global _clasificador
     if _clasificador is None:
-        _clasificador = ClasificadorDimensiones(_obtener_embeddings())
+        _clasificador = ClasificadorDimensiones(
+            _obtener_embeddings(), provider=_obtener_provider_decision()
+        )
     return _clasificador
+
+
+def _obtener_provider_decision() -> Any:
+    """Provider System One configurado, o None (heurísticos puros).
+
+    Se resuelve una sola vez por proceso: ``decision_provider='auto'``
+    intenta Laya local → Ollama; sin ninguno disponible queda None y
+    el pipeline usa el fallback léxico — nunca rompe por su ausencia.
+    """
+    global _provider_decision, _provider_resuelto
+    if not _provider_resuelto:
+        from src.core.decision.factory import construir_provider
+
+        settings = get_settings()
+        _provider_decision = construir_provider(
+            settings.decision_provider,
+            ollama_endpoint=settings.ollama_endpoint,
+            ollama_model=settings.ollama_model,
+            jev_api_key=settings.jev_api_key,
+            jev_endpoint=settings.jev_endpoint,
+            permitir_externos=settings.privacy_permitir_externos,
+        )
+        _provider_resuelto = True
+    return _provider_decision
 
 
 def _obtener_busqueda() -> BusquedaHibrida4D:
@@ -289,6 +347,10 @@ def _modelo_a_dict(modelo: EventoModel) -> dict[str, Any]:
             str(modelo.reemplazado_por) if modelo.reemplazado_por else None
         ),
         "con_quien": modelo.con_quien,
+        "tipo_memoria": modelo.tipo_memoria,
+        "weight": modelo.weight,
+        "archivado": modelo.archivado,
+        "curado": modelo.curado,
         "scope": modelo.scope,
         "workspace_id": str(modelo.workspace_id),
         "autor_id": str(modelo.autor_id) if modelo.autor_id else None,
@@ -433,7 +495,16 @@ async def _recordar(
         if vinculos:
             respuesta["vinculos_creados"] = vinculos
         await session.commit()
-    _encolar_fondo(_ItemIndexacion(evento.id, contenido, ts, amplitud))
+    _encolar_fondo(
+        _ItemIndexacion(
+            evento.id,
+            contenido,
+            ts,
+            amplitud,
+            ctx.workspace_id,
+            ctx.usuario_id,
+        )
+    )
     _registrar_actividad("store", contenido, [str(evento.id)])
     respuesta.update(
         {
@@ -474,11 +545,14 @@ async def _indexar_luego(engine: AsyncEngine, item: _ItemIndexacion) -> None:
                 and similar[0][1] >= settings.dedup_umbral
                 and abs(item.ts - similar[0][0].timestamp_unix) <= settings.dedup_ventana_segundos
             )
+            sobrevive = True
             if duplicado:
                 existente = similar[0][0]
                 existente.refuerzos += 1
                 existente.amplitud = max(existente.amplitud, item.amplitud)
-                if not await repo.eliminar_debil(item.evento_id):
+                if await repo.eliminar_debil(item.evento_id):
+                    sobrevive = False
+                else:
                     await repo.actualizar_embedding(item.evento_id, vector)
             else:
                 await repo.actualizar_embedding(item.evento_id, vector)
@@ -500,9 +574,144 @@ async def _indexar_luego(engine: AsyncEngine, item: _ItemIndexacion) -> None:
                             item.evento_id, vecino.id, "semantica", sim
                         ):
                             creados += 1
+            if sobrevive:
+                # ADR-003: tipo de memoria (provider o heurístico).
+                tipo_mem = await clasificar_tipo_memoria(
+                    item.contenido, _obtener_provider_decision()
+                )
+                await repo.fijar_tipo_memoria(item.evento_id, tipo_mem.value)
+                # ADR-003: interferencia — marcador de superación +
+                # vecino semántico cercano = contradicción probable.
+                conflictos = detectar_conflicto(
+                    item.contenido,
+                    [
+                        (str(v.id), s)
+                        for v, s in similar
+                        if v.id != item.evento_id
+                    ],
+                )
+                if conflictos:
+                    relaciones = RelacionRepository(session)
+                    for conflicto in conflictos[:3]:
+                        await relaciones.vincular(
+                            item.evento_id,
+                            uuid.UUID(conflicto.evento_id),
+                            "contradice",
+                            conflicto.similitud,
+                        )
+            # ADR-003: memoria prospectiva — el evento entrante puede
+            # disparar intenciones event-based del workspace, aunque la
+            # huella se haya fusionado (la mención ocurrió igual).
+            await _evaluar_intenciones_evento(session, item)
             await session.commit()
     except Exception:  # noqa: BLE001 — el fallo no debe propagarse al loop
         logger.exception("indexacion en segundo plano fallo para %s", item.evento_id)
+
+
+async def _disparar_intencion(
+    session: Any,
+    repo: IntencionProspectivaRepository,
+    modelo: IntencionProspectivaModel,
+) -> EventoModel | None:
+    """Marca una intención como ejecutada y deja su hecho recordatorio.
+
+    El recordatorio entra a la línea de universo como ``hecho`` de
+    fuente ``prospectiva`` — la próxima evocación lo hace visible, y
+    el disparo queda auditado en la historia del usuario.
+
+    Returns:
+        El evento recordatorio creado, o None si la intención ya no
+        estaba pendiente.
+    """
+    ahora = int(time.time())
+    if not await repo.marcar_ejecutada(modelo.id, ahora):
+        return None
+    recordatorio = EventoModel(
+        timestamp_unix=ahora,
+        dimension="conductual",
+        fuente="prospectiva",
+        contenido=f"Intención prospectiva disparada: {modelo.intencion}",
+        amplitud=0.7,
+        tags=["intencion", "prospectiva"],
+        tipo="hecho",
+        workspace_id=modelo.workspace_id,
+        autor_id=modelo.autor_id,
+        scope="personal",
+    )
+    session.add(recordatorio)
+    await session.flush()
+    _encolar_fondo(
+        _ItemIndexacion(
+            recordatorio.id,
+            recordatorio.contenido,
+            ahora,
+            0.7,
+            modelo.workspace_id,
+            modelo.autor_id,
+        )
+    )
+    _registrar_actividad("intencion", modelo.intencion, [str(recordatorio.id)])
+    return recordatorio
+
+
+async def _evaluar_intenciones_evento(
+    session: Any, item: _ItemIndexacion
+) -> None:
+    """Dispara intenciones event-based contra el evento entrante.
+
+    Args:
+        session: Sesión activa del worker de fondo.
+        item: Trabajo de indexación del evento recién insertado.
+    """
+    repo = IntencionProspectivaRepository(
+        session,
+        Contexto(
+            usuario_id=item.autor_id,
+            workspace_id=item.workspace_id,
+            rol="member",
+        ),
+    )
+    pendientes = await repo.pendientes_por_evento()
+    for modelo in pendientes:
+        intencion = Intencion(
+            id=str(modelo.id),
+            intencion=modelo.intencion,
+            trigger_tipo=TriggerTipo(modelo.trigger_tipo),
+            trigger_valor=modelo.trigger_valor or {},
+            creada_en=modelo.creada_en,
+            ejecutada=modelo.ejecutada,
+            cancelada=modelo.cancelada,
+        )
+        if disparada_por_evento(intencion, item.contenido):
+            await _disparar_intencion(session, repo, modelo)
+
+
+async def _disparar_intenciones_temporales(
+    session: Any, ctx: Contexto
+) -> list[dict[str, Any]]:
+    """Dispara las intenciones time-based ya vencidas del workspace.
+
+    Se llama desde el camino de consulta — cada evocación es la
+    oportunidad natural de "acordarse" (no hay scheduler dedicado:
+    Nous recuerda cuando se lo consulta).
+
+    Returns:
+        Recordatorios disparados (serializados) — posiblemente [].
+    """
+    repo = IntencionProspectivaRepository(session, ctx)
+    vencidas = await repo.pendientes_temporales(int(time.time()))
+    recordatorios = []
+    for modelo in vencidas:
+        evento = await _disparar_intencion(session, repo, modelo)
+        if evento is not None:
+            recordatorios.append(
+                {
+                    "id": str(evento.id),
+                    "intencion": modelo.intencion,
+                    "creada_en": modelo.creada_en,
+                }
+            )
+    return recordatorios
 
 
 async def _consolidar_luego(engine: AsyncEngine, eventos_ids: list[uuid.UUID]) -> None:
@@ -523,7 +732,35 @@ async def _consultar(
 ) -> list[dict[str, Any]]:
     """Ejecuta la búsqueda híbrida 4D y serializa los resultados."""
     ctx = await _ctx(workspace)
+    recordatorios: list[dict[str, Any]] = []
     async with get_session(obtener_engine()) as session:
+        # ADR-003: cada consulta es la oportunidad natural de
+        # "acordarse" — las intenciones temporales vencidas disparan
+        # aquí y encabezan la respuesta como recordatorios.
+        vencidas = await _disparar_intenciones_temporales(session, ctx)
+        if vencidas:
+            await session.commit()
+            recordatorios = [
+                {
+                    "evento": {
+                        "id": v["id"],
+                        "timestamp_unix": int(time.time()),
+                        "dimension": "conductual",
+                        "contenido": (
+                            "Intención prospectiva disparada: "
+                            + v["intencion"]
+                        ),
+                        "amplitud": 0.7,
+                        "refuerzos": 0,
+                    },
+                    "score_final": 1.0,
+                    "score_bm25": 0.0,
+                    "score_vectorial": 0.0,
+                    "contexto_temporal": None,
+                    "recordatorio": True,
+                }
+                for v in vencidas
+            ]
         resultados = await _obtener_busqueda().buscar(
             session,
             consulta,
@@ -534,7 +771,7 @@ async def _consultar(
     _encolar_fondo(_ItemConsolidacion(tuple(uuid.UUID(r.evento_id) for r in resultados)))
     if resultados:
         _registrar_actividad("recall", consulta, [r.evento_id for r in resultados])
-    return [_resultado_a_dict(r) for r in resultados]
+    return recordatorios + [_resultado_a_dict(r) for r in resultados]
 
 
 async def _tags(limite: int, workspace: str | None = None) -> list[dict[str, Any]]:
@@ -1794,3 +2031,475 @@ async def quitar_miembro(
     uid = await _miembro_por_handle(ctx, handle)
     await idn.quitar_miembro(obtener_engine(), ctx.workspace_id, uid)
     return {"handle": handle, "expulsado": True}
+
+
+# ---------------------------------------------------------------------
+# ADR-003 — patrones neurocognitivos: intenciones prospectivas,
+# consolidación-sueño, olvido reversible y minería de scripts.
+# ---------------------------------------------------------------------
+
+
+async def _crear_intencion(
+    intencion: str,
+    en: str | int | None,
+    cuando: str | None,
+    umbral: float,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Registra una intención prospectiva (time o event-based)."""
+    if not intencion.strip():
+        raise ErrorValidacion("intencion no puede estar vacía")
+    if (en is None) == (cuando is None):
+        raise ErrorValidacion(
+            "declara exactamente un trigger: 'en' (fecha) o 'cuando' (evento)"
+        )
+    if not 0.0 < umbral <= 1.0:
+        raise ErrorValidacion("umbral debe estar en (0, 1]")
+    ctx = await _ctx_escritura(workspace)
+    ahora = int(time.time())
+    if en is not None:
+        try:
+            ts = parsear_ttl(en, ahora)
+        except ValueError as e:
+            raise ErrorValidacion(str(e)) from e
+        if ts is None or ts <= ahora:
+            raise ErrorValidacion("en debe resolver a un instante futuro")
+        trigger_tipo = "time"
+        trigger_valor: dict[str, Any] = {"ts": ts}
+    else:
+        trigger_tipo = "event"
+        trigger_valor = {"query": cuando, "umbral": umbral}
+    async with get_session(obtener_engine()) as session:
+        modelo = IntencionProspectivaModel(
+            workspace_id=ctx.workspace_id,
+            autor_id=ctx.usuario_id,
+            creada_en=ahora,
+            intencion=intencion.strip(),
+            trigger_tipo=trigger_tipo,
+            trigger_valor=trigger_valor,
+        )
+        await IntencionProspectivaRepository(session, ctx).crear(modelo)
+        await session.commit()
+    respuesta: dict[str, Any] = {
+        "id": str(modelo.id),
+        "intencion": modelo.intencion,
+        "trigger_tipo": trigger_tipo,
+        "creada_en": ahora,
+    }
+    if trigger_tipo == "time":
+        respuesta["dispara_en"] = trigger_valor["ts"]
+    else:
+        respuesta["trigger_query"] = cuando
+        respuesta["umbral"] = umbral
+    return respuesta
+
+
+async def _listar_intenciones(
+    ejecutadas: bool | None, workspace: str | None = None
+) -> list[dict[str, Any]]:
+    """Lista las intenciones prospectivas del workspace."""
+    ctx = await _ctx(workspace)
+    async with get_session(obtener_engine()) as session:
+        filas = await IntencionProspectivaRepository(session, ctx).listar(
+            ejecutadas=ejecutadas
+        )
+    return [
+        {
+            "id": str(m.id),
+            "intencion": m.intencion,
+            "trigger_tipo": m.trigger_tipo,
+            "trigger_valor": m.trigger_valor,
+            "creada_en": m.creada_en,
+            "ejecutada": m.ejecutada,
+            "cancelada": m.cancelada,
+            "ejecutada_en": m.ejecutada_en,
+        }
+        for m in filas
+    ]
+
+
+async def _cancelar_intencion(
+    intencion_id: str, workspace: str | None = None
+) -> dict[str, Any]:
+    """Cancela una intención prospectiva pendiente."""
+    ctx = await _ctx_escritura(workspace)
+    try:
+        iid = uuid.UUID(str(intencion_id))
+    except (ValueError, AttributeError) as e:
+        raise ErrorValidacion(
+            f"intencion_id no es un UUID válido: {intencion_id!r}"
+        ) from e
+    async with get_session(obtener_engine()) as session:
+        ok = await IntencionProspectivaRepository(session, ctx).cancelar(
+            iid, int(time.time())
+        )
+        await session.commit()
+    if not ok:
+        raise ErrorValidacion(
+            f"la intención no existe o ya está resuelta: {intencion_id}"
+        )
+    return {"id": str(iid), "cancelada": True}
+
+
+def _a_consolidable(modelo: EventoModel) -> EventoConsolidable:
+    """Traduce el ORM al dataclass que la lógica de sueño consume."""
+    from src.core.memoria.tipos import TipoMemoria
+    from src.core.modelos import Dimension
+
+    return EventoConsolidable(
+        id=str(modelo.id),
+        timestamp_unix=modelo.timestamp_unix,
+        dimension=Dimension(modelo.dimension),
+        tipo=modelo.tipo,
+        amplitud=modelo.amplitud,
+        refuerzos=modelo.refuerzos,
+        weight=modelo.weight,
+        tipo_memoria=(
+            TipoMemoria(modelo.tipo_memoria) if modelo.tipo_memoria else None
+        ),
+        ultimo_acceso=modelo.ultimo_acceso,
+        archivado=modelo.archivado,
+        curado=modelo.curado,
+    )
+
+
+async def _consolidar(workspace: str | None = None) -> dict[str, Any]:
+    """Ejecuta la corrida de consolidación-sueño y persiste su reporte."""
+    ctx = await _ctx_escritura(workspace)
+    async with get_session(obtener_engine()) as session:
+        eventos = await EventoRepository(session, ctx).listar_para_consolidacion()
+        plan = decidir_consolidacion([_a_consolidable(e) for e in eventos])
+        await EventoRepository(session, ctx).aplicar_consolidacion(
+            plan.fortalecer,
+            plan.promover,
+            plan.archivar,
+            plan.ejecutado_en,
+        )
+        reporte = ReporteConsolidacionModel(
+            workspace_id=ctx.workspace_id,
+            ejecutado_en=plan.ejecutado_en,
+            fortalecidos=len(plan.fortalecer),
+            archivados=len(plan.archivar),
+            promovidos=len(plan.promover),
+            detalle={
+                "fortalecidos": plan.fortalecer,
+                "promovidos": plan.promover,
+                "archivados": plan.archivar,
+            },
+        )
+        await ReporteConsolidacionRepository(session, ctx).crear(reporte)
+        await session.commit()
+    return {
+        "ejecutado_en": plan.ejecutado_en,
+        "evaluados": len(eventos),
+        "fortalecidos": len(plan.fortalecer),
+        "promovidos": len(plan.promover),
+        "archivados": len(plan.archivar),
+        "resumen": resumen_legible(plan),
+    }
+
+
+async def _minar_scripts(workspace: str | None = None) -> dict[str, Any]:
+    """Mina secuencias recurrentes de la línea de universo."""
+    ctx = await _ctx_escritura(workspace)
+    async with get_session(obtener_engine()) as session:
+        eventos = await EventoRepository(session, ctx).listar_para_consolidacion()
+        candidatos = _minar_patrones(
+            [
+                EventoSecuencia(
+                    id=str(e.id),
+                    timestamp_unix=e.timestamp_unix,
+                    contenido=e.contenido,
+                    dimension=e.dimension,
+                )
+                for e in eventos
+            ]
+        )
+        ahora = int(time.time())
+        repo = ScriptRepository(session, ctx)
+        for c in candidatos[:20]:
+            await repo.guardar(
+                ScriptDetectadoModel(
+                    workspace_id=ctx.workspace_id,
+                    autor_id=ctx.usuario_id,
+                    nombre=" → ".join(c.pasos),
+                    pasos=list(c.pasos),
+                    frecuencia=float(c.soporte),
+                    confianza=c.confianza,
+                    creado_en=ahora,
+                    actualizado_en=ahora,
+                )
+            )
+        await session.commit()
+    return {
+        "evaluados": len(eventos),
+        "detectados": len(candidatos),
+        "guardados": min(len(candidatos), 20),
+        "scripts": [
+            {"pasos": list(c.pasos), "soporte": c.soporte, "confianza": c.confianza}
+            for c in candidatos[:20]
+        ],
+    }
+
+
+async def _listar_scripts(workspace: str | None = None) -> list[dict[str, Any]]:
+    """Lista los scripts/patrones detectados del workspace."""
+    ctx = await _ctx(workspace)
+    async with get_session(obtener_engine()) as session:
+        filas = await ScriptRepository(session, ctx).listar()
+    return [
+        {
+            "id": str(m.id),
+            "nombre": m.nombre,
+            "pasos": m.pasos,
+            "frecuencia": m.frecuencia,
+            "confianza": m.confianza,
+            "actualizado_en": m.actualizado_en,
+        }
+        for m in filas
+    ]
+
+
+async def _listar_archivados(workspace: str | None = None) -> list[dict[str, Any]]:
+    """Lista las memorias archivadas por consolidación (recuperables)."""
+    ctx = await _ctx(workspace)
+    async with get_session(obtener_engine()) as session:
+        filas = await EventoRepository(session, ctx).listar_archivados()
+    return [
+        {
+            "id": str(m.id),
+            "timestamp_unix": m.timestamp_unix,
+            "dimension": m.dimension,
+            "contenido": m.contenido[:200],
+            "archivado_en": m.archivado_en,
+            "razon_archivo": m.razon_archivo,
+        }
+        for m in filas
+    ]
+
+
+async def _restaurar_evento(
+    evento_id: str, workspace: str | None = None
+) -> dict[str, Any]:
+    """Restaura una memoria archivada — deshace el olvido."""
+    ctx = await _ctx_escritura(workspace)
+    try:
+        eid = uuid.UUID(str(evento_id))
+    except (ValueError, AttributeError) as e:
+        raise ErrorValidacion(
+            f"evento_id no es un UUID válido: {evento_id!r}"
+        ) from e
+    async with get_session(obtener_engine()) as session:
+        ok = await EventoRepository(session, ctx).restaurar(eid)
+        await session.commit()
+    if not ok:
+        raise ErrorValidacion(
+            f"el evento no existe o no está archivado: {evento_id}"
+        )
+    return {"id": str(eid), "restaurado": True}
+
+
+@mcp_server.tool()
+async def crear_intencion(
+    intencion: str,
+    en: str | int | None = None,
+    cuando: str | None = None,
+    umbral: float = 0.6,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Registra una intención futura — memoria prospectiva.
+
+    USAR CUANDO: el usuario pida "recuérdame X el viernes" (trigger
+    temporal: ``en="3d"``, epoch, ISO…) o "avisame cuando alguien
+    mencione Y" (trigger de evento: ``cuando="texto a vigilar"``).
+    NO ES una proyección/alarma de calendario: Nous recuerda la
+    intención y la dispara cuando el trigger se cumple — en la
+    próxima consulta (time) o al llegar el evento que calza (event).
+
+    Args:
+        intencion: Qué recordar ("llamar a María").
+        en: Trigger temporal — "30d", "12h", epoch futuro.
+        cuando: Trigger de evento — texto; dispara cuando un evento
+            entrante lo cubre (similitud ≥ ``umbral``).
+        umbral: Similitud mínima para triggers de evento (default 0.6).
+        workspace: Slug o UUID del workspace destino.
+
+    Returns:
+        {id, intencion, trigger_tipo, dispara_en|trigger_query}.
+    """
+    return await _crear_intencion(intencion, en, cuando, umbral, workspace)
+
+
+@mcp_server.tool()
+async def listar_intenciones(
+    ejecutadas: bool | None = None,
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Lista las intenciones prospectivas registradas.
+
+    USAR CUANDO: quieras revisar qué recordatorios están pendientes,
+    cuáles ya se dispararon o auditar la memoria prospectiva.
+
+    Args:
+        ejecutadas: None = todas; False = solo pendientes; True = solo
+            ya disparadas.
+        workspace: Slug o UUID del workspace a consultar.
+
+    Returns:
+        [{id, intencion, trigger_tipo, trigger_valor, ejecutada, …}].
+    """
+    return await _listar_intenciones(ejecutadas, workspace)
+
+
+@mcp_server.tool()
+async def cancelar_intencion(
+    intencion_id: str,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Cancela una intención prospectiva pendiente.
+
+    USAR CUANDO: el usuario ya no quiera el recordatorio ("olvida lo
+    de llamar a María"). La intención queda cancelada — auditable,
+    no borrada.
+
+    Args:
+        intencion_id: UUID de la intención (de listar_intenciones).
+        workspace: Slug o UUID del workspace.
+
+    Returns:
+        {id, cancelada: true}.
+    """
+    return await _cancelar_intencion(intencion_id, workspace)
+
+
+@mcp_server.tool()
+async def consolidar_memoria(
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Ejecuta la consolidación-sueño — replay, promoción y olvido.
+
+    USAR CUANDO: quieras correr el ciclo de mantenimiento de memoria
+    (idealmente en quietud, como el sueño): fortalece lo importante
+    (replay), promueve a curado lo destacado (nunca decae) y archiva
+    lo débil/olvidado — reversible, con reporte auditable.
+    NO ES poda: nada se borra; lo archivado sigue en la worldline y
+    se restaura con restaurar_evento.
+
+    Args:
+        workspace: Slug o UUID del workspace a consolidar.
+
+    Returns:
+        {evaluados, fortalecidos, promovidos, archivados, resumen}.
+    """
+    return await _consolidar(workspace)
+
+
+@mcp_server.tool()
+async def listar_reportes_consolidacion(
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Lista los reportes de corridas de consolidación anteriores.
+
+    USAR CUANDO: quieras auditar qué hizo el sueño de consolidación —
+    qué se fortaleció, qué se archivó, qué se promovió a curado. Es
+    el diario del proceso: nada se olvida en silencio.
+
+    Args:
+        workspace: Slug o UUID del workspace.
+
+    Returns:
+        [{id, ejecutado_en, fortalecidos, archivados, promovidos}].
+    """
+    ctx = await _ctx(workspace)
+    async with get_session(obtener_engine()) as session:
+        filas = await ReporteConsolidacionRepository(session, ctx).listar()
+    return [
+        {
+            "id": str(r.id),
+            "ejecutado_en": r.ejecutado_en,
+            "fortalecidos": r.fortalecidos,
+            "archivados": r.archivados,
+            "promovidos": r.promovidos,
+            "detalle": r.detalle,
+        }
+        for r in filas
+    ]
+
+
+@mcp_server.tool()
+async def minar_scripts(
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Detecta secuencias de comportamiento recurrentes (ADR-003).
+
+    USAR CUANDO: quieras descubrir patrones de acción del usuario
+    ("cada bug crítico: reproduzco → logs → fix → test") para
+    anticipar el siguiente paso. Re-mínalo tras registrar muchos
+    eventos nuevos; el upsert por nombre evita duplicados.
+
+    Args:
+        workspace: Slug o UUID del workspace a minar.
+
+    Returns:
+        {evaluados, detectados, guardados, scripts:[{pasos, soporte,
+        confianza}]}.
+    """
+    return await _minar_scripts(workspace)
+
+
+@mcp_server.tool()
+async def listar_scripts(
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Lista los scripts/patrones detectados por minería.
+
+    USAR CUANDO: quieras ver qué rutinas conoce Nous del usuario —
+    secuencias recurrentes con su frecuencia y confianza.
+
+    Args:
+        workspace: Slug o UUID del workspace.
+
+    Returns:
+        [{id, nombre, pasos, frecuencia, confianza}].
+    """
+    return await _listar_scripts(workspace)
+
+
+@mcp_server.tool()
+async def listar_archivados(
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Lista las memorias archivadas por la consolidación-sueño.
+
+    USAR CUANDO: el usuario quiera revisar qué se "olvidó" — cada
+    archivado lleva su razón auditable y se restaura con
+    restaurar_evento. Nada desaparece en silencio.
+
+    Args:
+        workspace: Slug o UUID del workspace.
+
+    Returns:
+        [{id, contenido, archivado_en, razon_archivo}].
+    """
+    return await _listar_archivados(workspace)
+
+
+@mcp_server.tool()
+async def restaurar_evento(
+    evento_id: str,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Restaura una memoria archivada — deshace el olvido.
+
+    USAR CUANDO: el usuario quiera recuperar algo que la consolidación
+    archivó ("en realidad sí me acuerdo de X"). Restaurar sube su
+    ``weight`` a 1.0 (re-aprendido) — vuelve a ser evocable.
+
+    Args:
+        evento_id: UUID del evento archivado (de listar_archivados).
+        workspace: Slug o UUID del workspace.
+
+    Returns:
+        {id, restaurado: true}.
+    """
+    return await _restaurar_evento(evento_id, workspace)

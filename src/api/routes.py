@@ -26,6 +26,7 @@ from src.api.schemas import (
     IdentidadResponse,
     ImportarRequest,
     ImportarResponse,
+    IntencionRequest,
     InvitacionRequest,
     InvitacionResponse,
     LicenciaResumen,
@@ -1158,3 +1159,118 @@ async def revocar_llave(ref: str) -> None:
     if fila is None:
         raise HTTPException(404, "key no encontrada")
     await idn.revocar_key_usuario(engine, ref)
+
+
+# ---------------------------------------------------------------------
+# ADR-003 — patrones neurocognitivos: intenciones prospectivas,
+# consolidación-sueño, olvido reversible y minería de scripts.
+# Paridad con las tools MCP del mismo nombre.
+# ---------------------------------------------------------------------
+
+
+@router.post("/intenciones", dependencies=[Depends(requerir_escritura)])
+async def crear_intencion(peticion: IntencionRequest) -> dict[str, Any]:
+    """Registra una intención prospectiva (memoria prospectiva).
+
+    ``en`` = trigger temporal ("3d", epoch); ``cuando`` = trigger de
+    evento (texto a vigilar). Exactamente uno de los dos.
+    """
+    return await tools_impl._crear_intencion(
+        peticion.intencion,
+        peticion.en,
+        peticion.cuando,
+        peticion.umbral,
+        peticion.workspace,
+    )
+
+
+@router.get("/intenciones", dependencies=[Depends(verificar_token)])
+async def listar_intenciones(
+    ejecutadas: bool | None = None,
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Lista las intenciones prospectivas del workspace."""
+    return await tools_impl._listar_intenciones(ejecutadas, workspace)
+
+
+@router.post(
+    "/intenciones/{intencion_id}/cancelar",
+    dependencies=[Depends(requerir_escritura)],
+)
+async def cancelar_intencion(
+    intencion_id: str, workspace: str | None = None
+) -> dict[str, Any]:
+    """Cancela una intención prospectiva pendiente."""
+    return await tools_impl._cancelar_intencion(intencion_id, workspace)
+
+
+@router.post("/consolidar", dependencies=[Depends(requerir_escritura)])
+async def consolidar(workspace: str | None = None) -> dict[str, Any]:
+    """Ejecuta la corrida de consolidación-sueño del workspace.
+
+    Replay + promoción a curado + archivado reversible, con reporte
+    persistido — el proceso es auditable, nunca silencioso.
+    """
+    return await tools_impl._consolidar(workspace)
+
+
+@router.get(
+    "/consolidacion/reportes", dependencies=[Depends(verificar_token)]
+)
+async def reportes_consolidacion(
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Reportes de corridas de consolidación (el diario del sueño)."""
+    ctx = await contexto_actual(obtener_engine())
+    if workspace is not None:
+        ctx = await idn.resolver_workspace(
+            obtener_engine(), ctx, workspace
+        )
+    from src.storage.repositories import ReporteConsolidacionRepository
+
+    async with get_session(obtener_engine()) as session:
+        filas = await ReporteConsolidacionRepository(session, ctx).listar()
+    return [
+        {
+            "id": str(r.id),
+            "ejecutado_en": r.ejecutado_en,
+            "fortalecidos": r.fortalecidos,
+            "archivados": r.archivados,
+            "promovidos": r.promovidos,
+            "detalle": r.detalle,
+        }
+        for r in filas
+    ]
+
+
+@router.post("/scripts/minar", dependencies=[Depends(requerir_escritura)])
+async def minar(workspace: str | None = None) -> dict[str, Any]:
+    """Mina secuencias recurrentes de la línea de universo."""
+    return await tools_impl._minar_scripts(workspace)
+
+
+@router.get("/scripts", dependencies=[Depends(verificar_token)])
+async def listar_scripts(
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Scripts/patrones detectados por minería."""
+    return await tools_impl._listar_scripts(workspace)
+
+
+@router.get("/archivados", dependencies=[Depends(verificar_token)])
+async def listar_archivados(
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Memorias archivadas por consolidación — recuperables."""
+    return await tools_impl._listar_archivados(workspace)
+
+
+@router.post(
+    "/eventos/{evento_id}/restaurar",
+    dependencies=[Depends(requerir_escritura)],
+)
+async def restaurar_evento(
+    evento_id: str, workspace: str | None = None
+) -> dict[str, Any]:
+    """Restaura una memoria archivada — deshace el olvido."""
+    return await tools_impl._restaurar_evento(evento_id, workspace)

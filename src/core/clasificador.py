@@ -6,11 +6,16 @@ cuyo prototipo le es más cercano en similitud coseno. Todo local —
 reutiliza el mismo MiniLM-L12 de la búsqueda, sin modelo adicional.
 """
 
+import logging
 import math
 import statistics
 
+from src.core.decision.provider import DecisionProvider
+from src.core.decision.questions import choice
 from src.core.embeddings import GeneradorEmbeddings
 from src.core.modelos import Dimension, ResultadoClasificacion
+
+logger = logging.getLogger(__name__)
 
 MARGEN_MINIMO = 0.02
 PESO_SEMANTICO = 0.65
@@ -96,7 +101,10 @@ class ClasificadorDimensiones:
     """Clasifica texto de eventos en la dimensión más probable."""
 
     def __init__(
-        self, embeddings: GeneradorEmbeddings, usar_lexico: bool = True
+        self,
+        embeddings: GeneradorEmbeddings,
+        usar_lexico: bool = True,
+        provider: DecisionProvider | None = None,
     ) -> None:
         """Inicializa el clasificador con el generador de embeddings.
 
@@ -105,9 +113,14 @@ class ClasificadorDimensiones:
                 perezosamente en la primera clasificación.
             usar_lexico: False desactiva la señal léxica (semántico
                 puro); útil para benchmarks A/B.
+            provider: DecisionProvider System One opcional (ADR-002) —
+                si responde con probabilidad ≥ 0.5 gana su ``choice``
+                calibrado; cualquier fallo o respuesta débil degrada al
+                pipeline semántico+léxico de siempre.
         """
         self._embeddings = embeddings
         self._usar_lexico = usar_lexico
+        self._provider = provider
         self._prototipos: dict[Dimension, list[float]] | None = None
 
     async def clasificar(self, contenido: str) -> ResultadoClasificacion:
@@ -118,13 +131,62 @@ class ClasificadorDimensiones:
 
         Returns:
             ResultadoClasificacion con dimensión, confianza (margen
-            top1-top2), scores por dimensión y flag dudoso.
+            top1-top2, o probabilidad calibrada del provider),
+            scores por dimensión y flag dudoso.
 
         Raises:
             ValueError: Si el contenido está vacío o es solo espacios.
         """
         if not contenido.strip():
             raise ValueError("El contenido a clasificar está vacío")
+        resultado = await self._clasificar_heuristico(contenido)
+        if self._provider is None:
+            return resultado
+        try:
+            respuesta = await self._provider.predict(
+                contenido,
+                choice(
+                    "dimension",
+                    "¿A qué dimensión de memoria pertenece este evento?",
+                    {
+                        "cognitiva": "pensamiento, decisión, reflexión, "
+                        "idea, aprendizaje, duda o conclusión",
+                        "somatica": "estado corporal o emocional: "
+                        "ansiedad, cansancio, dolor, energía, ánimo",
+                        "conductual": "acción realizada: hice, fui, "
+                        "llamé, escribí, completé, instalé",
+                    },
+                ),
+            )
+            elegida = respuesta.answers["dimension"]
+            valor = str(elegida.value)
+            if valor in (d.value for d in Dimension) and (
+                elegida.probability >= 0.5
+            ):
+                return ResultadoClasificacion(
+                    dimension=Dimension(valor),
+                    confianza=round(elegida.probability, 4),
+                    scores=resultado.scores,
+                    dudoso=False,
+                )
+        except (KeyError, ValueError, TypeError) as exc:
+            logger.warning(
+                "provider %s devolvió dimensión inválida: %s",
+                self._provider.name,
+                exc,
+            )
+        except Exception as exc:  # noqa: BLE001 — provider no es fatal
+            logger.warning(
+                "provider %s falló clasificando: %s",
+                self._provider.name,
+                exc,
+            )
+        return resultado
+
+    async def _clasificar_heuristico(
+        self, contenido: str
+    ) -> ResultadoClasificacion:
+        """Pipeline original: prototipos semánticos + evidencia léxica."""
         prototipos = await self._cargar_prototipos()
         vector = await self._embeddings.generar(contenido)
         contenido_lower = contenido.lower()

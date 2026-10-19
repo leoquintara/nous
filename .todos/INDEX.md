@@ -31,3 +31,6 @@
 - `chrome.exe` del sistema no arranca (error SxS) → usar `channel: 'msedge'` o
   el Chromium bundled de Playwright.
 | 21 | Cerebro 3D adaptado a Nous + membrana viva | ✅ 3e7a883 — refuerzos→consolidated, shader respira, onda cortical, marcapaso talámico |
+| 22 | ADR-002 Nivel 1: src/core/decision/ + Laya augmenta clasificador | ⏳ aprobado 2026-10-19 — fallback a heurístico, Laya como extra opcional |
+| 23 | ADR-002 Nivel 2: tool consultar_decision + skills/prompts de decisión (Pro) | ⏳ pendiente — tras Nivel 1; tier Pro, módulo decision/ desacoplado |
+| 24 | ADR-001: separar dashboard a repo nous-dashboard + licencia JWT | ⏳ aprobado 2026-10-19, pendiente ejecución |

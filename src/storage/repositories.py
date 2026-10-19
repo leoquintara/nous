@@ -9,7 +9,7 @@ import uuid
 from collections.abc import Sequence
 from typing import Any, cast
 
-from sqlalchemy import and_, delete, func, literal, or_, select, union_all, update
+from sqlalchemy import BigInteger, and_, case, delete, func, literal, or_, select, union_all, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,10 +25,13 @@ from src.storage.models import (
     ConfiguracionModel,
     EventoModel,
     FuenteModel,
+    IntencionProspectivaModel,
     LlamadaModel,
     ObjetivoModel,
     ProyeccionModel,
     RelacionModel,
+    ReporteConsolidacionModel,
+    ScriptDetectadoModel,
 )
 
 
@@ -321,6 +324,9 @@ class EventoRepository:
                 EventoModel.expira_en.is_(None),
                 EventoModel.expira_en > ahora,
             ),
+            # Lo archivado por consolidación ya no es evocable —
+            # sigue en la worldline (reversible), fuera del recall.
+            EventoModel.archivado.is_(False),
             *self._vis(),
         ]
         if rama is not None:
@@ -357,6 +363,7 @@ class EventoRepository:
                 EventoModel.expira_en.is_(None),
                 EventoModel.expira_en > ahora,
             ),
+            EventoModel.archivado.is_(False),
             *self._vis(),
         ]
         if rama is not None:
@@ -416,7 +423,10 @@ class EventoRepository:
         stmt = (
             update(EventoModel)
             .where(EventoModel.id.in_(eventos_ids))
-            .values(refuerzos=EventoModel.refuerzos + 1)
+            .values(
+                refuerzos=EventoModel.refuerzos + 1,
+                ultimo_acceso=int(time.time()),
+            )
         )
         resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
         return resultado.rowcount
@@ -586,6 +596,146 @@ class EventoRepository:
         """
         stmt = delete(EventoModel).where(EventoModel.id == evento_id)
         resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
+        return resultado.rowcount > 0
+
+    async def fijar_tipo_memoria(
+        self,
+        evento_id: uuid.UUID,
+        tipo_memoria: str,
+        estado_emocional: float | None = None,
+    ) -> None:
+        """Asigna tipo de memoria y estado emocional tras clasificar.
+
+        Args:
+            evento_id: UUID del evento.
+            tipo_memoria: 'episodica' | 'semantica' | 'procedimental'.
+            estado_emocional: Valence 0-1 si se estimó (opcional).
+        """
+        valores: dict[str, Any] = {"tipo_memoria": tipo_memoria}
+        if estado_emocional is not None:
+            valores["estado_emocional"] = estado_emocional
+        stmt = (
+            update(EventoModel)
+            .where(EventoModel.id == evento_id)
+            .values(**valores)
+        )
+        await self._session.execute(stmt)
+
+    async def listar_para_consolidacion(
+        self, limite: int = 5000
+    ) -> Sequence[EventoModel]:
+        """Candidatos de la corrida de sueño: no archivados aún.
+
+        La consolidación decide en core qué hacer; el repo solo trae
+        la materia prima acotada por workspace.
+        """
+        stmt = (
+            select(EventoModel)
+            .where(EventoModel.archivado.is_(False), *self._vis())
+            .order_by(EventoModel.timestamp_unix.desc())
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
+
+    async def aplicar_consolidacion(
+        self,
+        fortalecer: dict[str, float],
+        promover: list[str],
+        archivar: dict[str, str],
+        ahora_unix: int,
+    ) -> None:
+        """Aplica el plan de consolidación en tres UPDATEs por lote.
+
+        Args:
+            fortalecer: ``evento_id → weight nuevo``.
+            promover: ids que pasan al tier curado.
+            archivar: ``evento_id → razon`` del archivado.
+            ahora_unix: timestamp de la corrida.
+        """
+        if fortalecer:
+            whens = [
+                (EventoModel.id == uuid.UUID(eid), peso)
+                for eid, peso in fortalecer.items()
+            ]
+            await self._session.execute(
+                update(EventoModel)
+                .where(
+                    EventoModel.id.in_(
+                        [uuid.UUID(i) for i in fortalecer]
+                    )
+                )
+                .values(weight=case(*whens))
+            )
+        if promover:
+            await self._session.execute(
+                update(EventoModel)
+                .where(EventoModel.id.in_([uuid.UUID(i) for i in promover]))
+                .values(curado=True)
+            )
+        if archivar:
+            whens_razon = [
+                (EventoModel.id == uuid.UUID(eid), razon)
+                for eid, razon in archivar.items()
+            ]
+            await self._session.execute(
+                update(EventoModel)
+                .where(
+                    EventoModel.id.in_([uuid.UUID(i) for i in archivar])
+                )
+                .values(
+                    archivado=True,
+                    archivado_en=ahora_unix,
+                    razon_archivo=case(*whens_razon),
+                )
+            )
+
+    async def listar_archivados(self, limite: int = 100) -> Sequence[EventoModel]:
+        """Eventos archivados por consolidación — recuperables.
+
+        Args:
+            limite: Máximo de resultados.
+
+        Returns:
+            Eventos archivados, del más reciente al más antiguo.
+        """
+        stmt = (
+            select(EventoModel)
+            .where(EventoModel.archivado.is_(True), *self._vis())
+            .order_by(EventoModel.archivado_en.desc().nulls_last())
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
+
+    async def restaurar(self, evento_id: uuid.UUID) -> bool:
+        """Restaura un evento archivado — deshace el olvido.
+
+        Restaurar sube ``weight`` a 1.0 (re-aprendido) y limpia las
+        marcas de archivo. Es el "me acordé igual" de la UX reversible.
+
+        Args:
+            evento_id: UUID del evento archivado.
+
+        Returns:
+            True si el evento existía, estaba archivado y se restauró.
+        """
+        stmt = (
+            update(EventoModel)
+            .where(
+                EventoModel.id == evento_id,
+                EventoModel.archivado.is_(True),
+            )
+            .values(
+                archivado=False,
+                archivado_en=None,
+                razon_archivo=None,
+                weight=1.0,
+            )
+        )
+        resultado = cast(
+            CursorResult[EventoModel], await self._session.execute(stmt)
+        )
         return resultado.rowcount > 0
 
 
@@ -1247,3 +1397,315 @@ class LlamadaRepository:
             ],
             "pings": {"total": ping_rows.n, "ultimo": ping_rows.ultimo},
         }
+
+
+class IntencionProspectivaRepository:
+    """Acceso a datos de las intenciones prospectivas (ADR-003)."""
+
+    def __init__(
+        self, session: AsyncSession, ctx: Contexto | None = None
+    ) -> None:
+        """Inicializa el repositorio con una sesión async.
+
+        Args:
+            session: Sesión async de SQLAlchemy.
+            ctx: Contexto de identidad para la visibilidad multi-tenant.
+        """
+        self._session = session
+        self._ctx = ctx
+
+    def _vis(self) -> list[ColumnElement[bool]]:
+        """Filtros de visibilidad sobre ``intenciones_prospectivas``.
+
+        La tabla no lleva ``scope``: una intención es siempre personal
+        — se ve dentro del workspace pero solo del autor (o sin
+        atribuir, importaciones/CLI).
+        """
+        if self._ctx is None:
+            return []
+        return [
+            and_(
+                IntencionProspectivaModel.workspace_id
+                == self._ctx.workspace_id,
+                or_(
+                    IntencionProspectivaModel.autor_id
+                    == self._ctx.usuario_id,
+                    IntencionProspectivaModel.autor_id.is_(None),
+                ),
+            )
+        ]
+
+    async def crear(
+        self, intencion: IntencionProspectivaModel
+    ) -> IntencionProspectivaModel:
+        """Persiste una intención prospectiva.
+
+        Args:
+            intencion: Instancia a persistir.
+
+        Returns:
+            La intención con su id asignado.
+        """
+        self._session.add(intencion)
+        await self._session.flush()
+        return intencion
+
+    async def listar(
+        self,
+        ejecutadas: bool | None = None,
+        limite: int = 100,
+    ) -> Sequence[IntencionProspectivaModel]:
+        """Lista intenciones del workspace.
+
+        Args:
+            ejecutadas: None = todas; False = solo pendientes
+                (ni ejecutadas ni canceladas); True = ya disparadas.
+            limite: Máximo de filas.
+
+        Returns:
+            Intenciones ordenadas de la más nueva a la más vieja.
+        """
+        filtros = [*self._vis()]
+        if ejecutadas is False:
+            filtros.append(IntencionProspectivaModel.ejecutada.is_(False))
+            filtros.append(IntencionProspectivaModel.cancelada.is_(False))
+        elif ejecutadas is True:
+            filtros.append(IntencionProspectivaModel.ejecutada.is_(True))
+        stmt = (
+            select(IntencionProspectivaModel)
+            .where(*filtros)
+            .order_by(IntencionProspectivaModel.creada_en.desc())
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
+
+    async def pendientes_temporales(
+        self, ahora_unix: int
+    ) -> Sequence[IntencionProspectivaModel]:
+        """Intenciones time-based cuyo trigger ya venció.
+
+        Args:
+            ahora_unix: Timestamp actual; el trigger madura cuando
+                ``trigger_valor['ts'] <= ahora``.
+
+        Returns:
+            Intenciones pendientes con trigger vencido.
+        """
+        stmt = select(IntencionProspectivaModel).where(
+            IntencionProspectivaModel.trigger_tipo == "time",
+            IntencionProspectivaModel.ejecutada.is_(False),
+            IntencionProspectivaModel.cancelada.is_(False),
+            IntencionProspectivaModel.trigger_valor["ts"].astext.cast(
+                BigInteger
+            )
+            <= ahora_unix,
+            *self._vis(),
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
+
+    async def pendientes_por_evento(
+        self,
+    ) -> Sequence[IntencionProspectivaModel]:
+        """Intenciones event-based pendientes — candidatas de evaluación.
+
+        Returns:
+            Intenciones con ``trigger_tipo='event'`` sin ejecutar ni
+            cancelar.
+        """
+        stmt = select(IntencionProspectivaModel).where(
+            IntencionProspectivaModel.trigger_tipo == "event",
+            IntencionProspectivaModel.ejecutada.is_(False),
+            IntencionProspectivaModel.cancelada.is_(False),
+            *self._vis(),
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
+
+    async def marcar_ejecutada(
+        self, intencion_id: uuid.UUID, ahora_unix: int
+    ) -> bool:
+        """Marca una intención como disparada.
+
+        Args:
+            intencion_id: UUID de la intención.
+            ahora_unix: Timestamp de la ejecución.
+
+        Returns:
+            True si la intención estaba pendiente y se marcó.
+        """
+        stmt = (
+            update(IntencionProspectivaModel)
+            .where(
+                IntencionProspectivaModel.id == intencion_id,
+                IntencionProspectivaModel.ejecutada.is_(False),
+                IntencionProspectivaModel.cancelada.is_(False),
+            )
+            .values(ejecutada=True, ejecutada_en=ahora_unix)
+        )
+        resultado = cast(
+            CursorResult[IntencionProspectivaModel],
+            await self._session.execute(stmt),
+        )
+        return resultado.rowcount > 0
+
+    async def cancelar(
+        self, intencion_id: uuid.UUID, ahora_unix: int
+    ) -> bool:
+        """Cancela una intención pendiente.
+
+        Args:
+            intencion_id: UUID de la intención.
+            ahora_unix: Timestamp de la cancelación.
+
+        Returns:
+            True si la intención estaba pendiente y se canceló.
+        """
+        stmt = (
+            update(IntencionProspectivaModel)
+            .where(
+                IntencionProspectivaModel.id == intencion_id,
+                IntencionProspectivaModel.ejecutada.is_(False),
+                IntencionProspectivaModel.cancelada.is_(False),
+            )
+            .values(cancelada=True, cancelada_en=ahora_unix)
+        )
+        resultado = cast(
+            CursorResult[IntencionProspectivaModel],
+            await self._session.execute(stmt),
+        )
+        return resultado.rowcount > 0
+
+
+class ScriptRepository:
+    """Acceso a datos de los scripts/patrones minados (ADR-003)."""
+
+    def __init__(
+        self, session: AsyncSession, ctx: Contexto | None = None
+    ) -> None:
+        """Inicializa el repositorio con una sesión async."""
+        self._session = session
+        self._ctx = ctx
+
+    def _vis(self) -> list[ColumnElement[bool]]:
+        """Filtros de visibilidad sobre ``scripts_detectados``.
+
+        Los scripts son patrones del workspace entero (se minan de la
+        línea completa) — sin ``scope``, el aislamiento es el
+        workspace.
+        """
+        if self._ctx is None:
+            return []
+        return [
+            ScriptDetectadoModel.workspace_id == self._ctx.workspace_id
+        ]
+
+    async def guardar(
+        self, script: ScriptDetectadoModel
+    ) -> ScriptDetectadoModel:
+        """Persiste un script detectado (o actualiza si ya hay par).
+
+        El upsert se hace por ``(workspace_id, nombre)``: minar dos
+        veces el mismo patrón actualiza frecuencia/confianza en vez
+        de duplicar la fila.
+
+        Args:
+            script: Instancia a persistir.
+
+        Returns:
+            El script persistido con id asignado.
+        """
+        existente = (
+            await self._session.execute(
+                select(ScriptDetectadoModel).where(
+                    ScriptDetectadoModel.workspace_id
+                    == script.workspace_id,
+                    ScriptDetectadoModel.nombre == script.nombre,
+                )
+            )
+        ).scalar_one_or_none()
+        if existente is not None:
+            existente.pasos = script.pasos
+            existente.frecuencia = script.frecuencia
+            existente.confianza = script.confianza
+            existente.actualizado_en = script.actualizado_en
+            await self._session.flush()
+            return existente
+        self._session.add(script)
+        await self._session.flush()
+        return script
+
+    async def listar(
+        self, limite: int = 50
+    ) -> Sequence[ScriptDetectadoModel]:
+        """Lista los scripts detectados por confianza descendente.
+
+        Args:
+            limite: Máximo de filas.
+
+        Returns:
+            Scripts del workspace, del más confiable al menos.
+        """
+        stmt = (
+            select(ScriptDetectadoModel)
+            .where(*self._vis())
+            .order_by(ScriptDetectadoModel.confianza.desc())
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
+
+
+class ReporteConsolidacionRepository:
+    """Acceso a datos de los reportes de consolidación (dream diary)."""
+
+    def __init__(
+        self, session: AsyncSession, ctx: Contexto | None = None
+    ) -> None:
+        """Inicializa el repositorio con una sesión async."""
+        self._session = session
+        self._ctx = ctx
+
+    def _vis(self) -> list[ColumnElement[bool]]:
+        """Filtros de visibilidad sobre ``reportes_consolidacion``."""
+        if self._ctx is None:
+            return []
+        return [
+            ReporteConsolidacionModel.workspace_id == self._ctx.workspace_id
+        ]
+
+    async def crear(
+        self, reporte: ReporteConsolidacionModel
+    ) -> ReporteConsolidacionModel:
+        """Persiste el reporte de una corrida de consolidación.
+
+        Args:
+            reporte: Instancia a persistir.
+
+        Returns:
+            El reporte con id asignado.
+        """
+        self._session.add(reporte)
+        await self._session.flush()
+        return reporte
+
+    async def listar(
+        self, limite: int = 20
+    ) -> Sequence[ReporteConsolidacionModel]:
+        """Lista reportes recientes primero.
+
+        Args:
+            limite: Máximo de filas.
+
+        Returns:
+            Reportes del workspace por ``ejecutado_en`` descendente.
+        """
+        stmt = (
+            select(ReporteConsolidacionModel)
+            .where(*self._vis())
+            .order_by(ReporteConsolidacionModel.ejecutado_en.desc())
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
