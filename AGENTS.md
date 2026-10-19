@@ -37,7 +37,20 @@ nous/
 │   │   ├── temporal.py         # Línea de universo y trayectorias
 │   │   ├── prediccion.py       # Fachada de proyección futura (re-export de temporal)
 │   │   ├── modelos.py          # Dataclasses y enums del dominio
-│   │   └── exceptions.py       # Excepciones del dominio
+│   │   ├── exceptions.py       # Excepciones del dominio
+│   │   ├── memoria/            # Patrones neurocognitivos (ADR-003, puros/testeables)
+│   │   │   ├── decay.py        #   Decaimiento adaptativo (media-vida por dim/tipo)
+│   │   │   ├── consolidacion.py#   Sueño: promueve/fortalece/archiva + reporte
+│   │   │   ├── prospectiva.py  #   Intenciones time/event + triggers
+│   │   │   ├── interferencia.py#   Detección de contradicciones (rel. 'contradice')
+│   │   │   ├── contexto.py     #   Boost contexto/estado-dependiente en búsqueda
+│   │   │   ├── scripts.py      #   Minería de secuencias recurrentes
+│   │   │   └── tipos.py        #   episódica/semántica/procedimental + valencia
+│   │   └── decision/           # Proveedores System One (ADR-002, autocontenido)
+│   │       ├── provider.py     #   Protocolo /v1/systemone (choice/score/noul)
+│   │       ├── adapters.py     #   Laya/Ollama/HTTP/Jev con guardia de privacidad
+│   │       ├── factory.py      #   auto → probe de socket, nunca stall 30s
+│   │       └── engine.py       #   Orquestación (Nivel 2 = tool Pro)
 │   │
 │   ├── storage/                # Capa de persistencia
 │   │   ├── database.py         # Conexión async a PostgreSQL
@@ -296,6 +309,25 @@ async def test_fusion_rrf_con_dos_listas_ordena_por_score():
 - `EXPLAIN ANALYZE` obligatorio antes de mergear queries nuevas.
 - Prohibido el patrón N+1: usar `selectinload`/`joinedload` o queries agregadas.
 - Connection pooling con asyncpg (`pool_pre_ping` habilitado).
+
+### Patrones de memoria (ADR-003)
+
+- `src/core/memoria/` es **lógica pura** — sin I/O, sin SQLAlchemy, sin
+  `time.time()` implícito (timestamps entran por parámetro). Las capas
+  MCP/REST/CLI solo orquestan: leen con repos, llaman al core, persisten
+  con repos batch (`aplicar_consolidacion` usa UPDATE/CASE, nunca loops).
+- `src/core/decision/` es **autocontenido** — no puede importar
+  `src.storage` ni `src.mcp`. Está diseñado para extraerse como paquete
+  propio de Quintara (el ADR-002 Nivel 2, Pro, vive ahí).
+- **Archivar ≠ borrar**: la consolidación marca `archivado=true`
+  (reversible, restaurable); el DELETE real solo vive en `nous prune`.
+  Compromisos y preferencias nunca se archivan — son accionables.
+- El tier **curado** (`curado=true`) es inmune a decay y al archivo —
+  es el equivalente del MEMORY.md curado de OpenClaw.
+- Toda corrida de consolidación persiste un `reportes_consolidacion`
+  con ids y razones — el olvido siempre es auditable, nunca silencioso.
+- Los providers de decisión degranan siempre: fallo de red/modelo →
+  heurístico local, jamás excepción ni stall en el camino caliente.
 
 ## 🚀 Cómo Ejecutar el Proyecto
 

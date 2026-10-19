@@ -24,6 +24,33 @@ y futuros proyectados.
 Cada recuerdo puede ser `evento`, `hecho`, `creencia`, `preferencia` o
 `compromiso` (los compromisos abren un *loop* hasta que se cierran), con
 tags, vínculos explícitos, TTL, rama de universo y supersede auditable.
+Además, cada evento se clasifica como memoria **episódica**, **semántica**
+o **procedimental** — el tipo decide su curva de olvido.
+
+## Patrones de memoria (ADR-003)
+
+Siete mecanismos neurocognitivos sobre la línea de universo:
+
+- **Decaimiento adaptativo**: cada recuerdo tiene una media-vida según
+  dimensión, tipo de memoria, amplitud y re-evocaciones. Lo curado no decae.
+- **Consolidación-sueño**: `nous consolidar` reactiva huellas fuertes,
+  promueve lo saliente al tier **curado** y archiva lo débil — siempre
+  reversible y con reporte persistido y auditable. Los compromisos y
+  preferencias nunca se archivan.
+- **Memoria prospectiva**: intenciones *time-based* ("recuérdame X el
+  viernes") o *event-based* ("cuando aparezca el cliente Y") que disparan
+  como recordatorios al consultar o al indexar el evento gatillo.
+- **Interferencia**: un evento nuevo que supersedes o niega uno cercano
+  genera un vínculo `contradice` explícito — la contradicción es dato,
+  no ruido.
+- **Contexto/estado-dependiente**: recuerdas mejor donde y como lo viviste.
+  La búsqueda re-rankea por hora del día, fuente y valencia emocional
+  cercanas al momento de codificación.
+- **Minería de scripts**: secuencias recurrentes de la línea se detectan
+  como patrones con soporte y confianza.
+- **Olvido reversible**: archivar ≠ borrar. Lo archivado sale del recall
+  pero sigue en la worldline; `nous restaurar <id>` lo devuelve. El
+  borrado real solo existe vía `nous prune` — manual y explícito.
 
 ## El universo 4D
 
@@ -42,7 +69,7 @@ tags, vínculos explícitos, TTL, rama de universo y supersede auditable.
 ```
 ┌────────────┐  stdio/HTTP   ┌──────────────┐   ┌──────────────┐
 │ Agentes MCP │ ────────────▶ │  src/mcp     │   │  Dashboard   │
-└────────────┘               │  (25 tools)  │   │  Next.js 16  │
+└────────────┘               │  (34 tools)  │   │  Next.js 16  │
                              └──────┬───────┘   └──────┬───────┘
 ┌────────────┐                     │                   │ REST+token
 │  CLI `nous`│ ────────┐     ┌─────▼───────────────────▼─────┐
@@ -50,6 +77,8 @@ tags, vínculos explícitos, TTL, rama de universo y supersede auditable.
                        │     │  clasificador · embeddings    │
                        │     │  búsqueda híbrida · temporal  │
                        │     │  predicción IA · trazas       │
+                       │     │  memoria/ (patrones ADR-003)  │
+                       │     │  decision/ (System One, ADR-002)│
                        │     └──────────────┬────────────────┘
                        │            ┌───────▼────────┐
                        └───────────▶│ src/storage    │
@@ -63,23 +92,29 @@ recencia + reranker cross-encoder local. Objetivo: <200ms p95.
 
 ## Quickstart
 
-Requisitos: Python 3.12+, Poetry, PostgreSQL 18 con pgvector
-(o Docker para `docker-compose`).
+**Todo-en-Docker** (PostgreSQL + app + dashboard en un stack):
 
 ```bash
 git clone <repo> && cd nous
-cp .env.example .env             # edita valores (ver "Configuración")
-docker-compose up -d             # PostgreSQL 18 + pgvector
-poetry install
-poetry run nous db upgrade       # migraciones Alembic
-poetry run nous serve            # MCP stdio (default)
+cp .env.example .env             # define NOUS_API_TOKEN=ns_$(openssl rand -hex 32)
+docker compose --profile app up -d
+curl -s localhost:8720/health    # API + MCP + dashboard vivos
+```
+
+**pipx** (comando `nous` global sobre tu PostgreSQL):
+
+```bash
+docker compose up -d db          # solo PostgreSQL 18 + pgvector
+pipx install .                   # instala `nous` aislado (desde el repo)
+nous db upgrade                  # migraciones Alembic
+nous serve                       # MCP stdio (default)
 ```
 
 Verificación del entorno:
 
 ```bash
-poetry run nous doctor           # DB, modelos en caché, token
-poetry run nous stats            # conteos por dimensión
+nous doctor                      # DB, modelos en caché, token
+nous stats                       # conteos por dimensión
 ```
 
 ## Conectar un agente (MCP)
@@ -173,11 +208,14 @@ Skills: `nous-remember` (persistir), `nous-recall` (consultar),
 `nous-context` (contexto incompleto), `nous-universe` (línea 4D),
 `nous-workspaces` (scopes, roles y workspace= multi-tenant),
 `nous-preferences`, `nous-checkin` (ritual somático post-hito),
-`nous-somatic` (mapa de señales).
+`nous-somatic` (mapa de señales), `nous-consolidar` (sueño y
+olvido reversible), `nous-prospectiva` (recordatorios por tiempo
+y por evento), `nous-scripts` (minería de rutinas conductuales).
 
 Agentes: `nous-keeper` (qué persistir), `nous-curator` (higiene de
 loops/objetivos/fuentes), `nous-pathfinder` (metas → hitos → avance),
-`nous-mirror` (observador somático).
+`nous-mirror` (observador somático), `nous-dreamer` (corrida de
+consolidación-sueño auditable).
 
 ## CLI
 
@@ -192,6 +230,10 @@ loops/objetivos/fuentes), `nous-pathfinder` (metas → hitos → avance),
 | `nous import <archivo> [--fuente] [--rama]` | Importa JSONL/memlord/gbrain/Obsidian |
 | `nous skills install --target .agents` | Instala skills/agentes |
 | `nous prune [--dias 90] [--amplitud 0.3]` | Poda recuerdos débiles |
+| `nous consolidar` | Corrida de sueño: promueve/fortalece/archiva + reporte |
+| `nous intenciones` | Intenciones prospectivas pendientes |
+| `nous archivados` | Memorias archivadas (recuperables) |
+| `nous restaurar <uuid>` | Desarchiva una memoria consolidada |
 | `nous benchmark` | Benchmark de búsqueda (persiste resultados) |
 | `nous check-update` / `nous upgrade` | Gestión de versiones |
 | `nous users create\|list` | Usuarios del sistema |
@@ -233,8 +275,10 @@ Desde la UI `/importar` o `nous import`:
 `POST /api/eventos` · `GET /api/buscar` · `GET /api/eventos` ·
 `DELETE /api/eventos/{id}` · loops, objetivos, contexto-inicial, tags,
 fuentes (+ramificar), relaciones, proyección, preferencias, proveedores IA,
-actividad, benchmarks, llamadas, ping, importar · identidad
-(`/api/identidad`, `/api/workspaces/*`, `/api/llaves`,
+actividad, benchmarks, llamadas, ping, importar · patrones ADR-003
+(`/api/intenciones`, `/api/consolidar`, `/api/consolidacion/reportes`,
+`/api/scripts`, `/api/archivados`, `/api/eventos/{id}/restaurar`) ·
+identidad (`/api/identidad`, `/api/workspaces/*`, `/api/llaves`,
 `/api/invitaciones/canjear` público). Referencia:
 [docs/api.md](docs/api.md).
 
@@ -256,6 +300,11 @@ actividad, benchmarks, llamadas, ping, importar · identidad
 | `NOUS_LICENSE_KEY` | (vacío = edición libre) | Desbloquea multi-tenant completo |
 | `NOUS_MAX_USUARIOS_LIBRES` | `1` | Límite sin licencia |
 | `NOUS_MAX_WORKSPACES_LIBRES` | `3` | Límite sin licencia |
+| `NOUS_DECISION_PROVIDER` | `auto` | `none/auto/laya/ollama/jev` — motor System One |
+| `NOUS_OLLAMA_ENDPOINT` | `http://localhost:11434` | Provider Ollama local |
+| `NOUS_OLLAMA_MODEL` | `tev1:0.8b` | Modelo Ollama |
+| `NOUS_JEV_API_KEY` | — | Provider Jev (requiere flag de privacidad) |
+| `NOUS_PRIVACY_PERMITIR_EXTERNOS` | `false` | Consentimiento para providers externos |
 
 ## Desarrollo
 

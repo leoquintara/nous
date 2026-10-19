@@ -14,3 +14,12 @@ Revisor del dashboard Nous. Antes de cada commit en `dashboard/` verifica:
 8. **Workspace**: llamada a la API sin `?workspace=` del workspace activo
    → verificar (el adaptador lo inyecta vía `crearClienteNous`). Escrituras
    de eventos/objetivos deben enviar `scope`.
+9. **Hidratación**: `useState(() => localStorage...)` o `matchMedia` en
+   lazy-init → rechazar. Estado client-only va por `useSyncExternalStore`
+   con `getServerSnapshot` coherente con el HTML prerendereado (rompe el
+   export estático con #418; `next dev` no lo muestra).
+10. **Toolchain**: ¿`npm`/`package-lock.json`/`npx`? ❌ Todo por `yarn`.
+    Hook que lee localStorage sin prefijo `use` → `react-hooks` lo marca.
+11. **Efectos**: `setState` síncrono dentro de `useEffect` para derivar
+    estado render-time → `react-hooks/set-state-in-effect` lo rechaza;
+    derivar en render o en event handler.

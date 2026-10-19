@@ -153,6 +153,20 @@ Elige la tool según la forma de la pregunta:
 - Los **tags** del evento (`evento.tags`) indican hilos temáticos;
   los eventos que comparten tag están conectados.
 - Si los resultados no bastan, di qué falta — no inventes.
+
+## Recordatorios prospectivos
+
+`consultar_memoria` puede devolver **primero** elementos con
+`recordatorio: true` — intenciones temporales vencidas que dispararon
+al consultar (ver `nous-prospectiva`). Léalos antes de responder y
+menciónalos al usuario; no son resultados de la búsqueda.
+
+## Campos de contexto del evento
+
+Cada `evento` lleva además `contexto` (hora/fuente de codificación)
+y `estado_emocional` (valencia 0-1 si se estimó). La búsqueda
+re-rankea por similitud con el contexto actual — si un resultado
+subió por contexto, esos campos explican el porqué.
 """
 
 _SKILL_CONTEXTO = """---
@@ -501,9 +515,12 @@ pudra en silencio.
    abandonado) o replantear la fecha. El usuario decide.
 3. `listar_fuentes()` — fuentes que ya no escriben: sugiere archivar
    (el dashboard las oculta sin borrar el historial).
-4. `listar_tags()` — tags duplicados u obsoletos que ensucian los
+4. `listar_intenciones(ejecutadas=False)` — recordatorios
+   prospectivos muy viejos sin disparar: quizá el trigger ya no
+   aplica; sugiere `cancelar_intencion` con confirmación.
+5. `listar_tags()` — tags duplicados u obsoletos que ensucian los
    hilos temáticos.
-5. `proyectar_trayectoria()` — si la dimensión dominante lleva mucho
+6. `proyectar_trayectoria()` — si la dimensión dominante lleva mucho
    tiempo en un estado (p. ej. estrés somático sostenido),
    coméntalo con tacto.
 
@@ -512,6 +529,9 @@ pudra en silencio.
 - Propón, no ejecutes: la memoria es del usuario y toda transición
   destructiva o de cierre necesita su gesto explícito.
 - `olvidar_evento` solo si el usuario lo pide literalmente.
+- La higiene del olvido (consolidación/archivados) es de
+  `nous-dreamer` — no la dupliques; solo deriva si el reporte de
+  sueño muestra algo fuera de lugar.
 - El reporte es breve: hallazgos ordenados por antigüedad, una
   acción sugerida por hallazgo.
 """
@@ -554,6 +574,193 @@ lejos está.
   impongas una descomposición.
 - Fechas siempre Unix epoch en segundos.
 - Un objetivo vencido no se borra — se replantea o se cierra.
+"""
+
+
+_SKILL_CONSOLIDAR = """---
+name: nous-consolidar
+description: Consolidación-sueño y olvido reversible de Nous —
+  consolidar_memoria, reportes, archivados y restaurar_evento. Usar
+  cuando el usuario pida "dormir" la memoria, revisar qué se olvidó,
+  recuperar algo archivado o auditar las corridas de sueño.
+---
+
+# Consolidación-sueño en Nous
+
+La memoria Nous se consolida como el cerebro al dormir:
+`consolidar_memoria()` reactiva huellas fuertes (replay), promueve
+lo destacado al tier **curado** (inmune al olvido) y **archiva** lo
+débil y sin acceso reciente — todo con reporte persistido.
+
+## Cuándo usarla
+
+- Mantenimiento periódico: tras importaciones grandes, al cerrar un
+  sprint, o cuando la búsqueda devuelve demasiado ruido viejo.
+- **Nunca en cadena automática por defecto**: proponla cuando
+  veas señales (muchos eventos débiles, recall ruidoso), no la
+  dispares sin que el usuario la pida o la apruebe.
+
+## Cómo llamarla
+
+- `consolidar_memoria()` → `{evaluados, fortalecidos, promovidos,
+  archivados, resumen}`. Reporta el resumen al usuario en lenguaje
+  natural — el proceso es auditable, no silencioso.
+- `listar_reportes_consolidacion()` → historial de corridas con
+  `detalle` (ids y razones por acción). Usa esto para explicar qué
+  pasó exactamente.
+- `listar_archivados()` → memorias archivadas con su
+  `razon_archivo`. Preséntala cuando el usuario pregunte "¿qué se
+  olvidó?".
+- `restaurar_evento(evento_id)` → deshace el archivo: el recuerdo
+  vuelve al recall con `weight=1.0` (re-aprendido).
+
+## Reglas
+
+- **Archivar ≠ borrar**: lo archivado sale del recall pero sigue en
+  la línea de universo (la historia es inmutable). El borrado real
+  solo existe vía `nous prune` — nunca lo ejecutes por tu cuenta.
+- Compromisos y preferencias **nunca** se archivan — el motor los
+  protege solos; no hace falta que los vigiles.
+- Lo `curado` tampoco decae ni se archiva: es la memoria de trabajo
+  destilada (equivalente al MEMORY.md de otros sistemas).
+- Restaurar siempre bajo petición del usuario — "en realidad sí me
+  acuerdo de X" → busca su id en `listar_archivados()` y restauralo.
+"""
+
+
+_SKILL_PROSPECTIVA = """---
+name: nous-prospectiva
+description: Memoria prospectiva de Nous — intenciones que recuerdan
+  cosas por hacer: crear_intencion con trigger temporal ("en 3d") o
+  de evento ("cuando mencionen a María"), listar y cancelar. Usar
+  cuando el usuario diga "recuérdame", "avísame cuando" o "no olvides".
+---
+
+# Memoria prospectiva en Nous
+
+La memoria prospectiva recuerda **intenciones futuras**: no es una
+alarma ni un calendario — la intención vive en la línea y dispara
+como recordatorio cuando su trigger se cumple.
+
+## Los dos triggers
+
+- **Temporal** (`en`): "recuérdame llamar a María el viernes" →
+  `crear_intencion(intencion="llamar a María", en="3d")`. Acepta
+  duraciones ("30d", "12h", "2w") o epoch. Dispara en la próxima
+  `consultar_memoria` tras vencer — la evocación es cuando Nous
+  "se acuerda" (no hay scheduler aparte).
+- **De evento** (`cuando`): "avísame cuando alguien mencione el
+  deploy" → `crear_intencion(intencion="revisar el deploy",
+  cuando="deploy")`. Dispara cuando un evento entrante cubre el
+  texto del trigger con similitud ≥ `umbral` (default 0.6 — súbelo
+  si el texto es genérico, bájalo si es muy específico).
+
+## Cómo llamarlas
+
+- `crear_intencion(intencion, en=… | cuando=…)` → exactamente uno
+  de los dos triggers. Devuelve `{id, trigger_tipo, …}`.
+- `listar_intenciones(ejecutadas=False)` → pendientes; `None` =
+  todas; `True` = las ya disparadas (historial).
+- `cancelar_intencion(intencion_id)` → el recordatorio deja de
+  existir como pendiente (queda auditada, no borrada). Usa el id
+  de `listar_intenciones`, nunca adivines.
+
+## Reglas
+
+- Al disparar, la intención queda `ejecutada` y un evento
+  recordatorio (fuente `prospectiva`) entra en la línea — es
+  trazable, no un popup efímero.
+- Si el usuario dice "recuérdame X" sin fecha ni condición,
+  pregunta cuál de las dos — no adivines el trigger.
+- Los recordatorios disparados llegan **al inicio** de la respuesta
+  de `consultar_memoria` con `recordatorio: true` — léelos antes de
+  responder y menciónalo al usuario.
+"""
+
+
+_SKILL_SCRIPTS = """---
+name: nous-scripts
+description: Minería de patrones conductuales de Nous — minar_scripts
+  detecta secuencias recurrentes de la línea de universo con soporte
+  y confianza. Usar cuando el usuario pregunte por sus rutinas,
+  hábitos o "cómo suelo resolver X", o para anticipar el paso
+  siguiente de una secuencia conocida.
+---
+
+# Minería de scripts en Nous
+
+Los **scripts** son secuencias de comportamiento recurrentes que
+Nous detecta en la línea de universo: "cada bug crítico → reproduzco
+→ leo logs → fix → test". Una vez detectadas, anticipan el paso
+siguiente.
+
+## Cómo llamarlas
+
+- `minar_scripts()` → `{evaluados, detectados, guardados, scripts}`.
+  Re-mina tras registrar muchos eventos nuevos; el upsert por
+  nombre evita duplicados en `scripts_detectados`.
+- `listar_scripts()` → `[{id, nombre, pasos, frecuencia,
+  confianza}]` — las rutinas conocidas del workspace.
+
+## Cómo interpretarlas
+
+- `pasos`: la secuencia ordenada de tokens temáticos
+  ("reproducir → depurar → test").
+- `frecuencia` (soporte): cuántas veces aparece la secuencia —
+  rutinas reales tienen soporte ≥ 3.
+- `confianza`: probabilidad de que el patrón se repita dado el
+  prefijo — ≥ 0.6 es un guion fiable; < 0.4 es ruido estadístico.
+
+## Reglas
+
+- Un script describe lo que el usuario **suele** hacer, no lo que
+  **debe** hacer — preséntalo como observación, no prescripción.
+- Al sugerir el paso siguiente, dilo con la confianza del script:
+  "sueles hacer X después (confianza 0.7)" — nunca como orden.
+- No minar en bucle: una corrida tras una tanda de eventos es
+  suficiente; los resultados persisten en `scripts_detectados`.
+"""
+
+
+_AGENT_DREAMER = """---
+name: nous-dreamer
+description: Ejecuta y audita la consolidación-sueño de Nous —
+  corre consolidar_memoria, lee el reporte, revisa archivados y
+  propone restauraciones. Delega aquí la higiene del olvido, no
+  la ejecución a ciegas.
+tools: nous
+---
+
+# Soñador Nous
+
+Tu responsabilidad es el ciclo de sueño de la memoria: que la
+consolidación ocurra a propósito, se entienda y no se olvide nada
+en silencio.
+
+## Flujo de una noche de consolidación
+
+1. `consolidar_memoria()` → reporta `evaluados / fortalecidos /
+   promovidos / archivados` al usuario en una frase natural.
+2. `listar_reportes_consolidacion()` → lee el `detalle` de la
+   corrida: qué ids se promovieron a curado, qué se archivó y con
+   qué `razon_archivo`. Resume lo destacado — no el dump entero.
+3. `listar_archivados()` → si algo archivado parece valioso
+   (nombres propios, decisiones, loops aún abiertos en el texto),
+   **proponlo** al usuario: "esto se archivó por baja retención —
+   ¿lo recupero?". Solo restaura con `restaurar_evento(id)` tras
+   su aprobación.
+4. Reporta también lo que el sueño NO tocó: compromisos y
+   preferencias protegidos, tier curado intacto.
+
+## Reglas
+
+- Propón, no ejecutes restauraciones: recuperar es un gesto del
+  usuario. La consolidación en sí sí es segura — es reversible y
+  auditable por diseño.
+- `olvidar_evento` y `nous prune` quedan fuera de tu mandato —
+  solo si el usuario los pide literalmente.
+- El reporte es breve: una síntesis de la corrida, hallazgos
+  dudosos para restaurar, y nada más.
 """
 
 
@@ -659,10 +866,14 @@ ARTEFACTOS: tuple[Artefacto, ...] = (
     Artefacto("nous-preferences", _SKILL_PREFERENCIAS, es_agente=False),
     Artefacto("nous-checkin", _SKILL_CHECKIN, es_agente=False),
     Artefacto("nous-somatic", _SKILL_SOMATICA, es_agente=False),
+    Artefacto("nous-consolidar", _SKILL_CONSOLIDAR, es_agente=False),
+    Artefacto("nous-prospectiva", _SKILL_PROSPECTIVA, es_agente=False),
+    Artefacto("nous-scripts", _SKILL_SCRIPTS, es_agente=False),
     Artefacto("nous-keeper", _AGENT_MEMORISTA, es_agente=True),
     Artefacto("nous-curator", _AGENT_CURATOR, es_agente=True),
     Artefacto("nous-pathfinder", _AGENT_PATHFINDER, es_agente=True),
     Artefacto("nous-mirror", _AGENT_MIRROR, es_agente=True),
+    Artefacto("nous-dreamer", _AGENT_DREAMER, es_agente=True),
 )
 
 # Subdirectorio de agentes por target conocido (varía por herramienta).
