@@ -17,6 +17,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  useSyncExternalStore,
 } from "react";
 
 import {
@@ -66,24 +67,56 @@ export function useApp(): ContextoApp {
   return ctx;
 }
 
-/** Lee una clave de localStorage solo en cliente (export estático). */
+// localStorage como store externo: useSyncExternalStore hidrata con
+// el snapshot de servidor y luego re-lee en cliente — sin mismatch
+// de hidratación ni setState en effect. emitirCambio notifica los
+// cambios en esta pestaña; el listener "storage" cubre otras.
+const suscriptores = new Set<() => void>();
+
+function enCambio(callback: () => void): () => void {
+  suscriptores.add(callback);
+  window.addEventListener("storage", callback);
+  return () => {
+    suscriptores.delete(callback);
+    window.removeEventListener("storage", callback);
+  };
+}
+
+function emitirCambio(): void {
+  for (const cb of suscriptores) cb();
+}
+
 function leerLS(clave: string): string | null {
-  return typeof window === "undefined" ? null : localStorage.getItem(clave);
+  return localStorage.getItem(clave);
+}
+
+const nulo = () => null;
+const temaServidor = () => "light" as Tema; // coincide con :root y el prerender
+
+/** Hook: valor vivo de una clave de localStorage (null en SSR). */
+export function useLocalStorage(clave: string): string | null {
+  return useSyncExternalStore(enCambio, () => leerLS(clave), nulo);
+}
+
+/** Emite cambio de preferencia persistida tras escribir en localStorage. */
+export function emitirCambioLS(): void {
+  emitirCambio();
 }
 
 /** Proveedor raíz de tema, sesión e identidad. */
 export function ProveedorApp({ children }: { children: React.ReactNode }) {
-  const [tema, setTema] = useState<Tema>(
+  const token = useLocalStorage("nous.token");
+  const workspace = useLocalStorage("nous.workspace");
+  // Server snapshot "light" = lo que produjo el prerender estático
+  // (window undefined). Post-hidratación entra el valor real.
+  const tema = useSyncExternalStore(
+    enCambio,
     () =>
       (leerLS("nous.tema") as Tema | null) ??
-      (typeof window !== "undefined" &&
-      window.matchMedia("(prefers-color-scheme: dark)").matches
+      (window.matchMedia("(prefers-color-scheme: dark)").matches
         ? "dark"
         : "light"),
-  );
-  const [token, setToken] = useState<string | null>(() => leerLS("nous.token"));
-  const [workspace, setWorkspace] = useState<string | null>(() =>
-    leerLS("nous.workspace"),
+    temaServidor,
   );
   const [yo, setYo] = useState<Identidad | null>(null);
 
@@ -92,25 +125,24 @@ export function ProveedorApp({ children }: { children: React.ReactNode }) {
     localStorage.setItem("nous.tema", tema);
   }, [tema]);
 
-  const alternarTema = useCallback(
-    () => setTema((t) => (t === "dark" ? "light" : "dark")),
-    [],
-  );
+  const alternarTema = useCallback(() => {
+    const siguiente = tema === "dark" ? "light" : "dark";
+    localStorage.setItem("nous.tema", siguiente);
+    emitirCambio();
+  }, [tema]);
   const fijarToken = useCallback((t: string) => {
-    setToken(t);
     localStorage.setItem("nous.token", t);
+    emitirCambio();
   }, []);
   const cerrarSesion = useCallback(() => {
-    setToken(null);
-    setYo(null);
-    setWorkspace(null);
     localStorage.removeItem("nous.token");
     localStorage.removeItem("nous.workspace");
+    emitirCambio();
   }, []);
   const fijarWorkspace = useCallback((slug: string | null) => {
-    setWorkspace(slug);
     if (slug) localStorage.setItem("nous.workspace", slug);
     else localStorage.removeItem("nous.workspace");
+    emitirCambio();
   }, []);
 
   const identidadApi: PuertoIdentidad | null = useMemo(
@@ -146,13 +178,11 @@ export function ProveedorApp({ children }: { children: React.ReactNode }) {
         if (!vivo) return;
         setYo(idn);
         const slugs = idn.workspaces.map((w) => w.slug);
-        setWorkspace((actual) => {
-          if (actual && !slugs.includes(actual)) {
-            localStorage.removeItem("nous.workspace");
-            return null;
-          }
-          return actual;
-        });
+        const wsActual = localStorage.getItem("nous.workspace");
+        if (wsActual && !slugs.includes(wsActual)) {
+          localStorage.removeItem("nous.workspace");
+          emitirCambio();
+        }
       })
       .catch(() => {
         if (vivo) setYo(null);

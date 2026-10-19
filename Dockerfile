@@ -1,10 +1,10 @@
 # ── Stage 1: export estático del dashboard (Next.js → out/) ──
 FROM node:22-alpine AS dashboard
 WORKDIR /dash
-COPY dashboard/package.json dashboard/package-lock.json ./
-RUN npm ci
+COPY dashboard/package.json dashboard/yarn.lock dashboard/.yarnrc.yml ./
+RUN corepack enable && yarn install --immutable
 COPY dashboard/ ./
-RUN npm run build:export
+RUN yarn build:export
 
 # ── Stage 2: app python + modelos locales horneados ──
 FROM python:3.12-slim AS app

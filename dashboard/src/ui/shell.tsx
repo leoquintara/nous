@@ -30,7 +30,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { Logo } from "@/ui/logo";
-import { useApp } from "@/ui/proveedor-app";
+import { emitirCambioLS, useApp, useLocalStorage } from "@/ui/proveedor-app";
 
 const ENLACES = [
   { href: "/", etiqueta: "Cerebro", Icono: Brain },
@@ -61,11 +61,9 @@ export function Shell({
   const pathname = usePathname();
   const router = useRouter();
   const [pantalla, setPantalla] = useState(false);
-  const [colapsado, setColapsado] = useState(
-    () =>
-      typeof window !== "undefined" &&
-      localStorage.getItem(CLAVE_COLAPSO) === "1",
-  );
+  // localStorage vía store externo: hidrata como el prerender (false)
+  // y luego aplica el valor real — sin mismatch de hidratación.
+  const colapsado = useLocalStorage(CLAVE_COLAPSO) === "1";
 
   useEffect(() => {
     const alCambiar = () => setPantalla(document.fullscreenElement != null);
@@ -83,10 +81,8 @@ export function Shell({
   }, [token, router]);
 
   const alternarColapso = () => {
-    setColapsado((v) => {
-      localStorage.setItem(CLAVE_COLAPSO, v ? "0" : "1");
-      return !v;
-    });
+    localStorage.setItem(CLAVE_COLAPSO, colapsado ? "0" : "1");
+    emitirCambioLS();
   };
 
   return (
@@ -100,13 +96,62 @@ export function Shell({
           WebkitBackdropFilter: "blur(10px) saturate(1.8)",
         }}
       >
-        <Link
-          href="/"
-          className={`flex items-center py-2 ${colapsado ? "justify-center" : "px-2"}`}
-          aria-label="Nous — inicio"
+        <div
+          className={`flex items-center py-2 ${
+            colapsado ? "flex-col gap-1" : "justify-between px-2"
+          }`}
         >
-          <Logo compacto={colapsado} />
-        </Link>
+          <Link href="/" className="flex items-center" aria-label="Nous — inicio">
+            <Logo compacto={colapsado} />
+          </Link>
+          <button
+            onClick={alternarColapso}
+            aria-label={
+              colapsado ? "Expandir barra lateral" : "Colapsar barra lateral"
+            }
+            title={colapsado ? "Expandir" : "Colapsar"}
+            className="vidrio texto-suave rounded-xl p-1.5"
+          >
+            {colapsado ? (
+              <NavArrowRight width={15} height={15} />
+            ) : (
+              <NavArrowLeft width={15} height={15} />
+            )}
+          </button>
+        </div>
+
+        {yo && yo.workspaces.length > 0 &&
+          (colapsado ? (
+            <button
+              onClick={alternarColapso}
+              title={`Workspace · ${workspace ?? yo.workspace_activo.slug} (expande para cambiar)`}
+              aria-label="Expandir barra para cambiar de workspace"
+              className="vidrio mb-1 flex h-9 w-9 items-center justify-center rounded-xl text-xs font-semibold uppercase"
+            >
+              {(workspace ?? yo.workspace_activo.slug).charAt(0)}
+            </button>
+          ) : (
+            <select
+              aria-label="Workspace activo"
+              title={`Workspace · ${yo.workspace_activo.rol}`}
+              value={workspace ?? yo.workspace_activo.slug}
+              onChange={(e) =>
+                fijarWorkspace(
+                  e.target.value === yo.workspace_activo.slug
+                    ? null
+                    : e.target.value,
+                )
+              }
+              className="vidrio mb-1 w-full rounded-xl px-2 py-1.5 text-xs outline-none"
+            >
+              {yo.workspaces.map((w) => (
+                <option key={w.id} value={w.slug}>
+                  {w.slug}
+                  {w.rol !== "owner" ? ` · ${w.rol}` : ""}
+                </option>
+              ))}
+            </select>
+          ))}
 
         <nav
           className={`mt-2 flex flex-1 flex-col gap-0.5 overflow-y-auto sin-scrollbar ${
@@ -136,108 +181,55 @@ export function Shell({
         </nav>
 
         <div
-          className={`flex flex-col gap-1.5 border-t pt-2 ${
-            colapsado ? "items-center" : ""
+          className={`flex border-t pt-2 ${
+            colapsado ? "flex-col items-center gap-1.5" : "items-center justify-between"
           }`}
           style={{ borderColor: "var(--linea)" }}
         >
-          {yo && yo.workspaces.length > 0 &&
-            (colapsado ? (
-              <button
-                onClick={alternarColapso}
-                title={`Workspace · ${workspace ?? yo.workspace_activo.slug} (expande para cambiar)`}
-                aria-label="Expandir barra para cambiar de workspace"
-                className="vidrio flex h-9 w-9 items-center justify-center rounded-xl text-xs font-semibold uppercase"
-              >
-                {(workspace ?? yo.workspace_activo.slug).charAt(0)}
-              </button>
-            ) : (
-              <select
-                aria-label="Workspace activo"
-                title={`Workspace · ${yo.workspace_activo.rol}`}
-                value={workspace ?? yo.workspace_activo.slug}
-                onChange={(e) =>
-                  fijarWorkspace(
-                    e.target.value === yo.workspace_activo.slug
-                      ? null
-                      : e.target.value,
-                  )
-                }
-                className="vidrio w-full rounded-xl px-2 py-1.5 text-xs outline-none"
-              >
-                {yo.workspaces.map((w) => (
-                  <option key={w.id} value={w.slug}>
-                    {w.slug}
-                    {w.rol !== "owner" ? ` · ${w.rol}` : ""}
-                  </option>
-                ))}
-              </select>
-            ))}
-
-          <div
-            className={`flex ${colapsado ? "flex-col items-center" : "items-center justify-between"}`}
-          >
-            <button
-              onClick={() => {
-                if (document.fullscreenElement) {
-                  void document.exitFullscreen();
-                } else {
-                  void document.documentElement.requestFullscreen();
-                }
-              }}
-              aria-label={
-                pantalla ? "Salir de pantalla completa" : "Pantalla completa"
-              }
-              title={
-                pantalla ? "Salir de pantalla completa" : "Pantalla completa"
-              }
-              className="vidrio texto-suave rounded-xl p-2"
-            >
-              {pantalla ? (
-                <Compress width={16} height={16} />
-              ) : (
-                <Expand width={16} height={16} />
-              )}
-            </button>
-            <button
-              onClick={alternarTema}
-              aria-label={tema === "dark" ? "Tema claro" : "Tema oscuro"}
-              title={tema === "dark" ? "Tema claro" : "Tema oscuro"}
-              className="vidrio rounded-xl p-2"
-            >
-              {tema === "dark" ? (
-                <SunLight width={16} height={16} />
-              ) : (
-                <HalfMoon width={16} height={16} />
-              )}
-            </button>
-            <button
-              onClick={() => {
-                cerrarSesion();
-                router.replace("/login");
-              }}
-              aria-label="Cerrar sesión"
-              title="Cerrar sesión"
-              className="vidrio texto-suave rounded-xl p-2"
-            >
-              <LogOut width={16} height={16} />
-            </button>
-          </div>
-
           <button
-            onClick={alternarColapso}
-            aria-label={colapsado ? "Expandir barra lateral" : "Colapsar barra lateral"}
-            title={colapsado ? "Expandir" : "Colapsar"}
-            className="vidrio texto-suave flex items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-xs"
+            onClick={() => {
+              if (document.fullscreenElement) {
+                void document.exitFullscreen();
+              } else {
+                void document.documentElement.requestFullscreen();
+              }
+            }}
+            aria-label={
+              pantalla ? "Salir de pantalla completa" : "Pantalla completa"
+            }
+            title={
+              pantalla ? "Salir de pantalla completa" : "Pantalla completa"
+            }
+            className="vidrio texto-suave rounded-xl p-2"
           >
-            {colapsado ? (
-              <NavArrowRight width={15} height={15} />
+            {pantalla ? (
+              <Compress width={16} height={16} />
             ) : (
-              <>
-                <NavArrowLeft width={15} height={15} />
-                Colapsar
-              </>
+              <Expand width={16} height={16} />
             )}
+          </button>
+          <button
+            onClick={alternarTema}
+            aria-label={tema === "dark" ? "Tema claro" : "Tema oscuro"}
+            title={tema === "dark" ? "Tema claro" : "Tema oscuro"}
+            className="vidrio rounded-xl p-2"
+          >
+            {tema === "dark" ? (
+              <SunLight width={16} height={16} />
+            ) : (
+              <HalfMoon width={16} height={16} />
+            )}
+          </button>
+          <button
+            onClick={() => {
+              cerrarSesion();
+              router.replace("/login");
+            }}
+            aria-label="Cerrar sesión"
+            title="Cerrar sesión"
+            className="vidrio texto-suave rounded-xl p-2"
+          >
+            <LogOut width={16} height={16} />
           </button>
         </div>
       </aside>
