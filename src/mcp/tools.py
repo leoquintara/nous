@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from sqlalchemy import func, select
@@ -32,6 +32,7 @@ from src.core.memoria.consolidacion import (
     decidir_consolidacion,
     resumen_legible,
 )
+from src.core.memoria.contexto import ContextoActual, boost_contextual
 from src.core.memoria.interferencia import detectar_conflicto
 from src.core.memoria.prospectiva import (
     Intencion,
@@ -44,7 +45,10 @@ from src.core.memoria.scripts import (
 from src.core.memoria.scripts import (
     minar_scripts as _minar_patrones,
 )
-from src.core.memoria.tipos import clasificar_tipo_memoria
+from src.core.memoria.tipos import (
+    clasificar_tipo_memoria,
+    estimar_estado_emocional,
+)
 from src.core.modelos import Evento, ResultadoBusqueda, Trayectoria
 from src.core.reranker import ReordenadorLocal
 from src.core.temporal import detectar_trayectorias, proyectar
@@ -366,6 +370,8 @@ def _evento_a_dict(evento: Evento) -> dict[str, Any]:
         "contenido": evento.contenido,
         "amplitud": evento.amplitud,
         "refuerzos": evento.refuerzos,
+        "contexto": evento.contexto,
+        "estado_emocional": evento.estado_emocional,
     }
 
 
@@ -460,6 +466,13 @@ async def _recordar(
             workspace_id=ctx.workspace_id,
             autor_id=ctx.usuario_id,
             scope=scope,
+            # Contexto de codificación (ADR-003): la búsqueda
+            # dependiente de contexto premia recuerdos grabados
+            # en situaciones parecidas a la actual.
+            contexto={
+                "hora_dia": time.localtime(ts).tm_hour,
+                "fuente": fuente,
+            },
         )
         await repo.crear(evento)
         await FuenteRepository(session, ctx).crear(fuente, tipo="agente")
@@ -579,7 +592,13 @@ async def _indexar_luego(engine: AsyncEngine, item: _ItemIndexacion) -> None:
                 tipo_mem = await clasificar_tipo_memoria(
                     item.contenido, _obtener_provider_decision()
                 )
-                await repo.fijar_tipo_memoria(item.evento_id, tipo_mem.value)
+                await repo.fijar_tipo_memoria(
+                    item.evento_id,
+                    tipo_mem.value,
+                    estado_emocional=estimar_estado_emocional(
+                        item.contenido
+                    ),
+                )
                 # ADR-003: interferencia — marcador de superación +
                 # vecino semántico cercano = contradicción probable.
                 conflictos = detectar_conflicto(
@@ -768,6 +787,34 @@ async def _consultar(
             rama=rama,
             ctx=ctx,
         )
+        if resultados:
+            # ADR-003 patrón 6 — memoria dependiente de contexto/estado:
+            # recuerdos codificados en una hora/fuente/estado parecidos
+            # al actual suben de rango. Solo premia, nunca excluye.
+            actual = ContextoActual(
+                hora_dia=time.localtime().tm_hour,
+                fuente="mcp",
+                estado_emocional=await EventoRepository(
+                    session, ctx
+                ).ultimo_estado_somatico(),
+            )
+            resultados = [
+                (
+                    replace(
+                        r,
+                        score_final=boost_contextual(
+                            r.score_final,
+                            r.evento.contexto,
+                            r.evento.estado_emocional,
+                            actual,
+                        ),
+                    )
+                    if r.evento is not None
+                    else r
+                )
+                for r in resultados
+            ]
+            resultados.sort(key=lambda r: r.score_final, reverse=True)
     _encolar_fondo(_ItemConsolidacion(tuple(uuid.UUID(r.evento_id) for r in resultados)))
     if resultados:
         _registrar_actividad("recall", consulta, [r.evento_id for r in resultados])

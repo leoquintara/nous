@@ -80,3 +80,42 @@ async def test_sin_provider_usa_heuristico() -> None:
         "cómo instalar el framework", None
     )
     assert resultado == TipoMemoria.PROCEDIMENTAL
+
+
+# --- estimar_estado_emocional (valencia léxica) ---
+
+
+def test_estado_emocional_neutro_devuelve_none() -> None:
+    """Texto sin marcadores afectivos no inventa un estado."""
+    from src.core.memoria.tipos import estimar_estado_emocional
+
+    assert estimar_estado_emocional("compilé el proyecto con yarn") is None
+
+
+def test_estado_emocional_negativo_baja_de_la_mitad() -> None:
+    """Marcadores de estrés/tristeza dan valencia < 0.5."""
+    from src.core.memoria.tipos import estimar_estado_emocional
+
+    valor = estimar_estado_emocional(
+        "estoy muy estresado y agotado, me duele la cabeza"
+    )
+    assert valor is not None and valor < 0.5
+
+
+def test_estado_emocional_positivo_sube_de_la_mitad() -> None:
+    """Marcadores de logro/calma dan valencia > 0.5."""
+    from src.core.memoria.tipos import estimar_estado_emocional
+
+    valor = estimar_estado_emocional(
+        "logré cerrar el bug, me siento tranquilo y en paz"
+    )
+    assert valor is not None and valor > 0.5
+
+
+def test_estado_emocional_mixto_se_cancela() -> None:
+    """Señales opuestas en igual número quedan ~neutras."""
+    from src.core.memoria.tipos import estimar_estado_emocional
+
+    valor = estimar_estado_emocional("estresado pero logré avanzar")
+    assert valor is not None
+    assert 0.4 <= valor <= 0.6

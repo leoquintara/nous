@@ -25,11 +25,14 @@ class ContextoActual:
     Attributes:
         proyecto: Proyecto activo (slug).
         hora_dia: Hora 0-23.
+        fuente: Fuente/origen de la consulta actual — el mismo agente
+            o canal desde el que se codificó es un ancla contextual.
         estado_emocional: 0-1 derivado de amplitud somática reciente.
     """
 
     proyecto: str | None = None
     hora_dia: int | None = None
+    fuente: str | None = None
     estado_emocional: float | None = None
 
 
@@ -38,17 +41,21 @@ def similitud_contexto(
 ) -> float:
     """Similitud [0,1] entre el contexto codificado y el actual.
 
-    Compara claves presentes en ambos: proyecto igual, hora cercana
-    (±3h), mismas fuentes/tags. Vacío = 0 (sin señal, no penaliza).
+    Compara claves presentes en ambos: proyecto igual, misma fuente,
+    hora cercana (±3h). Vacío = 0 (sin señal, no penaliza).
     """
     if not contexto_evento:
         return 0.0
     puntos = 0.0
     posibles = 0.0
-    if actual.proyecto and contexto_evento.get("proyecto"):
-        posibles += 1.0
-        if str(contexto_evento["proyecto"]) == actual.proyecto:
-            puntos += 1.0
+    for clave, esperado in (
+        ("proyecto", actual.proyecto),
+        ("fuente", actual.fuente),
+    ):
+        if esperado and contexto_evento.get(clave):
+            posibles += 1.0
+            if str(contexto_evento[clave]) == esperado:
+                puntos += 1.0
     hora_ev = contexto_evento.get("hora_dia")
     if actual.hora_dia is not None and isinstance(hora_ev, (int, float)):
         posibles += 1.0

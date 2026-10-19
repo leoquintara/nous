@@ -89,7 +89,7 @@ def retencion(
     """
     if math.isinf(media_vida):
         return 1.0
-    return 0.5 ** (dias_transcurridos / media_vida)
+    return float(0.5 ** (dias_transcurridos / media_vida))
 
 
 def retencion_actual(

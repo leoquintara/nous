@@ -690,6 +690,30 @@ class EventoRepository:
                 )
             )
 
+    async def ultimo_estado_somatico(self) -> float | None:
+        """Valencia emocional más reciente — el "estado actual".
+
+        Toma el ``estado_emocional`` del evento somático nuevo con dato;
+        el boost contextual de la búsqueda lo usa como ancla. Una sola
+        consulta indexada por dimensión+timestamp — costo despreciable
+        en el camino de recall.
+
+        Returns:
+            Valencia 0-1 del último evento somático con estado
+            estimado, o None si nunca se estimó uno.
+        """
+        stmt = (
+            select(EventoModel.estado_emocional)
+            .where(
+                EventoModel.dimension == "somatica",
+                EventoModel.estado_emocional.is_not(None),
+                *self._vis(),
+            )
+            .order_by(EventoModel.timestamp_unix.desc())
+            .limit(1)
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
     async def listar_archivados(self, limite: int = 100) -> Sequence[EventoModel]:
         """Eventos archivados por consolidación — recuperables.
 

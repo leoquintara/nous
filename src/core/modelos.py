@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from src.storage.models import EventoModel
@@ -36,6 +36,8 @@ class Evento:
     contenido: str
     amplitud: float = 0.5
     refuerzos: int = 0
+    contexto: dict[str, Any] | None = None
+    estado_emocional: float | None = None
 
     @classmethod
     def desde_modelo(cls, modelo: EventoModel) -> Evento:
@@ -47,6 +49,8 @@ class Evento:
             contenido=modelo.contenido,
             amplitud=modelo.amplitud,
             refuerzos=modelo.refuerzos,
+            contexto=modelo.contexto or None,
+            estado_emocional=modelo.estado_emocional,
         )
 
 

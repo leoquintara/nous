@@ -150,3 +150,48 @@ async def clasificar_tipo_memoria(
                 exc,
             )
     return clasificar_tipo_memoria_heuristico(contenido)
+
+
+# Valencia emocional (ADR-003, memoria dependiente de estado): se
+# estima léxicamente en la indexación y alimenta ``estado_emocional``
+# — la búsqueda contextual premia recuerdos codificados en estados
+# parecidos al actual ("cuando estuve estresado hice X y funcionó").
+_VALENCIA_POSITIVA: tuple[str, ...] = (
+    "feliz", "content", "alegr", "tranquil", "calma", "en paz", "paz",
+    "orgullos", "logré", "logro", "funcionó", "funciono", "éxito",
+    "exito", "resuelto", "genial", "excelente", "motivad", "energía",
+    "energia", "entusiasm", "satisfech", "bien ", "mejoré", "mejore",
+    "solucioné", "solucione", "celebr", "gané", "gane", "avancé",
+    "avance", "flow", "inspirad",
+)
+_VALENCIA_NEGATIVA: tuple[str, ...] = (
+    "triste", "ansie", "estrés", "estres", "agobiad", "abrumad",
+    "frustrad", "enojad", "enfad", "mied", "temor", "angusti",
+    "cansad", "agotad", "dolor", "duele", "mal ", "peor", "fallé",
+    "falle", "falló", "fallo", "error", "rompi", "rompí", "bloquead",
+    "atascad", "preocup", "nervi", "tens", "insomn", "burnout",
+    "deprim", "fatal", "desastre",
+)
+
+
+def estimar_estado_emocional(contenido: str) -> float | None:
+    """Estima la valencia emocional [0,1] del texto — léxico puro.
+
+    0.5 es neutral: cada raíz negativa resta 0.12 y cada positiva
+    suma 0.12 (saturando en [0,1]). Sin señal afectiva devuelve None
+    — no inventa un estado para texto neutro, y el boost contextual
+    solo usa la dimensión cuando hay dato real en ambos extremos.
+
+    Args:
+        contenido: Texto del evento.
+
+    Returns:
+        Valencia estimada, o None si no hay marcadores afectivos.
+    """
+    texto = contenido.lower()
+    positivos = sum(1 for m in _VALENCIA_POSITIVA if m in texto)
+    negativos = sum(1 for m in _VALENCIA_NEGATIVA if m in texto)
+    if positivos == 0 and negativos == 0:
+        return None
+    valencia = 0.5 + 0.12 * (positivos - negativos)
+    return round(max(0.0, min(1.0, valencia)), 3)

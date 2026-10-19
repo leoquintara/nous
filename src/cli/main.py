@@ -165,6 +165,28 @@ def _parser() -> argparse.ArgumentParser:
     )
     prune.add_argument("--json", action="store_true", help="Salida JSON.")
 
+    con = sub.add_parser(
+        "consolidar",
+        help="Consolidación-sueño: refuerza, promueve a curado y archiva.",
+    )
+    con.add_argument("--json", action="store_true", help="Salida JSON.")
+
+    sub.add_parser(
+        "intenciones",
+        help="Lista las intenciones prospectivas pendientes.",
+    )
+
+    sub.add_parser(
+        "archivados",
+        help="Lista las memorias archivadas por consolidación.",
+    )
+
+    res = sub.add_parser(
+        "restaurar",
+        help="Restaura una memoria archivada (deshace el olvido).",
+    )
+    res.add_argument("evento_id", help="UUID del evento archivado.")
+
     from src.cli.identidad import registrar_subparsers
 
     registrar_subparsers(sub)
@@ -418,6 +440,148 @@ async def _poda(
         await engine.dispose()
 
 
+async def _consolidar_cli() -> dict[str, object]:
+    """Ejecuta la corrida de sueño y persiste su reporte (ADR-003)."""
+    from src.core.identidad import WORKSPACE_PERSONAL_ID
+    from src.core.memoria.consolidacion import (
+        EventoConsolidable,
+        decidir_consolidacion,
+        resumen_legible,
+    )
+    from src.core.memoria.tipos import TipoMemoria
+    from src.core.modelos import Dimension
+    from src.storage.database import crear_engine, get_session
+    from src.storage.models import ReporteConsolidacionModel
+    from src.storage.repositories import (
+        EventoRepository,
+        ReporteConsolidacionRepository,
+    )
+
+    engine = crear_engine()
+    try:
+        async with get_session(engine) as session:
+            repo = EventoRepository(session)
+            modelos = await repo.listar_para_consolidacion()
+            plan = decidir_consolidacion(
+                [
+                    EventoConsolidable(
+                        id=str(m.id),
+                        timestamp_unix=m.timestamp_unix,
+                        dimension=Dimension(m.dimension),
+                        tipo=m.tipo,
+                        amplitud=m.amplitud,
+                        refuerzos=m.refuerzos,
+                        weight=m.weight,
+                        tipo_memoria=(
+                            TipoMemoria(m.tipo_memoria)
+                            if m.tipo_memoria
+                            else None
+                        ),
+                        ultimo_acceso=m.ultimo_acceso,
+                        archivado=m.archivado,
+                        curado=m.curado,
+                    )
+                    for m in modelos
+                ]
+            )
+            await repo.aplicar_consolidacion(
+                plan.fortalecer,
+                plan.promover,
+                plan.archivar,
+                plan.ejecutado_en,
+            )
+            await ReporteConsolidacionRepository(session).crear(
+                ReporteConsolidacionModel(
+                    workspace_id=WORKSPACE_PERSONAL_ID,
+                    ejecutado_en=plan.ejecutado_en,
+                    fortalecidos=len(plan.fortalecer),
+                    archivados=len(plan.archivar),
+                    promovidos=len(plan.promover),
+                    detalle={
+                        "fortalecidos": plan.fortalecer,
+                        "promovidos": plan.promover,
+                        "archivados": plan.archivar,
+                    },
+                )
+            )
+            await session.commit()
+        return {
+            "evaluados": len(modelos),
+            "fortalecidos": len(plan.fortalecer),
+            "promovidos": len(plan.promover),
+            "archivados": len(plan.archivar),
+            "resumen": resumen_legible(plan),
+        }
+    finally:
+        await engine.dispose()
+
+
+async def _listar_intenciones_cli() -> list[dict[str, object]]:
+    """Lista las intenciones prospectivas pendientes."""
+    from src.storage.database import crear_engine, get_session
+    from src.storage.repositories import IntencionProspectivaRepository
+
+    engine = crear_engine()
+    try:
+        async with get_session(engine) as session:
+            filas = await IntencionProspectivaRepository(
+                session
+            ).listar(ejecutadas=False)
+        return [
+            {
+                "id": str(f.id),
+                "intencion": f.intencion,
+                "trigger_tipo": f.trigger_tipo,
+                "trigger_valor": f.trigger_valor,
+                "creada_en": f.creada_en,
+            }
+            for f in filas
+        ]
+    finally:
+        await engine.dispose()
+
+
+async def _listar_archivados_cli() -> list[dict[str, object]]:
+    """Lista las memorias archivadas recuperables."""
+    from src.storage.database import crear_engine, get_session
+    from src.storage.repositories import EventoRepository
+
+    engine = crear_engine()
+    try:
+        async with get_session(engine) as session:
+            filas = await EventoRepository(session).listar_archivados()
+        return [
+            {
+                "id": str(f.id),
+                "contenido": f.contenido[:120],
+                "archivado_en": f.archivado_en,
+                "razon_archivo": f.razon_archivo,
+            }
+            for f in filas
+        ]
+    finally:
+        await engine.dispose()
+
+
+async def _restaurar_cli(evento_id: str) -> bool:
+    """Restaura un evento archivado por UUID."""
+    import uuid as _uuid
+
+    from src.storage.database import crear_engine, get_session
+    from src.storage.repositories import EventoRepository
+
+    engine = crear_engine()
+    try:
+        async with get_session(engine) as session:
+            restaurado = await EventoRepository(session).restaurar(
+                _uuid.UUID(evento_id)
+            )
+            await session.commit()
+        return restaurado
+    finally:
+        await engine.dispose()
+
+
 def _cmd_benchmark() -> int:
     """Ejecuta la suite de benchmarks como subproceso."""
     import subprocess
@@ -667,6 +831,57 @@ def _despachar(args: argparse.Namespace) -> int:
                 + "\n"
             )
         return 0
+    if comando == "consolidar":
+        datos = asyncio.run(_consolidar_cli())
+        if args.json:
+            _json(datos)
+        else:
+            sys.stdout.write(str(datos["resumen"]) + "\n")
+            sys.stdout.write(
+                ui.suave(
+                    f"evaluados={datos['evaluados']} "
+                    f"promovidos={datos['promovidos']} "
+                    f"fortalecidos={datos['fortalecidos']} "
+                    f"archivados={datos['archivados']}"
+                )
+                + "\n"
+            )
+        return 0
+    if comando == "intenciones":
+        filas = asyncio.run(_listar_intenciones_cli())
+        if not filas:
+            sys.stdout.write(ui.suave("Sin intenciones pendientes.\n"))
+        for f in filas:
+            sys.stdout.write(
+                f"{ui.acento(str(f['trigger_tipo']))} "
+                f"{f['intencion']}\n"
+            )
+        return 0
+    if comando == "archivados":
+        filas = asyncio.run(_listar_archivados_cli())
+        if not filas:
+            sys.stdout.write(ui.suave("Sin memorias archivadas.\n"))
+        for f in filas:
+            razon = ui.suave(f"({f['razon_archivo']})")
+            sys.stdout.write(
+                f"{ui.suave(str(f['id']))} {f['contenido']} {razon}\n"
+            )
+        return 0
+    if comando == "restaurar":
+        try:
+            restaurado = asyncio.run(_restaurar_cli(args.evento_id))
+        except ValueError:
+            sys.stderr.write(
+                ui.error(f"UUID inválido: {args.evento_id}") + "\n"
+            )
+            return 2
+        if restaurado:
+            sys.stdout.write(ui.ok("Memoria restaurada.") + "\n")
+            return 0
+        sys.stderr.write(
+            ui.error("El evento no existe o no está archivado.") + "\n"
+        )
+        return 1
     return 2
 
 
