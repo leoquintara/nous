@@ -6,7 +6,6 @@ import pytest
 
 from src.core.decision.adapters import _normalizar_respuesta
 from src.core.decision.engine import DecisionEngine
-from src.core.decision.questions import choice, fusionar, noul, score
 from src.core.decision.provider import (
     DecisionAnswer,
     DecisionProvider,
@@ -15,6 +14,7 @@ from src.core.decision.provider import (
     QuestionType,
     guard_privacidad,
 )
+from src.core.decision.questions import choice, fusionar, noul, score
 
 
 def test_choice_construye_schema_del_wire() -> None:
