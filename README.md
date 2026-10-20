@@ -52,6 +52,31 @@ Siete mecanismos neurocognitivos sobre la línea de universo:
   pero sigue en la worldline; `nous restaurar <id>` lo devuelve. El
   borrado real solo existe vía `nous prune` — manual y explícito.
 
+## Decisión asistida — System One (ADR-002)
+
+Nous no decide por ti: un proveedor de decisión responde preguntas
+tipadas (`choice`, `score`, `noul`) con probabilidades, no prosa.
+El modelo opina; quien decide es el usuario.
+
+| Provider | Tipo | Requisito |
+|---|---|---|
+| **Laya** (default) | Local, on-device | `pip install 'nous-memory[decision]'` |
+| **Ollama** (Tev1/Nimbus) | HTTP local `/v1/systemone` | `NOUS_OLLAMA_ENDPOINT` + `NOUS_OLLAMA_MODEL` |
+| **Jev** (TypeSafe) | Hosted | `NOUS_PRIVACY_PERMITIR_EXTERNOS=true` — nunca se loggea contenido |
+
+`NOUS_DECISION_PROVIDER=auto` intenta Laya → Ollama (probe de socket,
+sin stall) → heurístico local. Todo fallo de provider degrada a
+heurísticas — jamás bloquea el camino caliente.
+
+- **Nivel 1**: aumenta la clasificación — dimensión, amplitud y tipo
+  de memoria se estiman con el provider cuando está disponible.
+- **Nivel 2 (Pro)**: `consultar_decision` (MCP) y `POST /api/decision`
+  (REST) — el consejero compone `choice` + `score` + `noul` sobre tu
+  contexto 4D (línea + metas + loops abiertos). 402 sin licencia.
+
+`src/core/decision/` es autocontenido — no importa storage ni MCP —
+pensado para extraerse como paquete propio.
+
 ## El universo 4D
 
 - **Línea temporal completa**: cada evento tiene su instante; se puede
@@ -95,7 +120,7 @@ recencia + reranker cross-encoder local. Objetivo: <200ms p95.
 **Todo-en-Docker** (PostgreSQL + app; dashboard opcional por perfil):
 
 ```bash
-git clone <repo> && cd nous
+git clone https://github.com/leoquintara/nous.git && cd nous
 cp .env.example .env             # define NOUS_API_TOKEN=ns_$(openssl rand -hex 32)
 docker compose --profile app up -d
 curl -s localhost:8720/health    # API + MCP vivos
@@ -109,6 +134,8 @@ docker compose --profile dashboard up -d   # http://localhost:3000
 ```bash
 docker compose up -d db          # solo PostgreSQL 18 + pgvector
 pipx install .                   # instala `nous` aislado (desde el repo)
+pipx install '.[decision]'       # opcional: + Laya (provider de decisión local)
+pipx install '.[torch]'          # opcional: + sentence-transformers
 nous db upgrade                  # migraciones Alembic
 nous serve                       # MCP stdio (default)
 ```
@@ -173,6 +200,9 @@ el default) o `workspace` (visible para el equipo). Las lecturas ven
   de un solo uso; el invitado lo canjea en `/unirse` y recibe su `ns_u_*`.
 - **Edición libre**: sin `NOUS_LICENSE_KEY`, self-hosted permite 1
   usuario y 3 workspaces.
+- **Licencia**: `nous activate-license <key>` guarda el JWT en
+  `~/.nous/license.jwt` (validado localmente, sin phone-home);
+  `NOUS_LICENSE_KEY` en env tiene prioridad si ambos existen.
 
 ```bash
 nous users create --handle ana --nombre "Ana"
