@@ -449,23 +449,28 @@ class EstadoLicencia:
     max_usuarios: int | None
     workspaces: int
     max_workspaces: int | None
+    tier: str = "oss"
+    features: tuple[str, ...] = ()
 
 
 async def estado_licencia(engine: AsyncEngine) -> EstadoLicencia:
     """Resume el uso actual contra los límites del plan."""
     from src.config import get_settings
+    from src.core.license import licencia_actual
 
-    licenciado = licencia_activa()
+    lic = licencia_actual()
     s = get_settings()
     return EstadoLicencia(
-        licenciado=licenciado,
+        licenciado=lic.valida,
+        tier=lic.tier,
+        features=tuple(sorted(lic.features)),
         usuarios=await _contar_usuarios(engine),
         max_usuarios=(
-            None if licenciado else s.max_usuarios_libres
+            None if lic.valida else s.max_usuarios_libres
         ),
         workspaces=await _contar_workspaces(engine),
         max_workspaces=(
-            None if licenciado else s.max_workspaces_libres
+            None if lic.valida else s.max_workspaces_libres
         ),
     )
 

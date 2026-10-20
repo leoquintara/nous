@@ -948,6 +948,8 @@ async def identidad_actual() -> IdentidadResponse:
             max_usuarios=lic.max_usuarios,
             workspaces=lic.workspaces,
             max_workspaces=lic.max_workspaces,
+            tier=lic.tier,
+            features=list(lic.features),
         ),
     )
 

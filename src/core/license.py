@@ -23,12 +23,31 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _TIER_OSS = "oss"
 _TIER_PRO = "pro"
+
+
+def ruta_licencia() -> Path:
+    """Ubicación del archivo de licencia (``~/.nous/license.jwt``)."""
+    return Path.home() / ".nous" / "license.jwt"
+
+
+def leer_licencia_archivo() -> str | None:
+    """Lee el JWT persistido por ``nous activate-license``.
+
+    Returns:
+        Contenido del archivo, o None si no existe o está vacío.
+    """
+    try:
+        texto = ruta_licencia().read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return texto or None
 
 
 def _b64url_decode(parte: str) -> bytes:
@@ -161,12 +180,16 @@ def parsear_licencia(
 
 
 def licencia_actual(ahora: int | None = None) -> Licencia:
-    """Resuelve la licencia desde la configuración activa."""
+    """Resuelve la licencia: ``NOUS_LICENSE_KEY`` o archivo local.
+
+    La variable de entorno gana (deploys explícitos); el archivo
+    ``~/.nous/license.jwt`` es el fallback de ``nous activate-license``.
+    """
     from src.config import get_settings
 
     s = get_settings()
     return parsear_licencia(
-        s.license_key,
+        s.license_key or leer_licencia_archivo(),
         clave_publica_pem=getattr(s, "license_public_key", None),
         ahora=ahora,
     )

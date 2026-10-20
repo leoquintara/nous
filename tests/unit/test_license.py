@@ -79,18 +79,67 @@ def test_jwt_features_restringen():
     assert not lic.tiene_feature("consultar_decision")
 
 
-def test_licencia_actual_sin_key_no_valida(monkeypatch):
-    """Sin NOUS_LICENSE_KEY configurada, la licencia no es válida."""
+def test_licencia_actual_sin_key_no_valida(monkeypatch, tmp_path):
+    """Sin NOUS_LICENSE_KEY ni archivo, la licencia no es válida."""
     from src.config import get_settings
 
     monkeypatch.setenv("NOUS_LICENSE_KEY", "")
+    # Aísla ~/.nous/license.jwt — si existe en el host rompería el test.
+    monkeypatch.setattr(
+        "src.core.license.ruta_licencia",
+        lambda: tmp_path / "license.jwt",
+    )
     get_settings.cache_clear()
     assert not licencia_actual().valida
     get_settings.cache_clear()
 
 
+def test_licencia_actual_cae_al_archivo(monkeypatch, tmp_path):
+    """Sin env, licencia_actual() lee ~/.nous/license.jwt (fallback)."""
+    from src.config import get_settings
+
+    futuro = int(time.time()) + 86400
+    ruta = tmp_path / "license.jwt"
+    ruta.write_text(_jwt({"tier": "pro", "exp": futuro}) + "\n")
+    monkeypatch.setenv("NOUS_LICENSE_KEY", "")
+    monkeypatch.setattr("src.core.license.ruta_licencia", lambda: ruta)
+    get_settings.cache_clear()
+    lic = licencia_actual()
+    assert lic.valida
+    assert lic.tier == "pro"
+    get_settings.cache_clear()
+
+
+def test_licencia_actual_env_gana_sobre_archivo(monkeypatch, tmp_path):
+    """NOUS_LICENSE_KEY tiene prioridad sobre el archivo (deploy)."""
+    from src.config import get_settings
+
+    ruta = tmp_path / "license.jwt"
+    ruta.write_text(_jwt({"tier": "enterprise", "exp": 9999999999}))
+    monkeypatch.setenv("NOUS_LICENSE_KEY", "key_opaca_env")
+    monkeypatch.setattr("src.core.license.ruta_licencia", lambda: ruta)
+    get_settings.cache_clear()
+    lic = licencia_actual()
+    assert lic.valida
+    assert lic.tier == "pro"  # opaca = pro honor, no enterprise del archivo
+    get_settings.cache_clear()
+
+
+def test_leer_licencia_archivo_ausente_devuelve_none(tmp_path, monkeypatch):
+    """Sin archivo persistido, el fallback no aporta licencia."""
+    from src.core.license import leer_licencia_archivo
+
+    monkeypatch.setattr(
+        "src.core.license.ruta_licencia",
+        lambda: tmp_path / "license.jwt",
+    )
+    assert leer_licencia_archivo() is None
+
+
 @pytest.mark.asyncio
-async def test_consultar_decision_sin_licencia_rechaza(monkeypatch):
+async def test_consultar_decision_sin_licencia_rechaza(
+    monkeypatch, tmp_path
+):
     """El consejero es Pro: sin licencia → CupoExcedidoError (402).
 
     El gate corre antes de resolver contexto o tocar la DB — el test
@@ -101,6 +150,10 @@ async def test_consultar_decision_sin_licencia_rechaza(monkeypatch):
     from src.mcp.tools import _consultar_decision
 
     monkeypatch.setenv("NOUS_LICENSE_KEY", "")
+    monkeypatch.setattr(
+        "src.core.license.ruta_licencia",
+        lambda: tmp_path / "license.jwt",
+    )
     get_settings.cache_clear()
     try:
         with pytest.raises(CupoExcedidoError):

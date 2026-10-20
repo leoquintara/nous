@@ -187,6 +187,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     res.add_argument("evento_id", help="UUID del evento archivado.")
 
+    al = sub.add_parser(
+        "activate-license",
+        help="Activa una license key Pro (~/.nous/license.jwt).",
+    )
+    al.add_argument("key", help="License key (JWT o serial de la landing).")
+    al.add_argument("--json", action="store_true", help="Salida JSON.")
+
     from src.cli.identidad import registrar_subparsers
 
     registrar_subparsers(sub)
@@ -322,6 +329,94 @@ def _cmd_doctor(como_json: bool) -> int:
                 render = str(valor)
             sys.stdout.write(f"{ui.suave(clave)}: {render}\n")
     return 0 if datos["base_de_datos"] == "ok" else 1
+
+
+def _canjear_key_licencia(key: str) -> str:
+    """Canjea un serial por JWT si hay servicio de activación.
+
+    Única llamada de red del flujo de licencia (ADR-001): solo se
+    hace si ``NOUS_LICENSE_ACTIVATION_URL`` está configurada y la key
+    no es ya un JWT. Ante cualquier fallo se conserva la key original
+    (modelo de honor documentado).
+
+    Args:
+        key: License key introducida por el usuario.
+
+    Returns:
+        El JWT firmado, o la key original si no hay canje posible.
+    """
+    from src.config import get_settings
+
+    url = get_settings().license_activation_url
+    if not url or len(key.split(".")) == 3:
+        return key
+    try:
+        import httpx
+
+        resp = httpx.post(url, json={"license_key": key}, timeout=10)
+        resp.raise_for_status()
+        return str(resp.json()["jwt"])
+    except Exception as exc:
+        sys.stderr.write(
+            ui.aviso(
+                f"Servicio de activación inalcanzable ({exc}) — "
+                "se guarda la key tal cual.\n"
+            )
+        )
+        return key
+
+
+def _cmd_activate_license(key: str, como_json: bool) -> int:
+    """Implementa ``nous activate-license`` (ADR-001).
+
+    Valida la key en local y la persiste en ``~/.nous/license.jwt``;
+    el servidor la descubre como fallback de ``NOUS_LICENSE_KEY``.
+
+    Args:
+        key: License key (JWT RS256 u opaca de la landing).
+        como_json: True imprime el resultado como JSON.
+
+    Returns:
+        0 si la licencia quedó activada, 1 si es inválida/expirada.
+    """
+    from src.config import get_settings
+    from src.core import license as lic_mod
+
+    persistida = _canjear_key_licencia(key.strip())
+    lic = lic_mod.parsear_licencia(
+        persistida,
+        clave_publica_pem=get_settings().license_public_key,
+    )
+    if not lic.valida:
+        if como_json:
+            _json({"activada": False, "motivo": "key inválida o expirada"})
+        else:
+            sys.stderr.write(
+                ui.error("License key inválida o expirada — nada se guardó.")
+                + "\n"
+            )
+        return 1
+    ruta = lic_mod.ruta_licencia()
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    ruta.write_text(persistida + "\n", encoding="utf-8")
+    if como_json:
+        _json(
+            {
+                "activada": True,
+                "tier": lic.tier,
+                "expira": lic.expira,
+                "firma_verificada": lic.firma_verificada,
+                "archivo": str(ruta),
+            }
+        )
+    else:
+        firma = " (firma verificada)" if lic.firma_verificada else ""
+        sys.stdout.write(
+            ui.ok(f"Licencia {lic.tier} activada{firma}")
+            + ui.suave(f" → {ruta}")
+            + "\n"
+        )
+    return 0
 
 
 def _cmd_db(accion: str) -> int:
@@ -820,6 +915,8 @@ def _despachar(args: argparse.Namespace) -> int:
         return cmd_skills(args.accion, args.target, args.dir)
     if comando == "benchmark":
         return _cmd_benchmark()
+    if comando == "activate-license":
+        return _cmd_activate_license(args.key, args.json)
     if comando in ("users", "workspaces", "keys"):
         from src.cli.identidad import cmd_identidad
 

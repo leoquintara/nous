@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     # completo está en el repo; la llave lo desbloquea (honor system,
     # AGPL). Ajustables para despliegues con convenio propio.
     license_key: str | None = None
+    # PEM para verificar la firma RS256 del JWT de licencia (opcional;
+    # sin clave la licencia opera en sistema de honor).
+    license_public_key: str | None = None
+    # Endpoint del servicio de activación de Quintara — si está
+    # definido, `nous activate-license` canjea keys opacas por JWT.
+    license_activation_url: str | None = None
     max_usuarios_libres: int = 1
     max_workspaces_libres: int = 3
     # ADR-002 — proveedores de decisión System One. "none" = sin

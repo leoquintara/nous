@@ -328,6 +328,8 @@ class LicenciaResumen(BaseModel):
     max_usuarios: int | None
     workspaces: int
     max_workspaces: int | None
+    tier: str = "oss"
+    features: list[str] = []
 
 
 class IdentidadResponse(BaseModel):

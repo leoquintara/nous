@@ -37,13 +37,18 @@ from tests.integration.conftest import TEST_DB_URL
 
 
 @pytest.fixture
-def sin_licencia() -> None:
+def sin_licencia(monkeypatch, tmp_path) -> None:
     """Desactiva la licencia y fija topes bajos para el test."""
     s = get_settings()
     assert s.license_key == "test-suite"  # el autouse la fija
     s.license_key = None
     s.max_usuarios_libres = 1
     s.max_workspaces_libres = 3
+    # Sin esto, un ~/.nous/license.jwt real del host haría de fallback.
+    monkeypatch.setattr(
+        "src.core.license.ruta_licencia",
+        lambda: tmp_path / "license.jwt",
+    )
     try:
         yield
     finally:
