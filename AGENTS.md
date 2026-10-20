@@ -333,7 +333,7 @@ async def test_fusion_rrf_con_dos_listas_ordena_por_score():
 
 ```bash
 # Clonar y setup
-git clone https://github.com/quintara-ai/nous.git
+git clone https://github.com/leoquintara/nous.git
 cd nous
 cp .env.example .env   # Editar con tus valores
 
