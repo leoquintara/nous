@@ -55,5 +55,18 @@ services:
       start_period: 60s
     profiles: ["app"]
 
+  # Dashboard separado (ADR-001) — repo hermano nous-dashboard.
+  # Se activa solo con el profile: `docker compose --profile dashboard up -d`
+  dashboard:
+    build: ../nous-dashboard
+    container_name: nous-dashboard
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "3000:80"
+    profiles: ["dashboard"]
+
 volumes:
   nous_pgdata:

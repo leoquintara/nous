@@ -595,11 +595,19 @@ def _cmd_benchmark() -> int:
 
 
 def _dir_dashboard() -> Path | None:
-    """Localiza ``dashboard/package.json`` (checkout fuente o cwd)."""
+    """Localiza el proyecto dashboard (repo hermano o checkout viejo).
+
+    ADR-001: el dashboard vive en ``../nous-dashboard``; se acepta el
+    legado ``dashboard/`` dentro del repo por transición.
+    """
     for base in (Path.cwd(), up.RAIZ_PROYECTO):
-        candidato = base / "dashboard" / "package.json"
-        if candidato.is_file():
-            return candidato.parent
+        for nombre in ("nous-dashboard", "dashboard"):
+            candidato = base / nombre / "package.json"
+            if candidato.is_file():
+                return candidato.parent
+        hermano = base.parent / "nous-dashboard" / "package.json"
+        if hermano.is_file():
+            return hermano.parent
     return None
 
 
@@ -648,21 +656,21 @@ def _lanzar_dashboard(directorio: Path) -> subprocess.Popen[bytes] | None:
         directorio: Raíz del proyecto dashboard.
 
     Returns:
-        El proceso lanzado, o None si npm no está disponible.
+        El proceso lanzado, o None si yarn no está disponible.
     """
-    npm = shutil.which("npm.cmd") or shutil.which("npm")
-    if npm is None:
+    yarn = shutil.which("yarn.cmd") or shutil.which("yarn")
+    if yarn is None:
         return None
     if sys.platform == "win32":
         proc = subprocess.Popen(
-            f'"{npm}" run dev',
+            f'"{yarn}" dev',
             cwd=directorio,
             shell=True,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
         )
     else:
         proc = subprocess.Popen(
-            [npm, "run", "dev"], cwd=directorio, start_new_session=True
+            [yarn, "dev"], cwd=directorio, start_new_session=True
         )
     atexit.register(_detener_dashboard, proc)
     return proc
@@ -717,7 +725,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         if directorio is not None:
             if _lanzar_dashboard(directorio) is None:
                 sys.stderr.write(
-                    ui.aviso("npm no está en PATH — dashboard no lanzado.\n")
+                    ui.aviso("yarn no está en PATH — dashboard no lanzado.\n")
                 )
             else:
                 sys.stderr.write(

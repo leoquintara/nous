@@ -6,9 +6,6 @@ authors = ["Quintara AI <licensing@quintarai.com>"]
 license = "AGPL-3.0-only"
 readme = "README.md"
 packages = [{ include = "src" }]
-include = [
-    { path = "src/dashboard_static", format = ["sdist", "wheel"] },
-]
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.14"

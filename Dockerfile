@@ -1,12 +1,6 @@
-# ── Stage 1: export estático del dashboard (Next.js → out/) ──
-FROM node:22-alpine AS dashboard
-WORKDIR /dash
-COPY dashboard/package.json dashboard/yarn.lock dashboard/.yarnrc.yml ./
-RUN corepack enable && yarn install --immutable
-COPY dashboard/ ./
-RUN yarn build:export
-
-# ── Stage 2: app python + modelos locales horneados ──
+# app python + modelos locales horneados.
+# ADR-001: el dashboard vive en el repo nous-dashboard (imagen propia);
+# esta imagen sirve solo API REST + MCP.
 FROM python:3.12-slim AS app
 
 ENV PYTHONUNBUFFERED=1 \
@@ -26,7 +20,6 @@ RUN poetry install --only main --no-root
 
 COPY src ./src
 COPY alembic.ini ./
-COPY --from=dashboard /dash/out ./src/dashboard_static
 
 # Hornea embeddings + reranker en la imagen (caché HF en
 # /root/.cache/huggingface): local-first real — el contenedor

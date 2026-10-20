@@ -95,10 +95,17 @@ cada entidad de dominio lleva `workspace_id` y las de memoria además
 
 ## Dashboard
 
-`dashboard/` — Next.js 16 App Router, TypeScript estricto, arquitectura
-hexagonal (domain → application → infrastructure → ui), Three.js:
-cerebro 3D con replay de actividad y selección screen-space; universo 4D
-con cursor temporal, cauce recorrido luminoso, ramas y fantasmas.
+**ADR-001**: el dashboard es un producto separado — vive en el repo
+`nous-dashboard` con licencia comercial propia. La frontera legal y
+técnica es la API REST de este servidor: no hay imports ni linking
+entre ambos.
+
+Next.js 16 App Router, TypeScript estricto, arquitectura hexagonal
+(domain → application → infrastructure → ui), Three.js: cerebro 3D con
+replay de actividad y selección screen-space; universo 4D con cursor
+temporal, cauce recorrido luminoso, ramas y fantasmas. Imagen propia
+nginx (export estático); localmente `nous serve` también sirve su
+`out/` o levanta `yarn dev` si el repo es hermano del checkout.
 Estado persistente en PostgreSQL vía API (no solo localStorage).
 
 ## Modelo de seguridad

@@ -94,11 +94,17 @@ class SecurityHeadersMiddleware:
 
 
 def _dir_dashboard_static() -> Path | None:
-    """Localiza el build estático del dashboard (wheel o checkout)."""
+    """Localiza el build estático del dashboard (wheel o checkout).
+
+    ADR-001: el dashboard vive en el repo ``nous-dashboard``; se sigue
+    aceptando ``dashboard_static`` empaquetado y el ``out/`` hermano
+    para servirlo single-process en local.
+    """
     raiz = Path(__file__).resolve().parent
     for candidato in (
-        raiz / "dashboard_static",           # incluido en el wheel
-        raiz.parent / "dashboard" / "out",   # export del repo fuente
+        raiz / "dashboard_static",                    # incluido en el wheel
+        raiz.parent / "nous-dashboard" / "out",       # export del repo hermano
+        raiz.parent / "dashboard" / "out",            # checkout fuente (legado)
     ):
         if (candidato / "index.html").is_file():
             return candidato

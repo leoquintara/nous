@@ -21,19 +21,20 @@ La salida usa colores ANSI cuando la terminal es TTY — `NO_COLOR=1` o
 - **`nous serve`** (stdio): transporte para clientes MCP — el proceso
   habla JSON-RPC por stdin/stdout. En una terminal interactiva, cada
   línea vacía produce un aviso de protocolo inofensivo.
-- **`nous serve --transport http`**: API REST + MCP HTTP +
-  **dashboard estático** en `NOUS_API_HOST:PORT` — un solo proceso
-  sirve todo (`/`, `/universo`, `/api/*`, `/mcp`). Si `dashboard/`
-  existe en el checkout fuente, además levanta el dev server Next.js
-  en :3000 con hot-reload — `--sin-dashboard` lo omite. Antes de
-  arrancar hace un pre-flight a PostgreSQL: si no responde, aborta
-  con un mensaje claro en lugar de un traceback.
+- **`nous serve --transport http`**: API REST + MCP HTTP en
+  `NOUS_API_HOST:PORT` (`/api/*`, `/mcp`). El dashboard es un producto
+  separado (repo `nous-dashboard`, ADR-001): si existe el repo hermano
+  `../nous-dashboard`, el CLI levanta su dev server con `yarn dev` en
+  :3000 — `--sin-dashboard` lo omite — y si hay un `out/` exportado,
+  también se sirve estático en `/`. Antes de arrancar hace un
+  pre-flight a PostgreSQL: si no responde, aborta con un mensaje claro
+  en lugar de un traceback.
 
-  En instalaciones por paquete (pipx/wheel) el dashboard va
-  **empaquetado**: `src/dashboard_static/` se genera con
-  `cd dashboard && npm run build:export` y copiando `out/` antes de
-  `pipx install`. La configuración se lee de
-  `~/.config/nous/.env` cuando no hay `.env` junto al código.
+  El wheel ya no empaqueta el dashboard — la forma oficial es la
+  imagen propia de `nous-dashboard` (o `yarn dev`); el serving
+  estático single-process queda como conveniencia local. La
+  configuración se lee de `~/.config/nous/.env` cuando no hay `.env`
+  junto al código.
 
   Auth: `/api/*` y `/mcp` exigen `Bearer <NOUS_API_TOKEN>`; el HTML
   estático del dashboard es público (no contiene datos) — el flujo
@@ -43,7 +44,7 @@ La salida usa colores ANSI cuando la terminal es TTY — `NO_COLOR=1` o
 
 | Comando | Qué hace | Salida JSON |
 |---|---|---|
-| `nous serve [--transport stdio\|http] [--host] [--port] [--sin-dashboard]` | Arranca el servidor MCP/HTTP; en http también levanta el dashboard Next.js si el checkout lo incluye | — |
+| `nous serve [--transport stdio\|http] [--host] [--port] [--sin-dashboard]` | Arranca el servidor MCP/HTTP; en http también levanta `yarn dev` del dashboard si existe el repo `../nous-dashboard` | — |
 | `nous version` | Versión, método de instalación, Python | `--json` |
 | `nous check-update` | Compara la versión instalada con la disponible | `--json` |
 | `nous upgrade [--no-migrate] [--yes]` | Actualiza el código y migra la DB | `--json` |

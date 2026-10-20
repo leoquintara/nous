@@ -69,7 +69,7 @@ Siete mecanismos neurocognitivos sobre la línea de universo:
 ```
 ┌────────────┐  stdio/HTTP   ┌──────────────┐   ┌──────────────┐
 │ Agentes MCP │ ────────────▶ │  src/mcp     │   │  Dashboard   │
-└────────────┘               │  (35 tools)  │   │  Next.js 16  │
+└────────────┘               │  (35 tools)  │   │  repo propio │
                              └──────┬───────┘   └──────┬───────┘
 ┌────────────┐                     │                   │ REST+token
 │  CLI `nous`│ ────────┐     ┌─────▼───────────────────▼─────┐
@@ -92,13 +92,16 @@ recencia + reranker cross-encoder local. Objetivo: <200ms p95.
 
 ## Quickstart
 
-**Todo-en-Docker** (PostgreSQL + app + dashboard en un stack):
+**Todo-en-Docker** (PostgreSQL + app; dashboard opcional por perfil):
 
 ```bash
 git clone <repo> && cd nous
 cp .env.example .env             # define NOUS_API_TOKEN=ns_$(openssl rand -hex 32)
 docker compose --profile app up -d
-curl -s localhost:8720/health    # API + MCP + dashboard vivos
+curl -s localhost:8720/health    # API + MCP vivos
+
+# con el dashboard (ADR-001: repo hermano nous-dashboard requerido)
+docker compose --profile dashboard up -d   # http://localhost:3000
 ```
 
 **pipx** (comando `nous` global sobre tu PostgreSQL):
@@ -245,8 +248,13 @@ Referencia completa: [docs/cli.md](docs/cli.md).
 
 ## Dashboard
 
+**ADR-001**: el dashboard es un producto separado — repo hermano
+`nous-dashboard` (licencia comercial), imagen propia, comunicación
+exclusivamente vía la API REST de este servidor.
+
 ```bash
-cd dashboard && npm install && npm run dev    # http://localhost:3000
+cd ../nous-dashboard && yarn install && yarn dev    # http://localhost:3000
+docker build -t nous-dashboard ../nous-dashboard    # imagen nginx:80
 ```
 
 Rutas: `/` cerebro 3D con replay de actividad · `/memoria` búsqueda ·
@@ -259,7 +267,7 @@ usuario+contraseña si defines
 `NOUS_DASHBOARD_USUARIO`/`NOUS_DASHBOARD_PASSWORD`. El nav incluye
 switcher de workspace — el activo viaja en todas las llamadas.
 
-Detalle: [docs/dashboard.md](docs/dashboard.md).
+Detalle: `nous-dashboard/docs/dashboard.md`.
 
 ## Migraciones de memoria
 
@@ -314,7 +322,7 @@ identidad (`/api/identidad`, `/api/workspaces/*`, `/api/llaves`,
 poetry run pytest --cov=src        # tests (unit + integración nous_test)
 poetry run ruff check src/
 poetry run mypy --strict src/
-cd dashboard && npm test && npx tsc --noEmit
+cd ../nous-dashboard && yarn vitest run && yarn tsc --noEmit
 ```
 
 Convenciones en [AGENTS.md](AGENTS.md) — capas estrictas
@@ -325,7 +333,7 @@ MCP → Core → Storage, tipado estricto, Conventional Commits.
 - [docs/architecture.md](docs/architecture.md) — capas, esquema, flujos
 - [docs/api.md](docs/api.md) — referencia REST
 - [docs/cli.md](docs/cli.md) — referencia CLI
-- [docs/dashboard.md](docs/dashboard.md) — features del dashboard
+- `nous-dashboard/docs/dashboard.md` — features del dashboard (repo propio)
 - [docs/deployment.md](docs/deployment.md) — auto-hospedaje productivo
 - [docs/security.md](docs/security.md) — modelo de seguridad
 - [docs/neuroscience.md](docs/neuroscience.md) — bases del modelo 4D

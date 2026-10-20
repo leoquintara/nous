@@ -11,32 +11,39 @@ poetry install
 poetry run nous db upgrade
 poetry run nous serve           # MCP stdio
 poetry run nous serve --transport http
-# ↑ REST + MCP + dashboard estático en :8720 (usa dashboard/out si
-#   existe); además levanta el dev server Next en :3000 con hot-reload.
-#   --sin-dashboard lo omite.
+# ↑ REST + MCP en :8720. El dashboard (repo nous-dashboard, ADR-001)
+#   corre aparte: yarn dev en :3000, o su build out/ hermano se sirve
+#   estático en :8720 automáticamente. --sin-dashboard omite el dev
+#   server.
 ```
 
 ## Docker completo
 
-El servicio `app` está detrás del profile `app`:
+El servicio `app` está detrás del profile `app`; el dashboard separado
+detrás de `dashboard`:
 
 ```bash
 # .env: define NOUS_API_TOKEN (obligatorio — el build falla sin él)
-docker compose --profile app up -d
+docker compose --profile app up -d          # db + app (API+MCP :8720)
+docker compose --profile dashboard up -d    # + nous-dashboard :3000
 ```
 
 levanta `nous-db` (pgvector/pgvector:pg18, volumen `nous_pgdata`) y
-`nous-app` — una imagen multi-stage (~1.5GB, ONNX-only sin torch) que
-incluye **todo**: API REST + MCP HTTP + dashboard estático + modelos
-ONNX horneados (embeddings MiniLM + reranker). Un solo puerto:
-`http://localhost:8720` sirve `/` (dashboard), `/api/*` y `/mcp`. El
-entrypoint corre `alembic upgrade head` en cada arranque — DB fresca
-migra sola.
+`nous-app` — una imagen (~1.5GB, ONNX-only sin torch) con API REST +
+MCP HTTP + modelos ONNX horneados (embeddings MiniLM + reranker).
+`http://localhost:8720` sirve `/api/*` y `/mcp`; si el repo hermano
+`nous-dashboard` tiene un `out/` generado, también lo sirve en `/`
+(single-process local). El entrypoint corre `alembic upgrade head`
+en cada arranque — DB fresca migra sola.
+
+El dashboard vive en `../nous-dashboard` (ADR-001 — licencia
+comercial, frontera legal = API REST): imagen propia nginx en :80
+expuesta en :3000, build `docker build ../nous-dashboard`.
 
 Notas de la imagen:
 
-- Stage 1 compila el dashboard (`npm ci` + `build:export`) — el
-  contenedor no necesita que `src/dashboard_static` exista en el host.
+- La imagen app ya no compila el dashboard — ese stage vive en el
+  Dockerfile del repo `nous-dashboard` (export estático → nginx).
 - Los modelos se descargan UNA vez en el build
   (`NOUS_HF_OFFLINE=false` solo ahí); el contenedor corre con
   `HF_OFFLINE=true` y funciona sin red.
@@ -52,17 +59,15 @@ Notas de la imagen:
 ## Instalación como comando global (pipx)
 
 ```bash
-cd dashboard && npm ci && npm run build:export   # genera out/
-cp -r out ../src/dashboard_static                # empaqueta el build
-cd .. && pipx install .                          # instala nous + dashboard
+pipx install .                          # instala nous (API + MCP)
 mkdir -p ~/.config/nous && cp .env ~/.config/nous/.env
-nous serve --transport http   # API + MCP + dashboard en :8720
+nous serve --transport http   # API + MCP en :8720
 ```
 
 Sin `.env` junto al código, Nous lee `~/.config/nous/.env` (POSIX) —
-en Windows `%USERPROFILE%\.config\nous\.env`. El dashboard va dentro
-del wheel: `pipx install` desde un checkout sin `src/dashboard_static`
-instala solo API+MCP.
+en Windows `%USERPROFILE%\.config\nous\.env`. ADR-001: el dashboard
+ya no viaja en el wheel — corre aparte (su imagen o `yarn dev` en el
+repo `nous-dashboard`).
 
 ## Producto en un servidor propio
 
@@ -74,8 +79,8 @@ instala solo API+MCP.
    misma máquina; expón `0.0.0.0` solo detrás de firewall/VPN, nunca
    directo a internet (usa un reverse proxy con TLS si necesitas acceso
    remoto).
-4. **Login del dashboard**: `NOUS_DASHBOARD_USUARIO` +
-   `NOUS_DASHBOARD_PASSWORD` si el dashboard se sirve en red.
+4. **Login del dashboard** (repo `nous-dashboard`): el acceso se
+   configura en su propia config — consulta `nous-dashboard/README.md`.
 5. **Cifrado de secrets LLM**: `NOUS_CLAVE_CIFRADO` (si no se define se
    deriva del token — configurarlo explícito si rotas el token).
 6. **Durabilidad**: `NOUS_COMMIT_SINCRONO=true` si prefieres fsync por
