@@ -75,7 +75,7 @@ class LayaLocal(DecisionProvider):
         except ImportError as exc:
             raise ImportError(
                 "Laya no está instalado. Extra opcional: "
-                "pip install 'nous[decision]'"
+                "pip install 'nous-memory[decision]'"
             ) from exc
         self._router = Router(preload=preload)
 

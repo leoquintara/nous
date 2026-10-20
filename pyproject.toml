@@ -19,6 +19,9 @@ alembic = "^1.14.0"
 pydantic = "^2.9.0"
 pydantic-settings = "^2.6.0"
 sentence-transformers = { version = "^3.3.0", optional = true }
+# ADR-002: provider de decisión System One por defecto (open weights,
+# local). Opcional — sin él el pipeline degrada a los heurísticos.
+laya = { version = "^0.4.12", optional = true }
 transformers = "^4.53.0"
 huggingface-hub = "^0.36.0"
 numpy = ">=1.26,<3"
@@ -30,6 +33,9 @@ httpx = "^0.28.0"
 # Backend fallback torch (~2GB): solo para modelos sin pesos ONNX en HF.
 # `pip install 'nous-memory[torch]'` / `poetry install --extras torch`.
 torch = ["sentence-transformers"]
+# Modelo de decisión System One local (~421M params, ModernBERT).
+# `pip install 'nous-memory[decision]'` — NOUS_DECISION_PROVIDER=auto.
+decision = ["laya"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.0"
