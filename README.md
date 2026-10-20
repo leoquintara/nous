@@ -1,7 +1,12 @@
 # Nous
 
+[![ci](https://github.com/leoquintara/nous/actions/workflows/ci.yml/badge.svg)](https://github.com/leoquintara/nous/actions/workflows/ci.yml)
+[![AGPL-3.0](https://img.shields.io/badge/licencia-AGPL--3.0-blue)](LICENSE)
+[![nous-memory en PyPI](https://img.shields.io/pypi/v/nous-memory)](https://pypi.org/project/nous-memory/)
+
 **Memoria persistente 4D para agentes de IA — local-first y auto-hospedable.**
-Un producto de Quintara AI ([quintarai.com](https://quintarai.com)).
+Un producto de Quintara AI — landing, precios y licencias en
+**[nousmemory.com](https://nousmemory.com)**.
 
 Nous le da a cualquier agente (Claude, Cursor, Windsurf, Cline, Devin, o tu
 propio cliente) una memoria que sobrevive a las sesiones: almacena lo que
@@ -117,7 +122,22 @@ recencia + reranker cross-encoder local. Objetivo: <200ms p95.
 
 ## Quickstart
 
-**Todo-en-Docker** (PostgreSQL + app; dashboard opcional por perfil):
+**Imagen publicada** (ghcr.io — sin clonar ni build):
+
+```bash
+docker run -d --name nous-db -e POSTGRES_USER=nous \
+  -e POSTGRES_PASSWORD=nous -e POSTGRES_DB=nous \
+  -p 5432:5432 pgvector/pgvector:pg18
+
+docker run -d --name nous -p 8720:8720 \
+  -e NOUS_DATABASE_URL=postgresql+asyncpg://nous:nous@host.docker.internal:5432/nous \
+  -e NOUS_API_TOKEN=ns_$(openssl rand -hex 32) \
+  ghcr.io/leoquintara/nous:latest
+
+curl -s localhost:8720/health
+```
+
+**Desde el repo** (PostgreSQL + app; dashboard opcional por perfil):
 
 ```bash
 git clone https://github.com/leoquintara/nous.git && cd nous
@@ -129,13 +149,13 @@ curl -s localhost:8720/health    # API + MCP vivos
 docker compose --profile dashboard up -d   # http://localhost:3000
 ```
 
-**pipx** (comando `nous` global sobre tu PostgreSQL):
+**pipx / PyPI** (comando `nous` global sobre tu PostgreSQL):
 
 ```bash
 docker compose up -d db          # solo PostgreSQL 18 + pgvector
-pipx install .                   # instala `nous` aislado (desde el repo)
-pipx install '.[decision]'       # opcional: + Laya (provider de decisión local)
-pipx install '.[torch]'          # opcional: + sentence-transformers
+pipx install nous-memory         # desde PyPI — o `pipx install .` desde el repo
+pipx install 'nous-memory[decision]'   # opcional: + Laya (provider local)
+pipx install 'nous-memory[torch]'      # opcional: + sentence-transformers
 nous db upgrade                  # migraciones Alembic
 nous serve                       # MCP stdio (default)
 ```
@@ -200,8 +220,11 @@ el default) o `workspace` (visible para el equipo). Las lecturas ven
   de un solo uso; el invitado lo canjea en `/unirse` y recibe su `ns_u_*`.
 - **Edición libre**: sin `NOUS_LICENSE_KEY`, self-hosted permite 1
   usuario y 3 workspaces.
-- **Licencia**: `nous activate-license <key>` guarda el JWT en
-  `~/.nous/license.jwt` (validado localmente, sin phone-home);
+- **Licencia**: compra en [nousmemory.com](https://nousmemory.com) →
+  `nous activate-license <nslic_*>` canjea el serial contra
+  `NOUS_LICENSE_ACTIVATION_URL` y guarda el JWT en
+  `~/.nous/license.jwt` (validado localmente con
+  `NOUS_LICENSE_PUBLIC_KEY`, sin phone-home);
   `NOUS_LICENSE_KEY` en env tiene prioridad si ambos existen.
 
 ```bash
@@ -374,6 +397,7 @@ MCP → Core → Storage, tipado estricto, Conventional Commits.
 ## Licencia
 
 AGPL 3.0 open source — ver [LICENSE](LICENSE).
-Licencia comercial: licensing@quintarai.com
+Licencia comercial y precios: [nousmemory.com](https://nousmemory.com) —
+licensing@quintarai.com
 
 Nous es un producto de Quintara AI. © 2026 Quintara AI.
