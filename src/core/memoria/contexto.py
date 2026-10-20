@@ -57,7 +57,7 @@ def similitud_contexto(
             if str(contexto_evento[clave]) == esperado:
                 puntos += 1.0
     hora_ev = contexto_evento.get("hora_dia")
-    if actual.hora_dia is not None and isinstance(hora_ev, (int, float)):
+    if actual.hora_dia is not None and isinstance(hora_ev, int | float):
         posibles += 1.0
         distancia = min(
             abs(actual.hora_dia - hora_ev),

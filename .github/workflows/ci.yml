@@ -2,8 +2,9 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
+
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -14,37 +15,40 @@ jobs:
     name: ruff + mypy --strict
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-      - run: pip install poetry==1.8.4
-      - run: poetry install --no-interaction --only main,dev
-      - run: poetry run ruff check src/ tests/
-      - run: poetry run mypy --strict src/
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+        cache: pip
+    - run: pip install poetry==1.8.4
+    - run: poetry install --no-interaction --only main,dev
+    - run: poetry run ruff check src/ tests/
+    - run: poetry run mypy --strict src/
 
   unit:
     name: pytest unit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-      - run: pip install poetry==1.8.4
-      - run: poetry install --no-interaction --only main,dev
-      # Los tests de embeddings/reranker descargan los modelos ONNX una
-      # vez; el cache de HF hace que corridas siguientes no repitan ~500MB.
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/huggingface
-          key: hf-${{ runner.os }}-${{ hashFiles('pyproject.toml', 'poetry.lock') }}
-          restore-keys: hf-${{ runner.os }}-
-      - run: poetry run pytest tests/unit -x -q
-        env:
-          NOUS_HF_OFFLINE: "false"
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+        cache: pip
+    - run: pip install poetry==1.8.4
+    - run: poetry install --no-interaction --only main,dev
+    # Los tests de embeddings/reranker descargan los modelos ONNX una
+    # vez; el cache de HF hace que corridas siguientes no repitan ~500MB.
+    - uses: actions/cache@v4
+      with:
+        path: ~/.cache/huggingface
+        key: hf-${{ runner.os }}-${{ hashFiles('pyproject.toml', 'poetry.lock') }}
+        restore-keys: hf-${{ runner.os }}-
+    # El test de config exige un .env del repo con URL no-default
+    # (verifica que .env se carga aunque el cwd sea otro).
+    - run: echo 'NOUS_DATABASE_URL=postgresql+asyncpg://nous:nous@localhost:5432/nous_ci' > .env
+    - run: poetry run pytest tests/unit -x -q
+      env:
+        NOUS_HF_OFFLINE: "false"
 
   integracion:
     name: pytest integracion (pgvector)
@@ -57,28 +61,28 @@ jobs:
           POSTGRES_PASSWORD: nous
           POSTGRES_DB: nous_test
         ports:
-          - 5432:5432
+        - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U nous -d nous_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
+          --health-cmd "pg_isready -U nous -d nous_test" --health-interval 5s --health-timeout 5s --health-retries 12
     env:
       NOUS_TEST_DATABASE_URL: postgresql+asyncpg://nous:nous@localhost:5432/nous_test
       NOUS_DATABASE_URL: postgresql+asyncpg://nous:nous@localhost:5432/nous_test
+      # Sin token configurado el server cae a modo desarrollo (owner
+      # implícito) y los tests de aislamiento de identidad fallarían.
+      NOUS_API_TOKEN: ns_ci_github_actions_token
       NOUS_HF_OFFLINE: "false"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-      - run: pip install poetry==1.8.4
-      - run: poetry install --no-interaction --only main,dev
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/huggingface
-          key: hf-${{ runner.os }}-${{ hashFiles('pyproject.toml', 'poetry.lock') }}
-          restore-keys: hf-${{ runner.os }}-
-      - run: poetry run alembic upgrade head
-      - run: poetry run pytest tests/integration -x -q
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+        cache: pip
+    - run: pip install poetry==1.8.4
+    - run: poetry install --no-interaction --only main,dev
+    - uses: actions/cache@v4
+      with:
+        path: ~/.cache/huggingface
+        key: hf-${{ runner.os }}-${{ hashFiles('pyproject.toml', 'poetry.lock') }}
+        restore-keys: hf-${{ runner.os }}-
+    - run: poetry run alembic upgrade head
+    - run: poetry run pytest tests/integration -x -q

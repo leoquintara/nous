@@ -61,7 +61,7 @@ def parsear_trigger(valor: dict[str, object]) -> TriggerTipo:
     Raises:
         IntencionInvalidaError: Si falta la clave esperada o es inválida.
     """
-    if isinstance(valor.get("ts"), (int, float)):
+    if isinstance(valor.get("ts"), int | float):
         return TriggerTipo.TIME
     if isinstance(valor.get("query"), str) and str(valor["query"]).strip():
         return TriggerTipo.EVENT
@@ -82,7 +82,7 @@ def disparada_por_tiempo(intencion: Intencion, ahora_unix: int) -> bool:
     if intencion.trigger_tipo != TriggerTipo.TIME:
         return False
     ts = intencion.trigger_valor.get("ts")
-    return isinstance(ts, (int, float)) and ahora_unix >= int(ts)
+    return isinstance(ts, int | float) and ahora_unix >= int(ts)
 
 
 def disparada_por_evento(
@@ -114,7 +114,7 @@ def disparada_por_evento(
         return False
     umbral_raw = intencion.trigger_valor.get("umbral")
     umbral = (
-        float(umbral_raw) if isinstance(umbral_raw, (int, float)) else 0.6
+        float(umbral_raw) if isinstance(umbral_raw, int | float) else 0.6
     )
     if similitud is not None:
         return similitud >= umbral
@@ -145,6 +145,6 @@ def distancia_temporal(intencion: Intencion, ahora_unix: int) -> float:
     if intencion.trigger_tipo != TriggerTipo.TIME:
         return math.inf
     ts = intencion.trigger_valor.get("ts")
-    if not isinstance(ts, (int, float)):
+    if not isinstance(ts, int | float):
         return math.inf
     return max(0.0, float(ts) - ahora_unix)

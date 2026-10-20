@@ -67,8 +67,8 @@ def test_jwt_malformado_no_licencia():
 def test_jwt_firma_invalida_con_pubkey_no_licencia(tmp_path):
     # Con clave pública configurada, un JWT forjado (claims válidos,
     # firma basura) NO licencia — el modo honor es solo sin clave.
-    from cryptography.hazmat.primitives.asymmetric import rsa
     from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
 
     pub = (
         serialization.load_pem_public_key(
@@ -90,8 +90,8 @@ def test_jwt_firma_invalida_con_pubkey_no_licencia(tmp_path):
 
 def test_jwt_alg_none_con_pubkey_no_licencia(tmp_path):
     # Header alg=none + firma vacía: la firma no verifica → inválida.
-    from cryptography.hazmat.primitives.asymmetric import rsa
     from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
 
     pub = rsa.generate_private_key(65537, 2048).public_key().public_bytes(
         serialization.Encoding.PEM,
