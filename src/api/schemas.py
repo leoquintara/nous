@@ -418,3 +418,11 @@ class IntencionRequest(BaseModel):
     cuando: str | None = Field(default=None, max_length=500)
     umbral: float = Field(default=0.6, gt=0.0, le=1.0)
     workspace: str | None = Field(default=None, max_length=64)
+
+
+class DecisionRequest(BaseModel):
+    """Cuerpo para el consejero prescriptivo (ADR-002 Nivel 2, Pro)."""
+
+    dilema: str = Field(min_length=1, max_length=2_000)
+    opciones: list[str] | None = Field(default=None, max_length=6)
+    workspace: str | None = Field(default=None, max_length=64)

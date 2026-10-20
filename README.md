@@ -69,7 +69,7 @@ Siete mecanismos neurocognitivos sobre la línea de universo:
 ```
 ┌────────────┐  stdio/HTTP   ┌──────────────┐   ┌──────────────┐
 │ Agentes MCP │ ────────────▶ │  src/mcp     │   │  Dashboard   │
-└────────────┘               │  (34 tools)  │   │  Next.js 16  │
+└────────────┘               │  (35 tools)  │   │  Next.js 16  │
                              └──────┬───────┘   └──────┬───────┘
 ┌────────────┐                     │                   │ REST+token
 │  CLI `nous`│ ────────┐     ┌─────▼───────────────────▼─────┐
@@ -210,7 +210,8 @@ Skills: `nous-remember` (persistir), `nous-recall` (consultar),
 `nous-preferences`, `nous-checkin` (ritual somático post-hito),
 `nous-somatic` (mapa de señales), `nous-consolidar` (sueño y
 olvido reversible), `nous-prospectiva` (recordatorios por tiempo
-y por evento), `nous-scripts` (minería de rutinas conductuales).
+y por evento), `nous-scripts` (minería de rutinas conductuales),
+`nous-decision` (consejero prescriptivo Pro).
 
 Agentes: `nous-keeper` (qué persistir), `nous-curator` (higiene de
 loops/objetivos/fuentes), `nous-pathfinder` (metas → hitos → avance),
@@ -278,6 +279,7 @@ fuentes (+ramificar), relaciones, proyección, preferencias, proveedores IA,
 actividad, benchmarks, llamadas, ping, importar · patrones ADR-003
 (`/api/intenciones`, `/api/consolidar`, `/api/consolidacion/reportes`,
 `/api/scripts`, `/api/archivados`, `/api/eventos/{id}/restaurar`) ·
+consejero Pro `/api/decision` (402 sin licencia — ADR-002 Nivel 2) ·
 identidad (`/api/identidad`, `/api/workspaces/*`, `/api/llaves`,
 `/api/invitaciones/canjear` público). Referencia:
 [docs/api.md](docs/api.md).

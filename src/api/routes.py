@@ -1,5 +1,6 @@
 """Endpoints REST de Nous."""
 
+import asyncio
 import hmac
 import re
 import time
@@ -16,6 +17,7 @@ from src.api.schemas import (
     CanjearResponse,
     CerrarLoopRequest,
     CerrarObjetivoRequest,
+    DecisionRequest,
     EventoRequest,
     EventoResponse,
     FuentePatch,
@@ -735,8 +737,9 @@ async def importar(peticion: ImportarRequest) -> ImportarResponse:
             status_code=422,
             detail="indica una ruta local o una url de instancia",
         )
-    ruta = Path(peticion.ruta).expanduser()
-    if not ruta.exists():
+    ruta_str = peticion.ruta  # narrowed por el 422 de arriba
+    ruta = await asyncio.to_thread(lambda: Path(ruta_str).expanduser())
+    if not await asyncio.to_thread(ruta.exists):
         raise HTTPException(
             status_code=422, detail=f"ruta inaccesible: {peticion.ruta}"
         )
@@ -1274,3 +1277,20 @@ async def restaurar_evento(
 ) -> dict[str, Any]:
     """Restaura una memoria archivada — deshace el olvido."""
     return await tools_impl._restaurar_evento(evento_id, workspace)
+
+
+# ---------------------------------------------------------------------
+# ADR-002 Nivel 2 — consejero prescriptivo (feature Pro, licencia).
+# ---------------------------------------------------------------------
+
+
+@router.post("/decision", dependencies=[Depends(requerir_escritura)])
+async def consultar_decision(peticion: DecisionRequest) -> dict[str, Any]:
+    """Evalúa un dilema contra la línea de universo 4D (feature Pro).
+
+    Sin licencia → 402 vía ``CupoExcedidoError``. Sin provider
+    System One → ``disponible=false`` con el contexto ensamblado.
+    """
+    return await tools_impl._consultar_decision(
+        peticion.dilema, peticion.opciones, peticion.workspace
+    )

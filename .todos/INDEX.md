@@ -32,6 +32,6 @@
   el Chromium bundled de Playwright.
 | 21 | Cerebro 3D adaptado a Nous + membrana viva | ✅ 3e7a883 — refuerzos→consolidated, shader respira, onda cortical, marcapaso talámico |
 | 22 | ADR-002 Nivel 1: src/core/decision/ + provider augmenta clasificador | ✅ 75cac04 — decision/ autocontenido (choice/score/noul), factory auto con probe Ollama, fallback léxico |
-| 23 | ADR-002 Nivel 2: tool consultar_decision + skills/prompts de decisión (Pro) | ⏳ pendiente — tras Nivel 1; tier Pro, módulo decision/ desacoplado |
-| 24 | ADR-001: separar dashboard a repo nous-dashboard + licencia JWT | ⏳ aprobado 2026-10-19, pendiente ejecución |
+| 23 | ADR-002 Nivel 2: tool consultar_decision + skills/prompts de decisión (Pro) | ✅ implementado — tool + REST /decision + prompt evaluar_decision + skill nous-decision; gate CupoExcedidoError→402 sin licencia; sin provider → contexto 4D ensamblado |
+| 24 | ADR-001: separar dashboard a repo nous-dashboard + licencia JWT | ⏳ parcial — `src/core/license.py` (parseo JWT + tier/features/exp, firma RS256 opcional con `cryptography`, gate honor) listo; falta crear repo remoto y mover código |
 | 25 | ADR-003: 7 patrones neurocognitivos | ✅ 75cac04 + smart-round — decay/consolidación/prospectiva/interferencia/contexto/scripts/tipos + migración 0010 + CLI consolidar/intenciones/archivados/restaurar |

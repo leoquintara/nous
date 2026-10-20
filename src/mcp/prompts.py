@@ -7,6 +7,7 @@ qué resources leer y qué tools invocar, en qué orden.
 """
 
 from mcp.server.fastmcp.prompts import base
+
 from src.mcp.server import mcp_server
 
 
@@ -93,5 +94,48 @@ def preparar_decision(tema: str) -> list[base.Message]:
             "sentí (dimensión somática) y qué hice (conductual).\n"
             "5. NO decidas por el usuario: presenta el contexto y "
             "termina con una pregunta que aclare el trade-off."
+        )
+    ]
+
+
+@mcp_server.prompt()
+def evaluar_decision(dilema: str, opciones: str = "") -> list[base.Message]:
+    """Evalúa un dilema con el consejero prescriptivo de Nous (Pro).
+
+    USAR CUANDO: el usuario pida ayuda para decidir entre opciones
+    concretas y quiera el veredicto calibrado alimentado por su línea
+    de universo. Orquesta contexto + ``consultar_decision`` y fija
+    cómo presentar el resultado sin usurpar la decisión.
+
+    Args:
+        dilema: La decisión planteada ("¿acepto el proyecto X?").
+        opciones: Opciones separadas por coma; vacío = sí/no.
+
+    Returns:
+        Mensaje con instrucciones paso a paso para el agente.
+    """
+    paso_opciones = (
+        f"las opciones: {opciones}"
+        if opciones
+        else "las opciones por defecto ['sí', 'no'] — pregunta al "
+        "usuario si hay opciones concretas que no mencionó"
+    )
+    return [
+        base.UserMessage(
+            f"Evalúa el dilema con la memoria 4D de Nous: {dilema}\n"
+            f"1. Invoca la tool consultar_decision con el dilema y "
+            f"{paso_opciones}.\n"
+            "2. Si devuelve licencia_requerida/402, explica que es "
+            "feature Pro y ofrece el contexto igualmente: invoca "
+            "consultar_memoria con el dilema (top_n=5) y "
+            "compromisos_abiertos() para los loops que pesan.\n"
+            "3. Si disponible=false (sin provider), el dict trae el "
+            "contexto ensamblado — úsalo para razonar y dilo.\n"
+            "4. Con veredicto: presenta recomendacion + probabilidad "
+            "+ distribucion por opción, menciona riesgo_oculto si "
+            ">0.5 y la confianza del veredicto.\n"
+            "5. El modelo opina con datos; quien decide es el "
+            "usuario — cierra preguntando qué factor pesa más "
+            "para él."
         )
     ]

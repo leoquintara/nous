@@ -363,15 +363,17 @@ from src.storage.models import InvitacionModel  # noqa: E402
 
 
 def licencia_activa() -> bool:
-    """True si ``NOUS_LICENSE_KEY`` está configurada.
+    """True si ``NOUS_LICENSE_KEY`` es una licencia válida y vigente.
 
     El gate es sistema de honor: el código AGPL permite quitarlo,
     pero el self-hosted honesto queda limitado a 1 usuario y 3
     workspaces — el uso de equipo real pasa por cloud o licencia.
+    Delega en ``src.core.license`` (ADR-001): una key JWT expirada
+    o malformada NO licencia.
     """
-    from src.config import get_settings
+    from src.core.license import licencia_activa as _activa
 
-    return bool(get_settings().license_key)
+    return _activa()
 
 
 async def _contar_usuarios(engine: AsyncEngine) -> int:

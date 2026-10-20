@@ -208,9 +208,11 @@ def _cmd_version(como_json: bool) -> int:
     if como_json:
         _json(datos)
     else:
+        metodo = datos["metodo_instalacion"]
+        pyver = datos["python"]
         sys.stdout.write(
             f"{ui.acento('nous')} {datos['version']} "
-            f"{ui.suave(f'({datos["metodo_instalacion"]}, python {datos["python"]})')}\n"
+            f"{ui.suave(f'({metodo}, python {pyver})')}\n"
         )
     return 0
 
@@ -396,7 +398,7 @@ async def _cmd_import(
     from src.cli.transferencia import importar
     from src.storage.database import crear_engine
 
-    if not origen.exists():
+    if not await asyncio.to_thread(origen.exists):
         sys.stderr.write(ui.error(f"error: {origen} no existe") + "\n")
         return 1
     engine = crear_engine()

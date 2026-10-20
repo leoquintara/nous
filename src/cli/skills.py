@@ -722,6 +722,61 @@ siguiente.
 """
 
 
+_SKILL_DECISION = """---
+name: nous-decision
+description: Consejero prescriptivo de Nous (feature Pro) —
+  consultar_decision evalúa un dilema contra la línea de universo
+  4D con probabilidades calibradas por opción. Usar cuando el
+  usuario plantee "¿hago X o Y?", "¿acepto esto?" o pida ayuda
+  para decidir entre opciones concretas.
+---
+
+# Decisión prescriptiva en Nous
+
+`consultar_decision` es el consejero: un modelo System One
+(choice + score + noul) que responde sobre la línea de universo
+del usuario — historia reciente, metas activas y loops abiertos —
+con probabilidades calibradas. **Feature Pro**: requiere licencia.
+
+## Cuándo usarla (y cuándo no)
+
+| Pregunta del usuario | Herramienta |
+|---|---|
+| "¿acepto el proyecto X?" / "¿A o B?" | `consultar_decision` |
+| "¿qué sé sobre X?" (recuperar hechos) | `consultar_memoria` |
+| "¿hacia dónde voy?" (rachas/futuro) | `proyectar_trayectoria` |
+| "ayúdame a pensar esto" sin opciones | prompt `evaluar_decision` |
+
+La regla: `consultar_decision` decide **con** la memoria, no la
+consulta — si el usuario necesita recordar antes de decidir, primero
+`consultar_memoria`, luego el consejero.
+
+## Cómo llamarla
+
+- `consultar_decision(dilema, opciones?)` → `{disponible,
+  recomendacion, probabilidad, distribucion, confianza,
+  riesgo_oculto, motor, contexto}`.
+- `opciones` default `["sí","no"]` — pásalas si el dilema tiene
+  opciones concretas (2-6).
+- Sin licencia → error de cupo (402): explica que es Pro y ofrece
+  el contexto con `consultar_memoria` + `compromisos_abiertos`.
+- `disponible=false` → sin provider System One instalado; el dict
+  trae `contexto` ensamblado (eventos/metas/loops considerados) —
+  úsalo para razonar y dilo honestamente.
+
+## Cómo presentar el veredicto
+
+- Muestra `recomendacion` + `probabilidad` + `distribucion` — la
+  calibración es el valor: "sí (0.72)" no es lo mismo que "sí".
+- Si `riesgo_oculto` > 0.5, menciónalo explícito — el modelo vio
+  un factor adverso en la historia (loop abierto, patrón repetido).
+- `confianza` baja → dilo: "el veredicto es débil, faltan datos".
+- El modelo opina con datos; **quien decide es el usuario**.
+  Cierra preguntando qué factor pesa más para él — nunca ejecutes
+  la decisión por él.
+"""
+
+
 _AGENT_DREAMER = """---
 name: nous-dreamer
 description: Ejecuta y audita la consolidación-sueño de Nous —
@@ -869,6 +924,7 @@ ARTEFACTOS: tuple[Artefacto, ...] = (
     Artefacto("nous-consolidar", _SKILL_CONSOLIDAR, es_agente=False),
     Artefacto("nous-prospectiva", _SKILL_PROSPECTIVA, es_agente=False),
     Artefacto("nous-scripts", _SKILL_SCRIPTS, es_agente=False),
+    Artefacto("nous-decision", _SKILL_DECISION, es_agente=False),
     Artefacto("nous-keeper", _AGENT_MEMORISTA, es_agente=True),
     Artefacto("nous-curator", _AGENT_CURATOR, es_agente=True),
     Artefacto("nous-pathfinder", _AGENT_PATHFINDER, es_agente=True),

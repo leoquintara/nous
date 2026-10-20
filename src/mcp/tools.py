@@ -25,7 +25,11 @@ from src.core.clasificador import ClasificadorDimensiones
 from src.core.contexto import analizar_contexto, fusionar_tags, parsear_ttl
 from src.core.embeddings import GeneradorEmbeddings
 from src.core.episodios import GAP_MAX_DEFECTO_SEGUNDOS, segmentar
-from src.core.exceptions import ErrorValidacion, PermisoDenegadoError
+from src.core.exceptions import (
+    CupoExcedidoError,
+    ErrorValidacion,
+    PermisoDenegadoError,
+)
 from src.core.identidad import Contexto, contexto_actual, resolver_workspace
 from src.core.memoria.consolidacion import (
     EventoConsolidable,
@@ -2550,3 +2554,148 @@ async def restaurar_evento(
         {id, restaurado: true}.
     """
     return await _restaurar_evento(evento_id, workspace)
+
+
+# ── ADR-002 Nivel 2: consejero prescriptivo (feature Pro) ────────
+
+
+def _serializar_state_decision(
+    dilema: str,
+    eventos: Any,
+    objetivos: Any,
+    loops: Any,
+) -> str:
+    """Compone el ``state`` del wire protocol con la línea 4D.
+
+    El consejero decide SOBRE la historia del usuario: dilema +
+    eventos recientes de mayor amplitud + metas activas + loops
+    abiertos, truncado para caber en un forward pass.
+    """
+    lineas = [f"Dilema: {dilema}"]
+    recientes = sorted(eventos, key=lambda e: e.amplitud, reverse=True)[:12]
+    if recientes:
+        lineas.append("Historia reciente (mayor amplitud primero):")
+        lineas += [
+            f"- [{e.dimension}] {e.contenido[:120]}" for e in recientes
+        ]
+    if objetivos:
+        lineas.append("Metas activas:")
+        lineas += [f"- {o.titulo}" for o in objetivos[:8]]
+    if loops:
+        lineas.append("Loops abiertos:")
+        lineas += [
+            f"- {e.contenido[:100]} (con {e.con_quien or '?'})"
+            for e in loops[:6]
+        ]
+    return "\n".join(lineas)
+
+
+async def _consultar_decision(
+    dilema: str,
+    opciones: list[str] | None,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Evalúa un dilema contra la línea de universo 4D del usuario."""
+    if not idn.licencia_activa():
+        raise CupoExcedidoError(
+            "consultar_decision es una feature Pro — "
+            "activa tu licencia (NOUS_LICENSE_KEY) para usarla"
+        )
+    opciones = opciones or ["sí", "no"]
+    opciones = [o.strip() for o in opciones if o and o.strip()]
+    if len(opciones) < 2:
+        raise ErrorValidacion(
+            "se requieren al menos 2 opciones distintas"
+        )
+    ctx = await _ctx(workspace)
+    ahora = int(time.time())
+    async with get_session(obtener_engine()) as session:
+        eventos = await EventoRepository(session, ctx).listar_por_rango(
+            ahora - 30 * 86400, ahora, limite=40, rama="main"
+        )
+        objetivos = await ObjetivoRepository(session, ctx).listar(
+            estado="activo"
+        )
+        loops = await EventoRepository(
+            session, ctx
+        ).listar_compromisos_abiertos("main", ahora)
+    state = _serializar_state_decision(dilema, eventos, objetivos, loops)
+    provider = _obtener_provider_decision()
+    if provider is None:
+        # Sin modelo System One instalado el consejero no inventa:
+        # devuelve el contexto ensamblado para que el agente razone
+        # con él — la calibración queda honestamente ausente.
+        return {
+            "disponible": False,
+            "dilema": dilema,
+            "opciones": opciones,
+            "contexto": {
+                "eventos_considerados": len(eventos),
+                "metas_activas": len(objetivos),
+                "loops_abiertos": len(loops),
+            },
+            "mensaje": (
+                "sin provider System One (NOUS_DECISION_PROVIDER): "
+                "contexto 4D ensamblado, calibración ausente"
+            ),
+        }
+    from src.core.decision.consejero import recomendar
+
+    rec = await recomendar(provider, state, opciones)
+    if rec is None:
+        return {
+            "disponible": False,
+            "dilema": dilema,
+            "opciones": opciones,
+            "mensaje": "el provider no devolvió respuesta útil",
+        }
+    return {
+        "disponible": True,
+        "dilema": dilema,
+        "recomendacion": rec.opcion,
+        "probabilidad": rec.probabilidad,
+        "distribucion": rec.distribucion,
+        "confianza": rec.confianza,
+        "riesgo_oculto": rec.riesgo_oculto,
+        "motor": rec.motor,
+        "contexto": {
+            "eventos_considerados": len(eventos),
+            "metas_activas": len(objetivos),
+            "loops_abiertos": len(loops),
+        },
+    }
+
+
+@mcp_server.tool()
+async def consultar_decision(
+    dilema: str,
+    opciones: list[str] | None = None,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Consejero prescriptivo sobre la línea de universo 4D (Pro).
+
+    USAR CUANDO: el usuario plantee un dilema concreto ("¿acepto este
+    proyecto?", "¿compro el equipo A o el B?") y quiera una
+    recomendación calibrada alimentada por SU historia — eventos
+    recientes, metas activas y loops abiertos componen el state del
+    modelo System One.
+
+    NO ES: memoria factual (usa ``consultar_memoria``), ni
+    extrapolación de rachas (usa ``proyectar_trayectoria``), ni
+    contexto para decidir solo (usa el prompt ``evaluar_decision``).
+    ``consultar_decision`` devuelve un veredicto con probabilidades;
+    presenta el razonamiento y deja la decisión al usuario.
+
+    Requiere licencia Pro (ADR-002 Nivel 2); sin provider System One
+    devuelve ``disponible=false`` con el contexto ensamblado.
+
+    Args:
+        dilema: La decisión en texto libre.
+        opciones: Opciones concretas (2-6); default ["sí", "no"].
+        workspace: Slug o UUID del workspace.
+
+    Returns:
+        {disponible, recomendacion, probabilidad, distribucion,
+        confianza, riesgo_oculto, motor, contexto}.
+    """
+    return await _consultar_decision(dilema, opciones, workspace)
