@@ -167,6 +167,17 @@ def parsear_licencia(
             )
         except (ValueError, UnicodeDecodeError):
             firma_ok = False
+        if not firma_ok:
+            # Con clave pública configurada la firma manda: un JWT con
+            # firma inválida (o ausente, p. ej. header alg=none) no
+            # licencia — el modo honor aplica solo sin clave pública.
+            logger.warning("JWT de licencia con firma inválida — rechazado")
+            return Licencia(
+                valida=False,
+                tier=str(claims.get("tier", _TIER_OSS)),
+                expira=expira,
+                sujeto=claims.get("sub"),
+            )
 
     features = claims.get("features") or []
     return Licencia(

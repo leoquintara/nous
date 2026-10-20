@@ -64,6 +64,45 @@ def test_jwt_malformado_no_licencia():
     assert not parsear_licencia(".".join(lic_lista)).valida
 
 
+def test_jwt_firma_invalida_con_pubkey_no_licencia(tmp_path):
+    # Con clave pública configurada, un JWT forjado (claims válidos,
+    # firma basura) NO licencia — el modo honor es solo sin clave.
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.hazmat.primitives import serialization
+
+    pub = (
+        serialization.load_pem_public_key(
+            rsa.generate_private_key(65537, 2048).public_key().public_bytes(
+                serialization.Encoding.PEM,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+        ).public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    ).decode()
+    futuro = int(time.time()) + 86400
+    jwt_falso = _jwt({"sub": "atacante", "tier": "pro", "exp": futuro})
+    lic = parsear_licencia(jwt_falso, clave_publica_pem=pub)
+    assert not lic.valida
+    assert not lic.firma_verificada
+
+
+def test_jwt_alg_none_con_pubkey_no_licencia(tmp_path):
+    # Header alg=none + firma vacía: la firma no verifica → inválida.
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.hazmat.primitives import serialization
+
+    pub = rsa.generate_private_key(65537, 2048).public_key().public_bytes(
+        serialization.Encoding.PEM,
+        serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
+    header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').rstrip(b"=").decode()
+    claims = base64.urlsafe_b64encode(b'{"tier":"pro"}').rstrip(b"=").decode()
+    lic = parsear_licencia(f"{header}.{claims}.", clave_publica_pem=pub)
+    assert not lic.valida
+
+
 def test_key_de_dos_partes_cuenta_como_opaca():
     # "a.b" no es JWT — entra como key opaca legacy (honor).
     assert parsear_licencia("a.b").valida
