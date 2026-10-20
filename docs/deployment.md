@@ -97,6 +97,26 @@ repo `nous-dashboard`).
    actúa como el owner local. En HTTP cada agente lleva su propia
    `Authorization: Bearer ns_u_*`.
 
+## Consolidación-sueño periódica
+
+La consolidación (ADR-003) es **pull-based por diseño**: se invoca
+cuando conviene, nunca en segundo plano sorpresa. Para automatizarla:
+
+```bash
+# cron (Linux/macOS) — sueño diario a las 03:00
+0 3 * * * /usr/local/bin/nous consolidar --json >> /var/log/nous-sueno.log
+
+# Task Scheduler (Windows) — mismo efecto
+schtasks /create /tn "NousSueno" /sc daily /st 03:00 ^
+  /tr "C:\ruta\a\nous.exe consolidar --json"
+```
+
+En Docker el comando corre contra el contenedor:
+`docker exec nous-app python -m src.cli.main consolidar --json`.
+Cada corrida persiste un `reportes_consolidacion` auditable —
+revisables vía MCP (`reportes_consolidacion`), REST
+(`/api/consolidacion/reportes`) o el agente `nous-dreamer`.
+
 ## Upgrades
 
 ```bash

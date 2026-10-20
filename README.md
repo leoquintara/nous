@@ -242,6 +242,7 @@ consolidación-sueño auditable).
 | `nous check-update` / `nous upgrade` | Gestión de versiones |
 | `nous users create\|list` | Usuarios del sistema |
 | `nous workspaces create\|list\|invite\|canjear` | Workspaces e invitaciones `ns_inv_*` |
+| `nous activate-license <key>` | Activa licencia Pro → `~/.nous/license.jwt` |
 | `nous keys create\|list\|revoke` | Keys `ns_u_*` por usuario (en claro una vez) |
 
 Referencia completa: [docs/cli.md](docs/cli.md).
@@ -308,6 +309,8 @@ identidad (`/api/identidad`, `/api/workspaces/*`, `/api/llaves`,
 | `NOUS_COMMIT_SINCRONO` | `false` | fsync por commit |
 | `NOUS_API_KEY` | (owner local) | Key `ns_u_*` para identidad en stdio |
 | `NOUS_LICENSE_KEY` | (vacío = edición libre) | Desbloquea multi-tenant completo |
+| `NOUS_LICENSE_PUBLIC_KEY` | — | PEM para verificar firma RS256 del JWT |
+| `NOUS_LICENSE_ACTIVATION_URL` | — | Servicio de activación (serial → JWT) |
 | `NOUS_MAX_USUARIOS_LIBRES` | `1` | Límite sin licencia |
 | `NOUS_MAX_WORKSPACES_LIBRES` | `3` | Límite sin licencia |
 | `NOUS_DECISION_PROVIDER` | `auto` | `none/auto/laya/ollama/jev` — motor System One |

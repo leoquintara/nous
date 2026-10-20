@@ -38,7 +38,8 @@ async def _ejecutar_cliente(puerto: int, token: str) -> dict[str, Any]:
     from mcp import ClientSession
     from mcp.client.streamable_http import streamablehttp_client
 
-    url = f"http://127.0.0.1:{puerto}/mcp/"
+    # Sin slash final: /mcp/ redirige (307) y el cliente pierde el POST.
+    url = f"http://127.0.0.1:{puerto}/mcp"
     resultados: dict[str, Any] = {}
     async with streamablehttp_client(
         url, headers={"Authorization": f"Bearer {token}"}

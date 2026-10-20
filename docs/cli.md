@@ -61,6 +61,11 @@ La salida usa colores ANSI cuando la terminal es TTY — `NO_COLOR=1` o
 | `nous users create\|list` | Crea usuarios (handle único) y los lista | `--json` |
 | `nous workspaces create\|list\|invite\|canjear` | Workspaces e invitaciones `ns_inv_*` de un solo uso | `--json` |
 | `nous keys list\|create\|revoke` | Keys `ns_u_*` por usuario — en claro solo al emitir | `--json` |
+| `nous consolidar` | Corrida de sueño: refuerza, promueve a curado, archiva débiles | `--json` |
+| `nous intenciones` | Lista las intenciones prospectivas pendientes | — |
+| `nous archivados` | Lista las memorias archivadas por consolidación | — |
+| `nous restaurar <evento_id>` | Deshace el olvido (archivado reversible) | — |
+| `nous activate-license <key>` | Valida y persiste la licencia en `~/.nous/license.jwt` | `--json` |
 
 ## Import
 
