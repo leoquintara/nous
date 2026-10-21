@@ -171,10 +171,16 @@ def crear_app_http() -> ASGIApp:
             status_code=status, content={"detail": str(exc)}
         )
 
-    # El dashboard (Next.js en :3000) es un origen distinto al API (:8720).
+    # El dashboard (Next.js) es un origen distinto al API — configurable
+    # vía NOUS_CORS_ORIGINS para self-hosters en otro puerto/dominio.
+    settings = get_settings()
     api.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+        allow_origins=[
+            origen.strip()
+            for origen in settings.cors_origins.split(",")
+            if origen.strip()
+        ],
         allow_methods=["*"],
         allow_headers=["*"],
     )

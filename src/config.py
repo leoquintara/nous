@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     api_token: str | None = None
     api_host: str = "127.0.0.1"
     api_port: int = 8720
+    # Orígenes CORS del dashboard (separados por coma). El dashboard es
+    # un origen distinto al API; self-hosters lo sirven en otro puerto.
+    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     dashboard_usuario: str | None = None
     dashboard_password: str | None = None
     clave_cifrado: str | None = None
