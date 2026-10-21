@@ -37,21 +37,68 @@ class _SesionOnnx(Protocol):
     def get_outputs(self) -> list[Any]: ...
 
 
+def _carpeta_modelo_hf(nombre_modelo: str) -> str:
+    """Devuelve la carpeta de caché HF esperada para un modelo.
+
+    Reproduce la convención ``models--{org}--{name}`` de
+    ``huggingface_hub`` sin importarlo (el módulo no debe requerirlo).
+    """
+    hf_home = os.environ.get("HF_HOME") or os.path.join(
+        os.path.expanduser("~"), ".cache", "huggingface"
+    )
+    hub = os.environ.get("HF_HUB_CACHE") or os.path.join(hf_home, "hub")
+    return os.path.join(
+        hub, "models--" + nombre_modelo.replace("/", "--")
+    )
+
+
+def _modelo_en_cache_hf(nombre_modelo: str) -> bool:
+    """True si el modelo ya tiene snapshots descargados en caché local."""
+    snapshots = os.path.join(_carpeta_modelo_hf(nombre_modelo), "snapshots")
+    try:
+        return any(os.scandir(snapshots))
+    except OSError:
+        return False
+
+
+def _modelos_sin_cache() -> list[str]:
+    """Lista los modelos configurados que aún no están en la caché HF."""
+    settings = get_settings()
+    pendientes = [settings.embedding_model]
+    if settings.reranker_habilitado:
+        pendientes.append(settings.reranker_modelo)
+    return [m for m in pendientes if not _modelo_en_cache_hf(m)]
+
+
 def activar_offline_hf() -> None:
     """Fuerza el modo offline de HuggingFace cuando ``hf_offline`` es True.
 
     Local-first: sin esta bandera ``huggingface_hub`` consulta la red en
     cada carga de modelo (incluso estando cacheado), lo que añade ~30s de
     latencia a la primera consulta y envía tráfico a huggingface.co sin
-    necesidad. Los modelos deben existir en la caché local; para la
-    descarga inicial usar ``NOUS_HF_OFFLINE=false`` una sola vez.
+    necesidad.
+
+    Si los modelos configurados aún no están en la caché local (primer
+    arranque), el offline NO se activa en este proceso y se permite la
+    descarga inicial; el modo estricto se reanuda solo al siguiente
+    arranque, una vez cacheados. Un ``HF_HUB_OFFLINE`` exportado por el
+    usuario siempre prevalece (``setdefault``).
     """
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
     if not get_settings().hf_offline:
+        return
+    pendientes = _modelos_sin_cache()
+    if pendientes:
+        logger.warning(
+            "Modelos no cacheados (%s): se permite la descarga inicial "
+            "aunque NOUS_HF_OFFLINE=true. El modo offline estricto se "
+            "reactiva en el siguiente arranque.",
+            ", ".join(pendientes),
+        )
         return
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
-    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 
 class GeneradorEmbeddings:

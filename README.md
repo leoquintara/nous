@@ -141,24 +141,35 @@ curl -s localhost:8720/health
 
 ```bash
 git clone https://github.com/leoquintara/nous.git && cd nous
-cp .env.example .env             # define NOUS_API_TOKEN=ns_$(openssl rand -hex 32)
+cp .env.example .env
+echo "NOUS_API_TOKEN=ns_$(openssl rand -hex 32)" >> .env
 docker compose --profile app up -d
 curl -s localhost:8720/health    # API + MCP vivos
 
 # con el dashboard (ADR-001: repo hermano nous-dashboard requerido)
+git clone https://github.com/leoquintara/nous-dashboard.git ../nous-dashboard
 docker compose --profile dashboard up -d   # http://localhost:3000
 ```
 
-**pipx / PyPI** (comando `nous` global sobre tu PostgreSQL):
+**pipx / PyPI** (comando `nous` global sobre tu PostgreSQL — requiere
+**Python 3.11–3.13**; `onnxruntime` aún no tiene wheels para 3.15+):
 
 ```bash
 docker compose up -d db          # solo PostgreSQL 18 + pgvector
 pipx install nous-memory         # desde PyPI — o `pipx install .` desde el repo
+# macOS: Homebrew instala Python 3.15 — pasa el intérprete explícito:
+#   brew install python@3.12
+#   pipx install --python /opt/homebrew/bin/python3.12 nous-memory
 pipx install 'nous-memory[decision]'   # opcional: + Laya (provider local)
 pipx install 'nous-memory[torch]'      # opcional: + sentence-transformers
 nous db upgrade                  # migraciones Alembic
 nous serve                       # MCP stdio (default)
 ```
+
+El primer `nous serve` descarga los modelos de embeddings/reranker
+(~150 MB) aunque `NOUS_HF_OFFLINE=true`: al detectar la caché vacía se
+permite la descarga inicial y el offline estricto se reactiva en el
+siguiente arranque.
 
 Verificación del entorno:
 
@@ -304,11 +315,15 @@ Referencia completa: [docs/cli.md](docs/cli.md).
 
 **ADR-001**: el dashboard es un producto separado — repo hermano
 `nous-dashboard` (licencia comercial), imagen propia, comunicación
-exclusivamente vía la API REST de este servidor.
+exclusivamente vía la API REST de este servidor. **Sin el perfil
+`dashboard` solo levanta la API+MCP en :8720 — no hay UI web incluida.**
 
 ```bash
+git clone https://github.com/leoquintara/nous-dashboard.git ../nous-dashboard
 cd ../nous-dashboard && yarn install && yarn dev    # http://localhost:3000
 docker build -t nous-dashboard ../nous-dashboard    # imagen nginx:80
+# o todo-orquestado desde este repo:
+docker compose --profile dashboard up -d
 ```
 
 Rutas: `/` cerebro 3D con replay de actividad · `/memoria` búsqueda ·
