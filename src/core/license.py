@@ -278,6 +278,10 @@ def activar_licencia(key: str) -> Licencia:
     ruta = ruta_licencia()
     ruta.parent.mkdir(parents=True, exist_ok=True)
     ruta.write_text(persistida + "\n", encoding="utf-8")
+    try:
+        ruta.chmod(0o600)  # solo el dueño lee la key (POSIX; no-op en Win)
+    except OSError:
+        pass
     return lic
 
 

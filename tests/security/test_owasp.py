@@ -92,6 +92,30 @@ class TestA01ControlAcceso:
         )
         assert respuesta.status_code == 401
 
+    @pytest.mark.parametrize(
+        "ruta",
+        [
+            "/api/decision",
+            "/api/licencia/activar",
+            "/api/eventos/00000000-0000-0000-0000-000000000000/curar",
+            "/api/eventos/00000000-0000-0000-0000-000000000000/restaurar",
+            "/api/intenciones",
+            "/api/consolidar",
+            "/api/scripts/minar",
+        ],
+    )
+    def test_ruta_post_sin_token_retorna_401(
+        self, cliente: TestClient, ruta: str
+    ) -> None:
+        """Las escrituras ADR-002/003 tampoco admiten anónimos."""
+        assert cliente.post(ruta, json={}).status_code == 401
+
+    def test_licencia_delete_sin_token_retorna_401(
+        self, cliente: TestClient
+    ) -> None:
+        """Quitar la licencia del servidor exige credencial (owner)."""
+        assert cliente.delete("/api/licencia").status_code == 401
+
 
 class TestA02FallosCriptograficos:
     """A02 — Cryptographic Failures: comparación en tiempo constante."""
@@ -166,6 +190,44 @@ class TestA04DisenoInseguro:
         """timestamp_unix negativo es inválido: 422."""
         with pytest.raises(ValidationError):
             EventoRequest(contenido="x", timestamp_unix=-1)
+
+    def test_estado_emocional_fuera_de_rango_rechazado(self) -> None:
+        """estado_emocional fuera de [-1,1] se rechaza: 422."""
+        with pytest.raises(ValidationError):
+            EventoRequest(contenido="x", estado_emocional=1.5)
+        with pytest.raises(ValidationError):
+            EventoRequest(contenido="x", estado_emocional=-1.01)
+
+    def test_tipo_memoria_literal_invalido_rechazado(self) -> None:
+        """tipo_memoria solo admite los tres tipos del ADR-003."""
+        with pytest.raises(ValidationError):
+            EventoRequest(contenido="x", tipo_memoria="eterna")
+        evento = EventoRequest(contenido="x", tipo_memoria="episodica")
+        assert evento.tipo_memoria == "episodica"
+
+    def test_contexto_no_dict_rechazado(self) -> None:
+        """contexto debe ser dict — una lista rompería el merge."""
+        with pytest.raises(ValidationError):
+            EventoRequest.model_validate(
+                {"contenido": "x", "contexto": ["a", "b"]}
+            )
+
+    def test_contexto_gigante_rechazado(self) -> None:
+        """contexto >4KB serializado se rechaza (A04, JSON no es blob)."""
+        with pytest.raises(ValidationError):
+            EventoRequest(
+                contenido="x", contexto={"payload": "x" * 5_000}
+            )
+        evento = EventoRequest(contenido="x", contexto={"k": "v"})
+        assert evento.contexto == {"k": "v"}
+
+    def test_licencia_key_corta_rechazada(self) -> None:
+        """LicenciaActivarRequest exige un mínimo de 8 caracteres."""
+        from src.api.schemas import LicenciaActivarRequest
+
+        with pytest.raises(ValidationError):
+            LicenciaActivarRequest(key="corta")
+        assert LicenciaActivarRequest(key="k" * 8).key == "k" * 8
 
 
 class TestA05Misconfiguracion:

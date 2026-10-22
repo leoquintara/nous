@@ -1,9 +1,10 @@
 """Schemas Pydantic de la API REST."""
 
+import json
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class HealthResponse(BaseModel):
@@ -62,6 +63,18 @@ class EventoRequest(BaseModel):
     tipo_memoria: Literal["episodica", "semantica", "procedimental"] | None = None
     estado_emocional: float | None = Field(default=None, ge=-1.0, le=1.0)
     contexto: dict[str, Any] | None = Field(default=None)
+
+    @field_validator("contexto")
+    @classmethod
+    def _contexto_acotado(
+        cls, valor: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """Rechaza contextos >4KB — la columna es JSON, no un blob."""
+        if valor is None:
+            return None
+        if len(json.dumps(valor, default=str)) > 4_096:
+            raise ValueError("contexto excede 4KB serializado")
+        return valor
 
 
 class CerrarLoopRequest(BaseModel):
