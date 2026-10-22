@@ -285,6 +285,58 @@ loops/objetivos/fuentes), `nous-pathfinder` (metas → hitos → avance),
 `nous-mirror` (observador somático), `nous-dreamer` (corrida de
 consolidación-sueño auditable).
 
+### Adoptar Nous en cualquier agente (meta-prompt)
+
+Las skills empaquetadas enseñan **cómo** usar las tools de Nous — pero
+el protocolo global de tu agente (dónde decide a qué memoria llamar)
+vive en TU configuración: `CLAUDE.md`, `.cursorrules`,
+`.windsurf/rules`, `AGENTS.md`, skills propios, prompts de sistema.
+Si tu agente ya tiene reglas de memoria, las skills solas no bastan:
+hay que enseñarle a **enrutar** a Nous.
+
+Pégale este prompt a tu agente y deja que él mismo actualice su
+configuración según sus convenciones — cada sistema la expresa
+distinto:
+
+```text
+Acabo de conectar Nous, un servidor MCP de memoria 4D local-first.
+Tu tarea: integrarlo en TU configuración global — no en este
+proyecto ni en archivos de código.
+
+1. Descubre cómo persistes memoria HOY: localiza tus archivos de
+   reglas globales (AGENTS.md, CLAUDE.md, .cursorrules,
+   .windsurf/rules, system prompt persistente, skills/agentes
+   propios) y cualquier protocolo de memoria que ya uses.
+2. Explora las tools del MCP `nous` ya conectado (o corre
+   `nous skills list` si existe la CLI). Surface mínimo:
+   contexto_inicial, consultar_memoria, recordar_evento,
+   crear_intencion, listar_intenciones, compromisos_abiertos,
+   obtener_linea_de_universo, proyectar_futuro, consolidar_memoria,
+   minar_scripts.
+3. Actualiza TUS reglas globales con el routing de memoria:
+   - Eventos con tiempo/emoción/acción, hitos, compromisos y
+     "recuérdame…" → recordar_evento / crear_intencion de Nous.
+   - Consulta episódica ("¿qué pasó?", contexto vivido, estados)
+     → consultar_memoria.
+   - Si ya usas otro store (memoria nativa u otros MCP), define
+     cuándo gana cada uno — nunca dupliques el mismo dato en dos.
+4. CRÍTICO — recordatorios: las intenciones temporales de Nous NO
+   disparan solas. No hay scheduler: disparan cuando se llama
+   consultar_memoria/contexto_inicial (temporales) o cuando llega
+   el evento trigger. Codifica en tus reglas: "al iniciar cada
+   sesión, llamar contexto_inicial" — sin eso, los recordatorios
+   quedan mudos.
+5. Si tu sistema soporta skills/agentes: instala los oficiales con
+   `nous skills install --target <tu directorio>` o escribe los
+   tuyos siguiendo TUS convenciones de formato — lo importante es
+   que tu yo-del-futuro sepa cuándo y cómo llamar a Nous.
+6. Reporta qué tocaste: archivo por archivo y qué regla quedó en
+   cada uno.
+```
+
+El paso 4 es el que marca la diferencia: Nous "recuerda cuando se lo
+consulta" — un agente que nunca consulta jamás recibe un recordatorio.
+
 ## CLI
 
 | Comando | Qué hace |
