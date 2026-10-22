@@ -57,6 +57,11 @@ class EventoRequest(BaseModel):
     con_quien: str | None = Field(default=None, max_length=128)
     scope: Literal["personal", "workspace"] = "personal"
     workspace: str | None = Field(default=None, max_length=64)
+    # ADR-003: campos declarados por el usuario (el estimador
+    # automático no los sobrescribe — ver fijar_tipo_memoria).
+    tipo_memoria: Literal["episodica", "semantica", "procedimental"] | None = None
+    estado_emocional: float | None = Field(default=None, ge=-1.0, le=1.0)
+    contexto: dict[str, Any] | None = Field(default=None)
 
 
 class CerrarLoopRequest(BaseModel):
@@ -125,6 +130,13 @@ class EventoResponse(BaseModel):
     scope: str = "personal"
     workspace_id: str | None = None
     autor_id: str | None = None
+    # ADR-003 — patrones de memoria (opcionales para compatibilidad).
+    tipo_memoria: str | None = None
+    estado_emocional: float | None = None
+    contexto: dict[str, Any] = Field(default_factory=dict)
+    weight: float = 1.0
+    archivado: bool = False
+    curado: bool = False
 
 
 class TagResponse(BaseModel):
@@ -428,3 +440,15 @@ class DecisionRequest(BaseModel):
     dilema: str = Field(min_length=1, max_length=2_000)
     opciones: list[str] | None = Field(default=None, max_length=6)
     workspace: str | None = Field(default=None, max_length=64)
+
+
+class CurarRequest(BaseModel):
+    """Cuerpo para curar/descurar un evento (inmunidad al olvido)."""
+
+    curado: bool = True
+
+
+class LicenciaActivarRequest(BaseModel):
+    """Cuerpo para activar una license key desde el dashboard (ADR-001)."""
+
+    key: str = Field(min_length=8, max_length=4_096)

@@ -356,6 +356,8 @@ def _modelo_a_dict(modelo: EventoModel) -> dict[str, Any]:
         ),
         "con_quien": modelo.con_quien,
         "tipo_memoria": modelo.tipo_memoria,
+        "estado_emocional": modelo.estado_emocional,
+        "contexto": dict(modelo.contexto or {}),
         "weight": modelo.weight,
         "archivado": modelo.archivado,
         "curado": modelo.curado,
@@ -416,6 +418,9 @@ async def _recordar(
     con_quien: str | None = None,
     scope: Literal["personal", "workspace"] = "personal",
     workspace: str | None = None,
+    tipo_memoria: str | None = None,
+    estado_emocional: float | None = None,
+    contexto_extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Persiste un evento con indexación write-behind.
 
@@ -438,6 +443,8 @@ async def _recordar(
         raise ErrorValidacion(
             f"tipo debe ser uno de {', '.join(TIPOS_EVENTO)}"
         )
+    if estado_emocional is not None and not -1.0 <= estado_emocional <= 1.0:
+        raise ErrorValidacion("estado_emocional debe estar entre -1.0 y 1.0")
     ts = timestamp_unix if timestamp_unix is not None else int(time.time())
     try:
         expira_en = parsear_ttl(ttl, ts)
@@ -472,11 +479,18 @@ async def _recordar(
             scope=scope,
             # Contexto de codificación (ADR-003): la búsqueda
             # dependiente de contexto premia recuerdos grabados
-            # en situaciones parecidas a la actual.
+            # en situaciones parecidas a la actual. El llamador
+            # puede aportar claves extra; las automáticas mandan.
             contexto={
+                **(contexto_extra or {}),
                 "hora_dia": time.localtime(ts).tm_hour,
                 "fuente": fuente,
             },
+            # Campos declarados (ADR-003): si vienen en el request,
+            # el estimador de indexación no los sobrescribe —
+            # fijar_tipo_memoria usa COALESCE.
+            tipo_memoria=tipo_memoria,
+            estado_emocional=estado_emocional,
         )
         await repo.crear(evento)
         await FuenteRepository(session, ctx).crear(fuente, tipo="agente")
@@ -1316,6 +1330,10 @@ async def recordar_evento(
     con_quien: str | None = None,
     scope: Literal["personal", "workspace"] = "personal",
     workspace: str | None = None,
+    tipo_memoria: (
+        Literal["episodica", "semantica", "procedimental"] | None
+    ) = None,
+    estado_emocional: float | None = None,
 ) -> dict[str, Any]:
     """Guarda un evento nuevo en la memoria persistente 4D del usuario.
 
@@ -1374,6 +1392,13 @@ async def recordar_evento(
             equipo del workspace).
         workspace: Slug o UUID del workspace destino (override del
             default de la key). Requiere membresía en el destino.
+        tipo_memoria: ADR-003 — "episodica", "semantica" o
+            "procedimental" si el llamador ya lo sabe (p. ej. un
+            check-in declara "episodica"). Omitir para que el
+            clasificador lo estime en la indexación.
+        estado_emocional: Valencia afectiva declarada entre -1.0 y
+            1.0 (negativo → positivo). Si viene, el estimador léxico
+            no la sobrescribe. Útil para check-ins somáticos.
 
     Returns:
         Dict con "id", "timestamp_unix", "dimension" usada,
@@ -1401,6 +1426,8 @@ async def recordar_evento(
         con_quien,
         scope,
         workspace,
+        tipo_memoria=tipo_memoria,
+        estado_emocional=estado_emocional,
     )
 
 
@@ -2348,6 +2375,29 @@ async def _restaurar_evento(
             f"el evento no existe o no está archivado: {evento_id}"
         )
     return {"id": str(eid), "restaurado": True}
+
+
+async def _marcar_curado(
+    evento_id: str,
+    curado: bool = True,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Marca una memoria como curada — inmune al olvido (ADR-003)."""
+    ctx = await _ctx_escritura(workspace)
+    try:
+        eid = uuid.UUID(str(evento_id))
+    except (ValueError, AttributeError) as e:
+        raise ErrorValidacion(
+            f"evento_id no es un UUID válido: {evento_id!r}"
+        ) from e
+    async with get_session(obtener_engine()) as session:
+        ok = await EventoRepository(session, ctx).marcar_curado(eid, curado)
+        await session.commit()
+    if not ok:
+        raise ErrorValidacion(
+            f"el evento no existe en tu visibilidad: {evento_id}"
+        )
+    return {"id": str(eid), "curado": curado}
 
 
 @mcp_server.tool()

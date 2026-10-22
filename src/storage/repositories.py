@@ -610,10 +610,21 @@ class EventoRepository:
             evento_id: UUID del evento.
             tipo_memoria: 'episodica' | 'semantica' | 'procedimental'.
             estado_emocional: Valence 0-1 si se estimó (opcional).
+
+        Nota:
+            COALESCE respeta valores ya declarados en el INSERT
+            (p. ej. check-in con valencia explícita) — el estimador
+            solo rellena huecos, nunca sobrescribe.
         """
-        valores: dict[str, Any] = {"tipo_memoria": tipo_memoria}
+        valores: dict[str, Any] = {
+            "tipo_memoria": func.coalesce(
+                EventoModel.tipo_memoria, tipo_memoria
+            )
+        }
         if estado_emocional is not None:
-            valores["estado_emocional"] = estado_emocional
+            valores["estado_emocional"] = func.coalesce(
+                EventoModel.estado_emocional, estado_emocional
+            )
         stmt = (
             update(EventoModel)
             .where(EventoModel.id == evento_id)
@@ -756,6 +767,31 @@ class EventoRepository:
                 razon_archivo=None,
                 weight=1.0,
             )
+        )
+        resultado = cast(
+            CursorResult[EventoModel], await self._session.execute(stmt)
+        )
+        return resultado.rowcount > 0
+
+    async def marcar_curado(
+        self, evento_id: uuid.UUID, curado: bool = True
+    ) -> bool:
+        """Marca o desmarca un evento como curado (inmune al olvido).
+
+        El tier curado es el MEMORY.md vivo (ADR-003): ni decay ni
+        consolidación lo tocan. Respeta la visibilidad del workspace.
+
+        Args:
+            evento_id: UUID del evento.
+            curado: True para curar, False para devolver al ciclo normal.
+
+        Returns:
+            True si el evento existía dentro de la visibilidad y cambió.
+        """
+        stmt = (
+            update(EventoModel)
+            .where(EventoModel.id == evento_id, *self._vis())
+            .values(curado=curado)
         )
         resultado = cast(
             CursorResult[EventoModel], await self._session.execute(stmt)

@@ -214,3 +214,87 @@ def licencia_activa() -> bool:
 def tiene_feature(nombre: str) -> bool:
     """True si la licencia activa habilita la feature Pro ``nombre``."""
     return licencia_actual().tiene_feature(nombre)
+
+
+def canjear_key_licencia(key: str) -> str:
+    """Canjea un serial por JWT si hay servicio de activación.
+
+    Única llamada de red del flujo de licencia (ADR-001): solo se
+    hace si ``NOUS_LICENSE_ACTIVATION_URL`` está configurada y la key
+    no es ya un JWT. Ante cualquier fallo se conserva la key original
+    (modelo de honor documentado).
+
+    Args:
+        key: License key introducida por el usuario.
+
+    Returns:
+        El JWT firmado, o la key original si no hay canje posible.
+    """
+    from src.config import get_settings
+
+    url = get_settings().license_activation_url
+    if not url or len(key.split(".")) == 3:
+        return key
+    try:
+        import httpx
+
+        resp = httpx.post(url, json={"license_key": key}, timeout=10)
+        resp.raise_for_status()
+        return str(resp.json()["jwt"])
+    except Exception as exc:
+        logger.warning(
+            "Servicio de activación inalcanzable (%s) — "
+            "se guarda la key tal cual",
+            exc,
+        )
+        return key
+
+
+def activar_licencia(key: str) -> Licencia:
+    """Valida y persiste una license key en ``~/.nous/license.jwt``.
+
+    Punto único de activación (ADR-001): lo usan el CLI
+    ``nous activate-license`` y ``POST /api/licencia/activar``.
+
+    Args:
+        key: License key (JWT RS256 u opaca de la landing).
+
+    Returns:
+        La licencia parseada, ya persistida.
+
+    Raises:
+        ErrorValidacion: Si la key es inválida o está expirada.
+    """
+    from src.config import get_settings
+    from src.core.exceptions import ErrorValidacion
+
+    persistida = canjear_key_licencia(key.strip())
+    lic = parsear_licencia(
+        persistida,
+        clave_publica_pem=get_settings().license_public_key,
+    )
+    if not lic.valida:
+        raise ErrorValidacion("license key inválida o expirada")
+    ruta = ruta_licencia()
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    ruta.write_text(persistida + "\n", encoding="utf-8")
+    return lic
+
+
+def desactivar_licencia() -> bool:
+    """Elimina el archivo de licencia local (vuelve a edición libre).
+
+    No toca ``NOUS_LICENSE_KEY`` — si esa env var sigue definida, la
+    licencia permanece activa aunque el archivo desaparezca.
+
+    Returns:
+        True si existía archivo persistido y se eliminó.
+    """
+    try:
+        ruta_licencia().unlink()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        logger.warning("No se pudo eliminar %s", ruta_licencia())
+        return False
+    return True

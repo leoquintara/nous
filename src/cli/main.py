@@ -331,46 +331,13 @@ def _cmd_doctor(como_json: bool) -> int:
     return 0 if datos["base_de_datos"] == "ok" else 1
 
 
-def _canjear_key_licencia(key: str) -> str:
-    """Canjea un serial por JWT si hay servicio de activación.
-
-    Única llamada de red del flujo de licencia (ADR-001): solo se
-    hace si ``NOUS_LICENSE_ACTIVATION_URL`` está configurada y la key
-    no es ya un JWT. Ante cualquier fallo se conserva la key original
-    (modelo de honor documentado).
-
-    Args:
-        key: License key introducida por el usuario.
-
-    Returns:
-        El JWT firmado, o la key original si no hay canje posible.
-    """
-    from src.config import get_settings
-
-    url = get_settings().license_activation_url
-    if not url or len(key.split(".")) == 3:
-        return key
-    try:
-        import httpx
-
-        resp = httpx.post(url, json={"license_key": key}, timeout=10)
-        resp.raise_for_status()
-        return str(resp.json()["jwt"])
-    except Exception as exc:
-        sys.stderr.write(
-            ui.aviso(
-                f"Servicio de activación inalcanzable ({exc}) — "
-                "se guarda la key tal cual.\n"
-            )
-        )
-        return key
-
-
 def _cmd_activate_license(key: str, como_json: bool) -> int:
     """Implementa ``nous activate-license`` (ADR-001).
 
     Valida la key en local y la persiste en ``~/.nous/license.jwt``;
     el servidor la descubre como fallback de ``NOUS_LICENSE_KEY``.
+    Delega en ``src.core.license.activar_licencia`` — el mismo punto
+    de activación que ``POST /api/licencia/activar``.
 
     Args:
         key: License key (JWT RS256 u opaca de la landing).
@@ -379,15 +346,12 @@ def _cmd_activate_license(key: str, como_json: bool) -> int:
     Returns:
         0 si la licencia quedó activada, 1 si es inválida/expirada.
     """
-    from src.config import get_settings
     from src.core import license as lic_mod
+    from src.core.exceptions import ErrorValidacion
 
-    persistida = _canjear_key_licencia(key.strip())
-    lic = lic_mod.parsear_licencia(
-        persistida,
-        clave_publica_pem=get_settings().license_public_key,
-    )
-    if not lic.valida:
+    try:
+        lic = lic_mod.activar_licencia(key)
+    except ErrorValidacion:
         if como_json:
             _json({"activada": False, "motivo": "key inválida o expirada"})
         else:
@@ -396,9 +360,6 @@ def _cmd_activate_license(key: str, como_json: bool) -> int:
                 + "\n"
             )
         return 1
-    ruta = lic_mod.ruta_licencia()
-    ruta.parent.mkdir(parents=True, exist_ok=True)
-    ruta.write_text(persistida + "\n", encoding="utf-8")
     if como_json:
         _json(
             {
@@ -406,14 +367,14 @@ def _cmd_activate_license(key: str, como_json: bool) -> int:
                 "tier": lic.tier,
                 "expira": lic.expira,
                 "firma_verificada": lic.firma_verificada,
-                "archivo": str(ruta),
+                "archivo": str(lic_mod.ruta_licencia()),
             }
         )
     else:
         firma = " (firma verificada)" if lic.firma_verificada else ""
         sys.stdout.write(
             ui.ok(f"Licencia {lic.tier} activada{firma}")
-            + ui.suave(f" → {ruta}")
+            + ui.suave(f" → {lic_mod.ruta_licencia()}")
             + "\n"
         )
     return 0

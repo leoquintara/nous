@@ -158,6 +158,30 @@ async def requerir_escritura(
     return ctx
 
 
+async def requerir_owner(request: Request) -> Contexto:
+    """Dependencia FastAPI: exige rol owner (acciones del servidor).
+
+    Para operaciones de ámbito global — licencia, límites del plan —
+    que no pertenecen a ningún workspace concreto.
+
+    Args:
+        request: Petición entrante.
+
+    Returns:
+        El contexto autenticado del owner.
+
+    Raises:
+        HTTPException: 401 sin credencial; 403 si no es owner.
+    """
+    ctx = await verificar_token(request)
+    if ctx.rol != "owner":
+        raise HTTPException(
+            status_code=403,
+            detail="Solo el owner del servidor puede hacer esto",
+        )
+    return ctx
+
+
 class BearerTokenMiddleware:
     """Middleware ASGI que exige bearer token en las superficies de datos.
 

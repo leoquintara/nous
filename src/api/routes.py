@@ -9,7 +9,11 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from src.api.auth import requerir_escritura, verificar_token
+from src.api.auth import (
+    requerir_escritura,
+    requerir_owner,
+    verificar_token,
+)
 from src.api.rate_limit import LimitadorIntentos
 from src.api.schemas import (
     BenchmarkResponse,
@@ -17,6 +21,7 @@ from src.api.schemas import (
     CanjearResponse,
     CerrarLoopRequest,
     CerrarObjetivoRequest,
+    CurarRequest,
     DecisionRequest,
     EventoRequest,
     EventoResponse,
@@ -31,6 +36,7 @@ from src.api.schemas import (
     IntencionRequest,
     InvitacionRequest,
     InvitacionResponse,
+    LicenciaActivarRequest,
     LicenciaResumen,
     LlamadaOrigenStats,
     LlamadaResponse,
@@ -191,6 +197,9 @@ async def crear_evento(peticion: EventoRequest) -> dict[str, Any]:
         peticion.con_quien,
         peticion.scope,
         peticion.workspace,
+        tipo_memoria=peticion.tipo_memoria,
+        estado_emocional=peticion.estado_emocional,
+        contexto_extra=peticion.contexto,
     )
 
 
@@ -1281,6 +1290,23 @@ async def restaurar_evento(
     return await tools_impl._restaurar_evento(evento_id, workspace)
 
 
+@router.post(
+    "/eventos/{evento_id}/curar",
+    dependencies=[Depends(requerir_escritura)],
+)
+async def curar_evento(
+    evento_id: str,
+    peticion: CurarRequest | None = None,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Marca la memoria como curada (o la descura con ``curado=false``).
+
+    Las curadas nunca decaen ni se archivan — son el MEMORY.md vivo.
+    """
+    curado = True if peticion is None else peticion.curado
+    return await tools_impl._marcar_curado(evento_id, curado, workspace)
+
+
 # ---------------------------------------------------------------------
 # ADR-002 Nivel 2 — consejero prescriptivo (feature Pro, licencia).
 # ---------------------------------------------------------------------
@@ -1296,3 +1322,51 @@ async def consultar_decision(peticion: DecisionRequest) -> dict[str, Any]:
     return await tools_impl._consultar_decision(
         peticion.dilema, peticion.opciones, peticion.workspace
     )
+
+
+# ---------------------------------------------------------------------
+# ADR-001 — gestión de licencia desde el dashboard (solo owner).
+# La licencia es del SERVIDOR, no de un workspace — por eso exige
+# ``requerir_owner`` y no ``requerir_escritura``.
+# ---------------------------------------------------------------------
+
+
+@router.post("/licencia/activar", dependencies=[Depends(requerir_owner)])
+async def activar_licencia_rest(
+    peticion: LicenciaActivarRequest,
+) -> dict[str, Any]:
+    """Activa una license key Pro validándola y persistiéndola local.
+
+    Equivale a ``nous activate-license`` — el archivo queda en
+    ``~/.nous/license.jwt`` y aplica al siguiente ``licencia_actual()``.
+    Solo el owner del servidor puede activarla.
+
+    Returns:
+        {activada, tier, expira, firma_verificada}.
+
+    Raises:
+        HTTPException 403: quien llama no es owner.
+        HTTPException 422: key inválida o expirada (vía NousError).
+    """
+    from src.core import license as lic_mod
+
+    lic = await asyncio.to_thread(lic_mod.activar_licencia, peticion.key)
+    return {
+        "activada": True,
+        "tier": lic.tier,
+        "expira": lic.expira,
+        "firma_verificada": lic.firma_verificada,
+    }
+
+
+@router.delete("/licencia", dependencies=[Depends(requerir_owner)])
+async def desactivar_licencia_rest() -> dict[str, Any]:
+    """Elimina el archivo de licencia local (vuelve a edición libre).
+
+    No afecta a ``NOUS_LICENSE_KEY``: si esa env var sigue definida,
+    la licencia permanece activa aunque el archivo se borre.
+    """
+    from src.core import license as lic_mod
+
+    quitada = await asyncio.to_thread(lic_mod.desactivar_licencia)
+    return {"activada": False, "archivo_eliminado": quitada}
