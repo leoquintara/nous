@@ -269,17 +269,20 @@ def _ejecutar_paso(nombre: str, comando: list[str]) -> PasoUpgrade:
 def _alembic_upgrade() -> PasoUpgrade:
     """Aplica las migraciones pendientes de la base de datos.
 
-    En proceso y sin ``alembic.ini`` — el wheel pip no lo lleva.
-    ``migrar_head`` resuelve ``script_location`` desde el paquete.
+    ``python -c … migrar_head()``: el wheel no lleva ``alembic.ini``,
+    así que ``python -m alembic`` no basta — el helper resuelve
+    ``script_location`` desde el paquete instalado. Sigue pasando por
+    ``_ejecutar_paso``: misma costura que el resto de comandos.
     """
-    nombre = "migraciones (alembic upgrade head)"
-    try:
-        from src.storage.migraciones import migrar_head
-
-        migrar_head()
-    except Exception as exc:  # noqa: BLE001 — el paso debe reportar, no explotar
-        return PasoUpgrade(nombre, False, str(exc))
-    return PasoUpgrade(nombre, True, "upgrade head aplicado")
+    return _ejecutar_paso(
+        "migraciones (alembic upgrade head)",
+        [
+            sys.executable,
+            "-c",
+            "from src.storage.migraciones import migrar_head; "
+            "migrar_head()",
+        ],
+    )
 
 
 def upgrade(*, no_migrate: bool = False) -> ResultadoUpgrade:
