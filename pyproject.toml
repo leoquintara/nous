@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "nous-memory"
-version = "0.1.1"
+version = "0.2.0"
 description = "Memoria persistente 4D para agentes de IA — servidor MCP local-first"
 authors = ["Quintara AI <licensing@quintarai.com>"]
 license = "AGPL-3.0-only"

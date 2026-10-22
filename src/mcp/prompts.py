@@ -7,6 +7,7 @@ qué resources leer y qué tools invocar, en qué orden.
 """
 
 from mcp.server.fastmcp.prompts import base
+
 from src.mcp.server import mcp_server
 
 

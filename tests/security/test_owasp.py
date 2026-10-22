@@ -8,6 +8,7 @@ en ``tests/integration/test_security_db.py``.
 
 import json
 import logging
+import shutil
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -270,6 +271,10 @@ class TestA05Misconfiguracion:
 class TestA06ComponentesVulnerables:
     """A06 — Vulnerable Components: secretos fuera de git, deps ancladas."""
 
+    @pytest.mark.skipif(
+        shutil.which("git") is None,
+        reason="git no está instalado en el contenedor efímero",
+    )
     def test_env_no_esta_versionado(self) -> None:
         """`.env` nunca debe estar en el índice de git (secretos)."""
         proc = subprocess.run(
@@ -278,6 +283,10 @@ class TestA06ComponentesVulnerables:
         )
         assert proc.stdout.strip() == ""
 
+    @pytest.mark.skipif(
+        shutil.which("git") is None,
+        reason="git no está instalado en el contenedor efímero",
+    )
     def test_env_en_gitignore(self) -> None:
         """`.env` está ignorado para que no se commitee por accidente."""
         proc = subprocess.run(

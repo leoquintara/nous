@@ -18,9 +18,8 @@ import sys
 import time
 from typing import Any, cast
 
-from pydantic import AnyUrl
-
 from mcp.types import CallToolResult, TextContent, TextResourceContents
+from pydantic import AnyUrl
 
 logger = logging.getLogger("nous.scripts.e2e_mcp")
 
@@ -35,8 +34,9 @@ def _texto(resultado: CallToolResult) -> str:
 
 async def _ejecutar_cliente(puerto: int, token: str) -> dict[str, Any]:
     """Conecta un cliente MCP real y ejercita todo el surface."""
-    from mcp import ClientSession
     from mcp.client.streamable_http import streamablehttp_client
+
+    from mcp import ClientSession
 
     # Sin slash final: /mcp/ redirige (307) y el cliente pierde el POST.
     url = f"http://127.0.0.1:{puerto}/mcp"
@@ -116,8 +116,12 @@ def _leer_token_env() -> str:
     return ""
 
 
-def _esperar_puerto(puerto: int, intentos: int = 50) -> bool:
-    """Espera a que el puerto responda (401 = vivo, la auth ya manda)."""
+def _esperar_puerto(puerto: int, intentos: int = 200) -> bool:
+    """Espera a que el puerto responda (401 = vivo, la auth ya manda).
+
+    El warmup de ONNX en frío tarda ~20s; 200×0.3s ≈ 60s de margen
+    sobrado para hosts lentos sin penalizar el caso rápido.
+    """
     import urllib.error
     import urllib.request
 

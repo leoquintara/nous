@@ -340,6 +340,10 @@ cp .env.example .env   # Editar con tus valores
 # Levantar infraestructura
 docker-compose up -d   # PostgreSQL 18 + pgvector
 
+# Con una PostgreSQL existente fuera del stack: define
+# NOUS_DATABASE_URL_DOCKER en .env y omite el servicio `db`:
+docker compose --profile app up -d --no-deps app
+
 # Instalar dependencias
 poetry install
 
