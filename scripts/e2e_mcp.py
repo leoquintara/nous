@@ -18,8 +18,9 @@ import sys
 import time
 from typing import Any, cast
 
-from mcp.types import CallToolResult, TextContent, TextResourceContents
 from pydantic import AnyUrl
+
+from mcp.types import CallToolResult, TextContent, TextResourceContents
 
 logger = logging.getLogger("nous.scripts.e2e_mcp")
 
@@ -34,9 +35,8 @@ def _texto(resultado: CallToolResult) -> str:
 
 async def _ejecutar_cliente(puerto: int, token: str) -> dict[str, Any]:
     """Conecta un cliente MCP real y ejercita todo el surface."""
-    from mcp.client.streamable_http import streamablehttp_client
-
     from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
 
     # Sin slash final: /mcp/ redirige (307) y el cliente pierde el POST.
     url = f"http://127.0.0.1:{puerto}/mcp"

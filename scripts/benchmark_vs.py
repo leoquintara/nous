@@ -24,9 +24,8 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any, cast
 
-from mcp.client.streamable_http import streamablehttp_client
-
 from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
 
 HECHOS_PRUEBA = [
     "Nous usa PostgreSQL con pgvector en el puerto 5433 para embeddings",
