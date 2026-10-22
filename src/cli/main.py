@@ -381,13 +381,24 @@ def _cmd_activate_license(key: str, como_json: bool) -> int:
 
 
 def _cmd_db(accion: str) -> int:
-    """Delega en Alembic las acciones de migración."""
-    from alembic.config import main as alembic_main
+    """Delega en Alembic las acciones de migración.
 
-    argv = accion.split()
-    if accion == "upgrade":
-        argv = ["upgrade", "head"]
-    alembic_main(argv=argv)
+    Sin ``alembic.ini`` — el wheel no lo lleva. ``config_alembic()``
+    resuelve ``script_location`` desde el paquete instalado, así que
+    ``nous db …`` funciona tras ``pip install`` desde cualquier cwd.
+    """
+    from alembic import command
+
+    from src.storage.migraciones import config_alembic
+
+    cfg = config_alembic()
+    acciones = {
+        "upgrade": lambda: command.upgrade(cfg, "head"),
+        "current": lambda: command.current(cfg),
+        "heads": lambda: command.heads(cfg),
+        "history": lambda: command.history(cfg),
+    }
+    acciones[accion]()
     return 0
 
 
