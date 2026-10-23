@@ -37,13 +37,20 @@ from src.core.memoria.consolidacion import (
     resumen_legible,
 )
 from src.core.memoria.contexto import ContextoActual, boost_contextual
+from src.core.memoria.decay import media_vida_dias, proxima_revision
+from src.core.memoria.diversidad import diversificar, es_casi_recuerdo
 from src.core.memoria.interferencia import detectar_conflicto
-from src.core.memoria.novedad import amplitud_con_sorpresa, sorpresa
+from src.core.memoria.novedad import (
+    amplitud_con_sorpresa,
+    marca_frontera,
+    sorpresa,
+)
 from src.core.memoria.prospectiva import (
     Intencion,
     TriggerTipo,
     disparada_por_evento,
 )
+from src.core.memoria.rem import pares_rem
 from src.core.memoria.retrieval import (
     COACTIVA_DELTA,
     COACTIVA_PESO_MAX,
@@ -69,6 +76,7 @@ from src.core.memoria.semanticizacion import (
     plan_gists,
 )
 from src.core.memoria.tipos import (
+    TipoMemoria,
     clasificar_tipo_memoria,
     estimar_estado_emocional,
 )
@@ -79,7 +87,12 @@ from src.core.memoria.trabajo import (
     esta_expirado,
     hay_cupo,
 )
-from src.core.modelos import Evento, ResultadoBusqueda, Trayectoria
+from src.core.modelos import (
+    Dimension,
+    Evento,
+    ResultadoBusqueda,
+    Trayectoria,
+)
 from src.core.reranker import ReordenadorLocal
 from src.core.temporal import detectar_trayectorias, proyectar
 from src.mcp.server import mcp_server
@@ -108,6 +121,10 @@ from src.storage.repositories import (
 
 logger = logging.getLogger(__name__)
 
+# Encadenamiento episódico: dos eventos del mismo origen dentro de
+# esta ventana se encadenan — la continuidad temporal del flujo.
+_VENTANA_ENCADENA_SEG = 3600
+
 _embeddings: GeneradorEmbeddings | None = None
 _busqueda: BusquedaHibrida4D | None = None
 _clasificador: ClasificadorDimensiones | None = None
@@ -126,6 +143,7 @@ class _ItemIndexacion:
     amplitud: float
     workspace_id: uuid.UUID
     autor_id: uuid.UUID | None
+    fuente: str = "mcp"
 
 
 @dataclass(frozen=True, slots=True)
@@ -599,6 +617,7 @@ async def _recordar(
             amplitud,
             ctx.workspace_id,
             ctx.usuario_id,
+            fuente,
         )
     )
     _registrar_actividad("store", contenido, [str(evento.id)])
@@ -708,6 +727,21 @@ async def _indexar_luego(engine: AsyncEngine, item: _ItemIndexacion) -> None:
                     await repo.actualizar_amplitud(
                         item.evento_id, nueva_amplitud
                     )
+                # Frontera por sorpresa (Neuro-3): un pico de novedad
+                # marca época — los periodos se delimitan solos por
+                # lo inesperado, no solo por calendario.
+                if marca_frontera(s):
+                    await repo.marcar_inaugura_epoca(item.evento_id)
+                # Encadenamiento episódico (Neuro-3): el evento se ata
+                # al anterior del mismo origen dentro de la ventana —
+                # el "¿y luego qué?" navegable por aristas encadena.
+                anterior = await repo.anterior_misma_fuente(
+                    item.fuente, item.ts, _VENTANA_ENCADENA_SEG
+                )
+                if anterior is not None and anterior.id != item.evento_id:
+                    await relaciones.vincular(
+                        item.evento_id, anterior.id, "encadena"
+                    )
                 # ADR-003: interferencia — marcador de superación +
                 # vecino semántico cercano = contradicción probable.
                 conflictos = detectar_conflicto(
@@ -727,6 +761,18 @@ async def _indexar_luego(engine: AsyncEngine, item: _ItemIndexacion) -> None:
                             "contradice",
                             conflicto.similitud,
                         )
+            # Cuarentena (Neuro-3): si la fuente no está aprobada, el
+            # evento queda indexado pero fuera del recall — sistema
+            # inmune contra inyección por fuentes no confiables.
+            if not await FuenteRepository(
+                session,
+                Contexto(
+                    usuario_id=item.autor_id,
+                    workspace_id=item.workspace_id,
+                    rol="member",
+                ),
+            ).es_confiable(item.fuente):
+                await repo.marcar_cuarentena(item.evento_id)
             # ADR-003: memoria prospectiva — el evento entrante puede
             # disparar intenciones event-based del workspace, aunque la
             # huella se haya fusionado (la mención ocurrió igual).
@@ -754,6 +800,28 @@ async def _disparar_intencion(
     ahora = int(time.time())
     if not await repo.marcar_ejecutada(modelo.id, ahora):
         return None
+    # Prep pack (Neuro-3): al disparar, la intención adjunta las
+    # memorias relacionadas — el recordatorio llega con el "por qué"
+    # listo, no solo con el "qué". El query del trigger es la mejor
+    # clave de búsqueda: corto y focal; la intención completa lleva
+    # palabras que el full-text AND exigiría en vano.
+    consulta_pack = str(
+        (modelo.trigger_valor or {}).get("query") or modelo.intencion
+    )
+    pack_rows = await EventoRepository(
+        session,
+        Contexto(
+            usuario_id=modelo.autor_id,
+            workspace_id=modelo.workspace_id,
+            rol="member",
+        ),
+    ).buscar_por_texto(consulta_pack, limite=3)
+    pack = [
+        {"id": str(e.id), "contenido": e.contenido[:200]}
+        for e, _ in pack_rows
+    ]
+    if pack:
+        await repo.fijar_preparacion(modelo.id, pack)
     recordatorio = EventoModel(
         timestamp_unix=ahora,
         dimension="conductual",
@@ -776,6 +844,7 @@ async def _disparar_intencion(
             0.7,
             modelo.workspace_id,
             modelo.autor_id,
+            "prospectiva",
         )
     )
     _registrar_actividad("intencion", modelo.intencion, [str(recordatorio.id)])
@@ -799,7 +868,7 @@ async def _evaluar_intenciones_evento(
             rol="member",
         ),
     )
-    pendientes = await repo.pendientes_por_evento()
+    pendientes = await repo.pendientes_por_evento(int(time.time()))
     for modelo in pendientes:
         intencion = Intencion(
             id=str(modelo.id),
@@ -809,6 +878,7 @@ async def _evaluar_intenciones_evento(
             creada_en=modelo.creada_en,
             ejecutada=modelo.ejecutada,
             cancelada=modelo.cancelada,
+            aplazada_hasta=modelo.aplazada_hasta,
         )
         if disparada_por_evento(intencion, item.contenido):
             await _disparar_intencion(session, repo, modelo)
@@ -837,6 +907,7 @@ async def _disparar_intenciones_temporales(
                     "id": str(evento.id),
                     "intencion": modelo.intencion,
                     "creada_en": modelo.creada_en,
+                    "preparacion": modelo.preparacion or [],
                 }
             )
     return recordatorios
@@ -884,6 +955,27 @@ async def _consolidar_luego(
                         extinciones.append((eid, nueva))
             if extinciones:
                 await EventoRepository(session).atenuar_valencias(extinciones)
+            # SRS (Neuro-3): cada evocación recalcula el repaso óptimo
+            # — el momento en que la curva cruzará el umbral de repaso.
+            # Repasar justo antes de olvidar es cuando más consolida.
+            repo_ev = EventoRepository(session)
+            modelos = await repo_ev.obtener_muchos(ids)
+            revisiones: dict[uuid.UUID, int] = {}
+            for m in modelos:
+                mv = media_vida_dias(
+                    Dimension(m.dimension),
+                    TipoMemoria(m.tipo_memoria) if m.tipo_memoria else None,
+                    m.amplitud,
+                    m.refuerzos,
+                    m.curado,
+                    primacia=m.inaugura_epoca,
+                    olvido_dirigido=m.olvido_dirigido,
+                )
+                proxima = proxima_revision(ahora, mv)
+                if proxima is not None:
+                    revisiones[m.id] = proxima
+            if revisiones:
+                await repo_ev.fijar_proximas_revisiones(revisiones)
             await session.commit()
     except Exception:  # noqa: BLE001 — el fallo no debe propagarse al loop
         logger.exception("no se pudieron consolidar efectos de evocación")
@@ -923,6 +1015,9 @@ async def _consultar(
                     "score_vectorial": 0.0,
                     "contexto_temporal": None,
                     "recordatorio": True,
+                    # Prep pack: memorias relacionadas adjuntadas al
+                    # disparar — el "por qué" listo para actuar.
+                    "preparacion": v["preparacion"],
                 }
                 for v in vencidas
             ]
@@ -934,6 +1029,7 @@ async def _consultar(
             ctx=ctx,
         )
         estado_actual: float | None = None
+        episodios_por_gist: dict[str, list[dict[str, Any]]] = {}
         if resultados:
             # ADR-003 patrón 6 — memoria dependiente de contexto/estado:
             # recuerdos codificados en una hora/fuente/estado parecidos
@@ -963,6 +1059,44 @@ async def _consultar(
                 for r in resultados
             ]
             resultados.sort(key=lambda r: r.score_final, reverse=True)
+            # Fan effect (Neuro-3): diez versiones casi idénticas de
+            # lo mismo compiten entre sí — la diversificación penaliza
+            # near-duplicados para que cada slot muestre algo distinto.
+            diversificados = diversificar(
+                [
+                    (r.evento_id, r.evento.contenido, r.score_final)
+                    for r in resultados
+                    if r.evento is not None
+                ]
+            )
+            ajuste = {eid: s for eid, _, s in diversificados}
+            resultados = [
+                (
+                    replace(r, score_final=ajuste[r.evento_id])
+                    if r.evento is not None
+                    and ajuste.get(r.evento_id, r.score_final)
+                    != r.score_final
+                    else r
+                )
+                for r in resultados
+            ]
+            resultados.sort(key=lambda r: r.score_final, reverse=True)
+            # Expansión de gist (Neuro-3): un resultado semántico
+            # trae sus episodios miembros — la abstracción llega
+            # con la evidencia que la sostiene.
+            gist_ids = [
+                uuid.UUID(r.evento_id)
+                for r in resultados
+                if r.evento is not None
+                and "gist" in (r.evento.tags or [])
+            ]
+            for gid in gist_ids:
+                miembros = await EventoRepository(
+                    session, ctx
+                ).episodios_de_gist(gid, limite=3)
+                episodios_por_gist[str(gid)] = [
+                    _evento_a_dict(Evento.desde_modelo(m)) for m in miembros
+                ]
     _encolar_fondo(
         _ItemConsolidacion(
             tuple(uuid.UUID(r.evento_id) for r in resultados),
@@ -976,7 +1110,18 @@ async def _consultar(
     )
     if resultados:
         _registrar_actividad("recall", consulta, [r.evento_id for r in resultados])
-    return recordatorios + [_resultado_a_dict(r) for r in resultados]
+    serializados = []
+    for r in resultados:
+        d = _resultado_a_dict(r)
+        # Tip-of-the-tongue: señal bajo el umbral de solidez se
+        # declara honestamente ("casi recuerdo esto…"), ni amnesia
+        # ni certeza fingida.
+        if es_casi_recuerdo(r.score_final):
+            d["casi_recuerdo"] = True
+        if r.evento_id in episodios_por_gist:
+            d["episodios"] = episodios_por_gist[r.evento_id]
+        serializados.append(d)
+    return recordatorios + serializados
 
 
 async def _tags(limite: int, workspace: str | None = None) -> list[dict[str, Any]]:
@@ -2361,9 +2506,6 @@ async def _cancelar_intencion(
 
 def _a_consolidable(modelo: EventoModel) -> EventoConsolidable:
     """Traduce el ORM al dataclass que la lógica de sueño consume."""
-    from src.core.memoria.tipos import TipoMemoria
-    from src.core.modelos import Dimension
-
     return EventoConsolidable(
         id=str(modelo.id),
         timestamp_unix=modelo.timestamp_unix,
@@ -2379,6 +2521,7 @@ def _a_consolidable(modelo: EventoModel) -> EventoConsolidable:
         archivado=modelo.archivado,
         curado=modelo.curado,
         inaugura_epoca=modelo.inaugura_epoca,
+        olvido_dirigido=modelo.olvido_dirigido,
     )
 
 
@@ -2437,6 +2580,26 @@ async def _consolidar(workspace: str | None = None) -> dict[str, Any]:
                     evento_gist.id, uuid.UUID(miembro), "gist"
                 )
             gist_ids.append(str(evento_gist.id))
+        # Fase REM (Neuro-3): pares de similitud media — distantes pero
+        # relacionados — reciben aristas ``rem``. Es la recombinación
+        # creativa del sueño: vínculos que el recall nunca descubriría.
+        pares_soñados = pares_rem(
+            [
+                EpisodioGist(
+                    id=str(e.id),
+                    contenido=e.contenido,
+                    weight=e.weight,
+                    embedding=e.embedding,
+                )
+                for e in episodicos
+            ]
+        )
+        rem_ids: list[tuple[str, str]] = []
+        for id_a, id_b in pares_soñados:
+            if await relaciones.vincular(
+                uuid.UUID(id_a), uuid.UUID(id_b), "rem"
+            ):
+                rem_ids.append((id_a, id_b))
         reporte = ReporteConsolidacionModel(
             workspace_id=ctx.workspace_id,
             ejecutado_en=plan.ejecutado_en,
@@ -2448,6 +2611,8 @@ async def _consolidar(workspace: str | None = None) -> dict[str, Any]:
                 "promovidos": plan.promover,
                 "archivados": plan.archivar,
                 "gists": gist_ids,
+                "rem": rem_ids,
+                "salvados": plan.salvados,
             },
         )
         await ReporteConsolidacionRepository(session, ctx).crear(reporte)
@@ -2464,6 +2629,10 @@ async def _consolidar(workspace: str | None = None) -> dict[str, Any]:
         "promovidos": len(plan.promover),
         "archivados": len(plan.archivar),
         "semanticos": len(gist_ids),
+        "rem": len(rem_ids),
+        # Beneficio del sueño: memorias que habrían cruzado el umbral
+        # de archivo pero el replay las rescató — retención salvada.
+        "salvados": len(plan.salvados),
         "resumen": resumen_legible(plan),
         "ventana_sugerida": {
             "hora_inicio": ventana.hora_inicio,
@@ -3137,3 +3306,241 @@ async def descartar_borrador(
         {id, descartado}.
     """
     return await _descartar_borrador(borrador_id, workspace)
+
+
+async def _olvidar_gradual(
+    evento_id: str,
+    olvidar: bool = True,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Marca/desmarca el olvido dirigido de un evento."""
+    ctx = await _ctx_escritura(workspace)
+    try:
+        eid = uuid.UUID(str(evento_id))
+    except (ValueError, AttributeError) as e:
+        raise ErrorValidacion(
+            f"evento_id no es un UUID válido: {evento_id!r}"
+        ) from e
+    async with get_session(obtener_engine()) as session:
+        repo = EventoRepository(session, ctx)
+        if await repo.obtener(eid) is None:
+            raise ErrorValidacion(f"el evento no existe: {evento_id}")
+        await repo.marcar_olvido_dirigido(eid, olvidar)
+        await session.commit()
+    return {"id": str(eid), "olvido_dirigido": olvidar}
+
+
+@mcp_server.tool()
+async def olvidar_gradual(
+    evento_id: str,
+    olvidar: bool = True,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Pide olvidar una memoria — decay acelerado, no borrado.
+
+    Olvido dirigido: la huella se disuelve ~3x más rápido por su curva
+    natural. NO es ``olvidar_evento`` (DELETE irreversible) ni archivar
+    (decisión del sueño): es dejar que el tiempo haga su trabajo antes
+    de tiempo. Con ``olvidar=false`` se revierte — la memoria vuelve a
+    su curva normal.
+
+    USAR CUANDO: el usuario pida "olvida esto" sin querer destruir la
+    historia — el olvido es gradual y auditable.
+
+    Args:
+        evento_id: UUID del evento a olvidar.
+        olvidar: True = acelerar el olvido; False = revertir.
+
+    Returns:
+        {id, olvido_dirigido}.
+    """
+    return await _olvidar_gradual(evento_id, olvidar, workspace)
+
+
+async def _repasos_pendientes(
+    limite: int = 20,
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Lista las memorias cuyo repaso óptimo (SRS) ya venció."""
+    ctx = await _ctx(workspace)
+    async with get_session(obtener_engine()) as session:
+        pendientes = await EventoRepository(
+            session, ctx
+        ).pendientes_revision(int(time.time()), limite=limite)
+        return [
+            {
+                "id": str(m.id),
+                "contenido": m.contenido[:200],
+                "timestamp_unix": m.timestamp_unix,
+                "proxima_revision": m.proxima_revision,
+                "dias_atraso": round(
+                    (int(time.time()) - (m.proxima_revision or 0))
+                    / 86400.0,
+                    2,
+                ),
+                "dimension": m.dimension,
+                "tipo_memoria": m.tipo_memoria,
+            }
+            for m in pendientes
+        ]
+
+
+@mcp_server.tool()
+async def repasos_pendientes(
+    limite: int = 20,
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Memorias que toca repasar — el SRS vive en la memoria misma.
+
+    Spaced repetition: cada evocación recalcula el repaso óptimo desde
+    la curva de retención (justo antes de olvidar es cuando el repaso
+    más consolida). Esta lista son las que ya vencieron, las más
+    atrasadas primero — consultarlas ES el repaso: refuerza la huella
+    y reprograma la siguiente revisión.
+
+    USAR CUANDO: quieras una sesión de repaso espaciado, o preguntar
+    "qué se me está olvidando".
+
+    Returns:
+        [{id, contenido, timestamp_unix, proxima_revision,
+          dias_atraso, dimension, tipo_memoria}].
+    """
+    return await _repasos_pendientes(limite, workspace)
+
+
+async def _aplazar_intencion(
+    intencion_id: str,
+    segundos: int = 3600,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Pospone el disparo de una intención prospectiva (snooze)."""
+    ctx = await _ctx_escritura(workspace)
+    try:
+        iid = uuid.UUID(str(intencion_id))
+    except (ValueError, AttributeError) as e:
+        raise ErrorValidacion(
+            f"intencion_id no es un UUID válido: {intencion_id!r}"
+        ) from e
+    hasta = int(time.time()) + max(0, segundos)
+    async with get_session(obtener_engine()) as session:
+        repo = IntencionProspectivaRepository(session, ctx)
+        if not await repo.aplazar(iid, hasta):
+            raise ErrorValidacion(
+                f"la intención no está pendiente o no existe: {intencion_id}"
+            )
+        await session.commit()
+    return {"id": str(iid), "aplazada_hasta": hasta, "segundos": segundos}
+
+
+@mcp_server.tool()
+async def aplazar_intencion(
+    intencion_id: str,
+    segundos: int = 3600,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Pospone una intención prospectiva — snooze, no cancelación.
+
+    La intención sigue viva: ni ejecutada ni cancelada, pero ningún
+    trigger la evalúa hasta ``segundos`` en el futuro. El snooze es
+    honesto — el recordatorio vuelve, no se finge atendido.
+
+    USAR CUANDO: el usuario diga "recuérdamelo luego" o "no ahora".
+
+    Args:
+        intencion_id: UUID de la intención a posponer.
+        segundos: Cuánto posponer (default 1h).
+
+    Returns:
+        {id, aplazada_hasta, segundos}.
+    """
+    return await _aplazar_intencion(intencion_id, segundos, workspace)
+
+
+async def _confiar_fuente(
+    nombre: str,
+    confiable: bool,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Aprueba o pone en cuarentena una fuente (sistema inmune)."""
+    ctx = await _ctx_escritura(workspace)
+    async with get_session(obtener_engine()) as session:
+        repo_f = FuenteRepository(session, ctx)
+        # Upsert: desconfiar preventivamente de una fuente que aún no
+        # escribió nada es legítimo — queda registrada y bloqueada
+        # antes de su primera inyección.
+        await repo_f.crear(nombre, tipo="agente")
+        if not await repo_f.marcar_confiable(nombre, confiable):
+            raise ErrorValidacion(f"la fuente no existe: {nombre}")
+        liberados = 0
+        if confiable:
+            # Aprobar la fuente saca del aislamiento a sus eventos —
+            # ya indexados, ahora también evocables.
+            liberados = await EventoRepository(
+                session, ctx
+            ).aprobar_cuarentena_fuente(nombre)
+        await session.commit()
+    return {"fuente": nombre, "confiable": confiable, "liberados": liberados}
+
+
+@mcp_server.tool()
+async def confiar_fuente(
+    nombre: str,
+    confiable: bool = True,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Aprueba o marca no-confiable una fuente de memorias.
+
+    Sistema inmune de la memoria: los eventos de una fuente no
+    confiable quedan en cuarentena — indexados pero invisibles al
+    recall, como un cuerpo que retiene al invasor sin dejarlo actuar.
+    Aprobar la fuente libera sus eventos de una vez.
+
+    USAR CUANDO: una fuente externa empiece a inyectar ruido o datos
+    dudosos, o para rehabilitar una fuente antes sospechosa.
+
+    Args:
+        nombre: Nombre de la fuente (``eventos.fuente``).
+        confiable: True = aprobar y liberar; False = cuarentena.
+
+    Returns:
+        {fuente, confiable, liberados}.
+    """
+    return await _confiar_fuente(nombre, confiable, workspace)
+
+
+async def _listar_cuarentena(
+    limite: int = 50,
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Lista los eventos retenidos en cuarentena del workspace."""
+    ctx = await _ctx(workspace)
+    async with get_session(obtener_engine()) as session:
+        cuarentena = await EventoRepository(
+            session, ctx
+        ).listar_cuarentena(limite=limite)
+        return [
+            {
+                "id": str(m.id),
+                "contenido": m.contenido[:200],
+                "timestamp_unix": m.timestamp_unix,
+                "fuente": m.fuente,
+                "dimension": m.dimension,
+            }
+            for m in cuarentena
+        ]
+
+
+@mcp_server.tool()
+async def listar_cuarentena(
+    limite: int = 50,
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Eventos en cuarentena — memorias retenidas por fuente no confiable.
+
+    USAR CUANDO: auditar qué quedó aislado antes de decidir si la
+    fuente se aprueba (``confiar_fuente``) o se poda.
+
+    Returns:
+        [{id, contenido, timestamp_unix, fuente, dimension}].
+    """
+    return await _listar_cuarentena(limite, workspace)

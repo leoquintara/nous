@@ -177,6 +177,11 @@ def _parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser(
+        "repasos",
+        help="Lista las memorias cuyo repaso óptimo (SRS) ya venció.",
+    )
+
+    sub.add_parser(
         "archivados",
         help="Lista las memorias archivadas por consolidación.",
     )
@@ -520,6 +525,7 @@ async def _consolidar_cli() -> dict[str, object]:
         decidir_consolidacion,
         resumen_legible,
     )
+    from src.core.memoria.rem import pares_rem
     from src.core.memoria.ritmos import ventana_optima_sueno
     from src.core.memoria.semanticizacion import EpisodioGist, plan_gists
     from src.core.memoria.tipos import TipoMemoria
@@ -556,6 +562,7 @@ async def _consolidar_cli() -> dict[str, object]:
                         archivado=m.archivado,
                         curado=m.curado,
                         inaugura_epoca=m.inaugura_epoca,
+                        olvido_dirigido=m.olvido_dirigido,
                     )
                     for m in modelos
                 ]
@@ -601,6 +608,25 @@ async def _consolidar_cli() -> dict[str, object]:
                         evento_gist.id, uuid.UUID(miembro), "gist"
                     )
                 gist_ids.append(str(evento_gist.id))
+            # Fase REM: pares de similitud media reciben aristas
+            # "rem" — la recombinación creativa del sueño.
+            pares_soñados = pares_rem(
+                [
+                    EpisodioGist(
+                        id=str(e.id),
+                        contenido=e.contenido,
+                        weight=e.weight,
+                        embedding=e.embedding,
+                    )
+                    for e in episodicos
+                ]
+            )
+            rem_ids: list[tuple[str, str]] = []
+            for id_a, id_b in pares_soñados:
+                if await relaciones.vincular(
+                    uuid.UUID(id_a), uuid.UUID(id_b), "rem"
+                ):
+                    rem_ids.append((id_a, id_b))
             await ReporteConsolidacionRepository(session).crear(
                 ReporteConsolidacionModel(
                     workspace_id=WORKSPACE_PERSONAL_ID,
@@ -613,6 +639,8 @@ async def _consolidar_cli() -> dict[str, object]:
                         "promovidos": plan.promover,
                         "archivados": plan.archivar,
                         "gists": gist_ids,
+                        "rem": rem_ids,
+                        "salvados": plan.salvados,
                     },
                 )
             )
@@ -626,6 +654,8 @@ async def _consolidar_cli() -> dict[str, object]:
             "promovidos": len(plan.promover),
             "archivados": len(plan.archivar),
             "semanticos": len(gist_ids),
+            "rem": len(rem_ids),
+            "salvados": len(plan.salvados),
             "resumen": resumen_legible(plan),
             "ventana_sugerida": {
                 "hora_inicio": ventana.hora_inicio,
@@ -655,6 +685,33 @@ async def _listar_intenciones_cli() -> list[dict[str, object]]:
                 "trigger_tipo": f.trigger_tipo,
                 "trigger_valor": f.trigger_valor,
                 "creada_en": f.creada_en,
+            }
+            for f in filas
+        ]
+    finally:
+        await engine.dispose()
+
+
+async def _listar_repasos_cli() -> list[dict[str, object]]:
+    """Lista las memorias cuyo repaso óptimo (SRS) ya venció."""
+    import time
+
+    from src.storage.database import crear_engine, get_session
+    from src.storage.repositories import EventoRepository
+
+    engine = crear_engine()
+    try:
+        ahora = int(time.time())
+        async with get_session(engine) as session:
+            filas = await EventoRepository(session).pendientes_revision(ahora)
+        return [
+            {
+                "id": str(f.id),
+                "contenido": f.contenido[:120],
+                "proxima_revision": f.proxima_revision,
+                "dias_atraso": round(
+                    (ahora - (f.proxima_revision or 0)) / 86400.0, 1
+                ),
             }
             for f in filas
         ]
@@ -996,6 +1053,16 @@ def _despachar(args: argparse.Namespace) -> int:
             sys.stdout.write(
                 f"{ui.acento(str(f['trigger_tipo']))} "
                 f"{f['intencion']}\n"
+            )
+        return 0
+    if comando == "repasos":
+        filas = asyncio.run(_listar_repasos_cli())
+        if not filas:
+            sys.stdout.write(ui.suave("Sin repasos pendientes.\n"))
+        for f in filas:
+            sys.stdout.write(
+                f"{ui.acento(str(f['dias_atraso']) + 'd')} "
+                f"{f['contenido']}\n"
             )
         return 0
     if comando == "archivados":

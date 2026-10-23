@@ -6,6 +6,10 @@ interferencia, dependencia de contexto/estado, minería de scripts,
 co-activación hebbiana, semanticización, memoria de trabajo, spacing
 effect, metamemoria, novedad/sorpresa, extinción emocional,
 reconsolidación lábil, ritmo circadiano y primacía de época.
+Neuro-3: diversificación (fan effect), tip-of-the-tongue, expansión
+de gist, olvido dirigido, fronteras por sorpresa, snooze prospectivo,
+beneficio del sueño, prep pack, SRS scheduling, chaining episódico,
+fase REM y cuarentena de fuentes.
 """
 
 from src.core.memoria.consolidacion import (
@@ -13,15 +17,33 @@ from src.core.memoria.consolidacion import (
     ResultadoConsolidacion,
     decidir_consolidacion,
 )
-from src.core.memoria.decay import media_vida_dias, retencion
+from src.core.memoria.decay import (
+    FACTOR_OLVIDO_DIRIGIDO,
+    media_vida_dias,
+    proxima_revision,
+    retencion,
+)
+from src.core.memoria.diversidad import (
+    UMBRAL_CASI,
+    diversificar,
+    es_casi_recuerdo,
+)
 from src.core.memoria.interferencia import Conflicto, detectar_conflicto
-from src.core.memoria.novedad import amplitud_con_sorpresa, sorpresa
+from src.core.memoria.novedad import (
+    UMBRAL_FRONTERA,
+    amplitud_con_sorpresa,
+    marca_frontera,
+    sorpresa,
+)
 from src.core.memoria.prospectiva import (
     Intencion,
     TriggerTipo,
+    aplazada,
+    aplazar,
     disparada_por_evento,
     disparada_por_tiempo,
 )
+from src.core.memoria.rem import pares_rem
 from src.core.memoria.retrieval import (
     COACTIVA_DELTA,
     COACTIVA_PESO_MAX,
@@ -60,7 +82,10 @@ __all__ = [
     "COACTIVA_DELTA",
     "COACTIVA_PESO_MAX",
     "ENSAYOS_PARA_PROMOVER",
+    "FACTOR_OLVIDO_DIRIGIDO",
     "TTL_BORRADOR_SEG",
+    "UMBRAL_CASI",
+    "UMBRAL_FRONTERA",
     "Conflicto",
     "EpisodioGist",
     "EventoConsolidable",
@@ -73,6 +98,8 @@ __all__ = [
     "VentanaSueno",
     "agrupar_episodios",
     "amplitud_con_sorpresa",
+    "aplazada",
+    "aplazar",
     "clasificar_tipo_memoria",
     "confianza_de_evento",
     "debe_promover",
@@ -80,6 +107,8 @@ __all__ = [
     "detectar_conflicto",
     "disparada_por_evento",
     "disparada_por_tiempo",
+    "diversificar",
+    "es_casi_recuerdo",
     "es_primero_de_epoca",
     "esta_expirado",
     "esta_labil",
@@ -87,9 +116,12 @@ __all__ = [
     "factor_espaciado",
     "hay_cupo",
     "intervalo_medio",
+    "marca_frontera",
     "media_vida_dias",
     "pares_coactivos",
+    "pares_rem",
     "plan_gists",
+    "proxima_revision",
     "retencion",
     "sorpresa",
     "ventana_labil",

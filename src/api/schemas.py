@@ -473,3 +473,24 @@ class BorradorRequest(BaseModel):
     contenido: str = Field(min_length=1, max_length=4_000)
     dimension: Literal["cognitiva", "somatica", "conductual"] = "cognitiva"
     workspace: str | None = Field(default=None, max_length=64)
+
+
+class OlvidoDirigidoRequest(BaseModel):
+    """Cuerpo para marcar/desmarcar el olvido dirigido (Neuro-3)."""
+
+    olvidar: bool = True
+    workspace: str | None = Field(default=None, max_length=64)
+
+
+class AplazarRequest(BaseModel):
+    """Cuerpo para posponer una intención prospectiva (snooze)."""
+
+    segundos: int = Field(default=3600, ge=0, le=31_536_000)
+    workspace: str | None = Field(default=None, max_length=64)
+
+
+class ConfianzaFuenteRequest(BaseModel):
+    """Cuerpo para aprobar/cuarentenar una fuente (Neuro-3)."""
+
+    confiable: bool = True
+    workspace: str | None = Field(default=None, max_length=64)

@@ -6,6 +6,7 @@ import pytest
 
 from src.core.memoria.decay import (
     media_vida_dias,
+    proxima_revision,
     retencion,
     retencion_actual,
 )
@@ -109,3 +110,46 @@ def test_retencion_actual_con_primacia_retiene_mas() -> None:
         ahora, creado, None, Dimension.COGNITIVA, primacia=True
     )
     assert primero > normal
+
+
+def test_olvido_dirigido_acelera_la_curva() -> None:
+    """Pedir olvidar reduce la media-vida a ~1/3 (≠ archivar)."""
+    normal = media_vida_dias(Dimension.COGNITIVA)
+    olvidado = media_vida_dias(
+        Dimension.COGNITIVA, olvido_dirigido=True
+    )
+    assert olvidado < normal * 0.4
+
+
+def test_olvido_dirigido_en_retencion_actual() -> None:
+    """La huella marcada retiene menos que la normal a igualdad."""
+    ahora = 1_800_000_000
+    creado = ahora - 30 * 86400
+    normal = retencion_actual(ahora, creado, None, Dimension.COGNITIVA)
+    olvidado = retencion_actual(
+        ahora, creado, None, Dimension.COGNITIVA, olvido_dirigido=True
+    )
+    assert olvidado < normal
+
+
+def test_curado_ignora_olvido_dirigido() -> None:
+    """El tier curado es inmune — ni el olvido dirigido lo toca."""
+    mv = media_vida_dias(
+        Dimension.COGNITIVA, curado=True, olvido_dirigido=True
+    )
+    assert math.isinf(mv)
+
+
+def test_proxima_revision_cae_tras_umbral() -> None:
+    """El SRS agenda el instante en que retención cruzará 0.6."""
+    desde = 1_800_000_000
+    proxima = proxima_revision(desde, media_vida=14.0)
+    assert proxima is not None
+    # media_vida * log2(1/0.6) = 14 * 0.737 ≈ 10.3 días después.
+    esperado = desde + int(14.0 * math.log2(1 / 0.6) * 86400)
+    assert proxima == esperado
+
+
+def test_proxima_revision_none_si_curado() -> None:
+    """Lo curado (media-vida infinita) nunca necesita repaso."""
+    assert proxima_revision(1_800_000_000, math.inf) is None

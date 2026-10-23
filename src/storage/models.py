@@ -249,6 +249,14 @@ class EventoModel(Base):
         Boolean, server_default="false"
     )
     labil_hasta: Mapped[int | None] = mapped_column(BigInteger)
+    # Neuro-3 — olvido dirigido, SRS y cuarentena por fuente.
+    olvido_dirigido: Mapped[bool] = mapped_column(
+        Boolean, server_default="false"
+    )
+    proxima_revision: Mapped[int | None] = mapped_column(BigInteger)
+    cuarentena: Mapped[bool] = mapped_column(
+        Boolean, server_default="false"
+    )
     contenido_tsv: Mapped[str | None] = mapped_column(
         TSVECTOR,
         Computed("to_tsvector('spanish', contenido)", persisted=True),
@@ -351,7 +359,8 @@ class RelacionModel(Base):
         CheckConstraint("origen_id < destino_id", name="ck_relaciones_orden"),
         CheckConstraint(
             "tipo IN ('explicita', 'semantica', 'reemplaza', 'cierra', "
-            "'contradice', 'coactiva', 'reconsolida', 'gist')",
+            "'contradice', 'coactiva', 'reconsolida', 'gist', "
+            "'rem', 'encadena')",
             name="ck_relaciones_tipo",
         ),
         UniqueConstraint(
@@ -391,6 +400,9 @@ class FuenteModel(Base):
     estado: Mapped[str] = mapped_column(String(20), server_default="activa")
     namespace: Mapped[str] = mapped_column(String(128), server_default="")
     rama_origen: Mapped[str] = mapped_column(String(64), server_default="main")
+    confiable: Mapped[bool] = mapped_column(
+        Boolean, server_default="true"
+    )
     extra: Mapped[dict[str, Any]] = mapped_column(
         "metadata", JSONB, server_default=text("'{}'::jsonb")
     )
@@ -706,6 +718,14 @@ class IntencionProspectivaModel(Base):
     )
     ejecutada_en: Mapped[int | None] = mapped_column(BigInteger)
     cancelada_en: Mapped[int | None] = mapped_column(BigInteger)
+    # Neuro-3 — snooze: la intención no dispara hasta ese momento
+    # (ni por tiempo ni por evento); None = sin aplazar.
+    aplazada_hasta: Mapped[int | None] = mapped_column(BigInteger)
+    # Neuro-3 — prep pack: memorias relacionadas adjuntadas al
+    # disparar (lista de {"id", "contenido"} — el "por qué" listo).
+    preparacion: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, server_default=text("'[]'::jsonb")
+    )
 
     __table_args__ = (
         CheckConstraint(

@@ -43,6 +43,9 @@ class Intencion:
     creada_en: int
     ejecutada: bool = False
     cancelada: bool = False
+    # Snooze (Neuro-3): si es futuro, la intención no dispara aunque
+    # su trigger haya vencido — ni por tiempo ni por evento.
+    aplazada_hasta: int | None = None
 
 
 class IntencionInvalidaError(ValueError):
@@ -79,6 +82,8 @@ def disparada_por_tiempo(intencion: Intencion, ahora_unix: int) -> bool:
     """
     if intencion.ejecutada or intencion.cancelada:
         return False
+    if aplazada(intencion, ahora_unix):
+        return False
     if intencion.trigger_tipo != TriggerTipo.TIME:
         return False
     ts = intencion.trigger_valor.get("ts")
@@ -107,6 +112,9 @@ def disparada_por_evento(
     """
     if intencion.ejecutada or intencion.cancelada:
         return False
+    # El snooze se filtra en la query (``aplazada_hasta`` es columna):
+    # a esta función solo llegan candidatas evaluables — mantenerla
+    # pura, sin reloj implícito.
     if intencion.trigger_tipo != TriggerTipo.EVENT:
         return False
     query = str(intencion.trigger_valor.get("query") or "")
@@ -148,3 +156,30 @@ def distancia_temporal(intencion: Intencion, ahora_unix: int) -> float:
     if not isinstance(ts, int | float):
         return math.inf
     return max(0.0, float(ts) - ahora_unix)
+
+
+def aplazada(intencion: Intencion, ahora_unix: int) -> bool:
+    """True si la intención está dormida por snooze.
+
+    ``aplazada_hasta`` silencia temporalmente la intención — como
+    posponer la alarma: sigue existiendo, solo que aún no suena.
+    Es campo dedicado (columna), no clave del trigger.
+    """
+    return (
+        intencion.aplazada_hasta is not None
+        and ahora_unix < intencion.aplazada_hasta
+    )
+
+
+def aplazar(
+    intencion: Intencion,
+    segundos: int,
+    ahora_unix: int,
+) -> int:
+    """Devuelve el ``aplazada_hasta`` resultante de posponer la intención.
+
+    Para triggers ``time`` el repo empuja además el ``ts`` del trigger
+    — un snooze de recordatorio mueve la hora, no solo silencia la
+    campana. Esta función solo calcula el instante destino.
+    """
+    return ahora_unix + max(0, segundos)

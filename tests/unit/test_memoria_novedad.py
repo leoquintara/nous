@@ -6,7 +6,9 @@ import pytest
 
 from src.core.memoria.novedad import (
     BOOST_SORPRESA_MAX,
+    UMBRAL_FRONTERA,
     amplitud_con_sorpresa,
+    marca_frontera,
     sorpresa,
 )
 
@@ -57,3 +59,11 @@ def test_amplitud_respeta_lo_trivial_declarado() -> None:
 def test_amplitud_respeta_el_techo_uno() -> None:
     """Ni la mayor sorpresa supera amplitud 1.0."""
     assert amplitud_con_sorpresa(0.9, 1.0) == 1.0
+
+
+def test_marca_frontera_solo_con_pico_de_sorpresa() -> None:
+    """La frontera de época se auto-marca sobre el umbral, no antes."""
+    assert marca_frontera(UMBRAL_FRONTERA)
+    assert marca_frontera(UMBRAL_FRONTERA + 0.2)
+    assert not marca_frontera(UMBRAL_FRONTERA - 0.01)
+    assert not marca_frontera(0.0)

@@ -43,6 +43,14 @@ _FACTOR_TIPO: dict[TipoMemoria, float] = {
 _FACTOR_AMPLITUD_MAX = 3.0
 # Cada refuerzo (evocación) añade ~20% de media-vida, hasta +100%.
 _FACTOR_REFUERZO = 0.2
+# Olvido dirigido: el usuario pidió olvidar — la curva se acelera ~3x.
+# No es archivo (eso es decisión del sueño, reversible por restaurar):
+# es dejar que la huella se disuelva antes de tiempo.
+FACTOR_OLVIDO_DIRIGIDO = 0.33
+# Spaced repetition: cuando la retención cae a este nivel, toca repaso.
+# 0.6 está sobre el umbral de archivo (0.15) — se repasa aún siendo
+# evocable, que es cuando el repaso más consolidación produce.
+RETENCION_REVISION = 0.6
 
 
 def media_vida_dias(
@@ -53,6 +61,7 @@ def media_vida_dias(
     curado: bool = False,
     intervalo_medio_dias: float | None = None,
     primacia: bool = False,
+    olvido_dirigido: bool = False,
 ) -> float:
     """Media-vida efectiva de una memoria en días.
 
@@ -67,6 +76,8 @@ def media_vida_dias(
             que ensayos masivos (None = sin accesos registrados).
         primacia: True si el evento inaugura época (efecto
             primacía — el primer evento de un periodo persiste más).
+        olvido_dirigido: True si el usuario pidió olvidar —
+            la media-vida se reduce a ~1/3 (olvido acelerado).
 
     Returns:
         Días hasta que la retención cae a 0.5. Con ``curado`` retorna
@@ -83,7 +94,37 @@ def media_vida_dias(
     base *= factor_espaciado(intervalo_medio_dias)
     if primacia:
         base *= FACTOR_PRIMACIA
+    if olvido_dirigido:
+        base *= FACTOR_OLVIDO_DIRIGIDO
     return base
+
+
+def proxima_revision(
+    desde_unix: int,
+    media_vida: float,
+    umbral: float = RETENCION_REVISION,
+) -> int | None:
+    """Timestamp del repaso óptimo — cuándo la retención cruzará el umbral.
+
+    Spaced repetition (SRS): la curva exponencial cruza ``umbral``
+    en ``media_vida · log2(1/umbral)`` días desde el último acceso.
+    Repasar justo antes de olvidar es cuando la evocación más
+    consolida (desirable difficulty).
+
+    Args:
+        desde_unix: Último acceso o creación (base del reloj).
+        media_vida: Media-vida efectiva en días (de
+            :func:`media_vida_dias`).
+        umbral: Retención que dispara el repaso (default 0.6).
+
+    Returns:
+        Timestamp unix de la revisión óptima, o ``None`` si la
+        media-vida es infinita (curado — nunca necesita repaso).
+    """
+    if math.isinf(media_vida) or media_vida <= 0:
+        return None
+    dias = media_vida * math.log2(1.0 / umbral)
+    return desde_unix + int(dias * 86400)
 
 
 def retencion(
@@ -114,6 +155,7 @@ def retencion_actual(
     refuerzos: int = 0,
     curado: bool = False,
     primacia: bool = False,
+    olvido_dirigido: bool = False,
 ) -> float:
     """Retención completa de un evento ahora (helper de una llamada).
 
@@ -140,5 +182,6 @@ def retencion_actual(
             curado,
             intervalo,
             primacia,
+            olvido_dirigido,
         ),
     )

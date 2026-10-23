@@ -23,6 +23,7 @@ def _evento(
     ultimo_acceso: int | None = None,
     archivado: bool = False,
     curado: bool = False,
+    olvido_dirigido: bool = False,
 ) -> EventoConsolidable:
     """Fabrica un candidato con la antigüedad indicada."""
     return EventoConsolidable(
@@ -37,6 +38,7 @@ def _evento(
         ultimo_acceso=ultimo_acceso,
         archivado=archivado,
         curado=curado,
+        olvido_dirigido=olvido_dirigido,
     )
 
 
@@ -110,3 +112,31 @@ def test_acceso_reciente_salva_al_viejo() -> None:
     )
     plan = decidir_consolidacion([viejo_pero_visto], ahora_unix=_AHORA)
     assert "a" not in plan.archivar
+
+
+def test_olvido_dirigido_archiva_antes() -> None:
+    """El olvido dirigido acelera el cruce del umbral de archivo."""
+    # Mismo evento: sin marcar sobrevive; marcado ya se archiva.
+    candidato = _evento("o", dias=45, amplitud=0.05)
+    plan_normal = decidir_consolidacion(
+        [candidato], ahora_unix=_AHORA
+    )
+    plan_olvidado = decidir_consolidacion(
+        [_evento("o", dias=45, amplitud=0.05, olvido_dirigido=True)],
+        ahora_unix=_AHORA,
+    )
+    assert len(plan_olvidado.archivar) >= len(plan_normal.archivar)
+
+
+def test_salvados_cuenta_retencion_rescatada() -> None:
+    """El beneficio del sueño lista qué el replay rescató del olvido."""
+    plan = decidir_consolidacion(
+        [
+            _evento("rescatable", dias=80, amplitud=0.2, refuerzos=8),
+            _evento("perdido", dias=200, amplitud=0.05),
+        ],
+        ahora_unix=_AHORA,
+    )
+    assert isinstance(plan.salvados, list)
+    # Nunca se archiva un salvado ni viceversa.
+    assert not set(plan.salvados) & set(plan.archivar)

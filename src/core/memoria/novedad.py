@@ -56,3 +56,19 @@ def amplitud_con_sorpresa(amplitud_base: float, sorpresa_val: float) -> float:
     de lo declarado ni supera 1.0.
     """
     return min(1.0, amplitud_base * (1.0 + BOOST_SORPRESA_MAX * sorpresa_val))
+
+
+# Un pico de sorpresa no solo amplifica: marca frontera de evento —
+# el cerebro corta la experiencia continua donde el modelo del mundo
+# falla (event segmentation). Ese corte = época nueva → primacía.
+UMBRAL_FRONTERA = 0.65
+
+
+def marca_frontera(sorpresa_val: float) -> bool:
+    """True si el pico de sorpresa debe inaugurar época.
+
+    Un evento muy inesperado segmenta la experiencia: es el primer
+    evento de una nueva época y recibe el boost de primacía en el
+    decay — el cerebro codifica los cortes con más fuerza.
+    """
+    return sorpresa_val >= UMBRAL_FRONTERA

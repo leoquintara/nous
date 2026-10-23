@@ -328,6 +328,10 @@ class EventoRepository:
             # Lo archivado por consolidación ya no es evocable —
             # sigue en la worldline (reversible), fuera del recall.
             EventoModel.archivado.is_(False),
+            # La cuarentena tampoco es evocable: la fuente no es
+            # confiable todavía — el evento existe pero no contamina
+            # el recall hasta aprobarse (sistema inmune).
+            EventoModel.cuarentena.is_(False),
             *self._vis(),
         ]
         if rama is not None:
@@ -365,6 +369,7 @@ class EventoRepository:
                 EventoModel.expira_en > ahora,
             ),
             EventoModel.archivado.is_(False),
+            EventoModel.cuarentena.is_(False),
             *self._vis(),
         ]
         if rama is not None:
@@ -440,6 +445,172 @@ class EventoRepository:
         )
         resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
         return resultado.rowcount
+
+    async def obtener_muchos(
+        self, eventos_ids: list[uuid.UUID]
+    ) -> Sequence[EventoModel]:
+        """Carga varios eventos por id en una sola query."""
+        if not eventos_ids:
+            return []
+        stmt = select(EventoModel).where(EventoModel.id.in_(eventos_ids))
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
+
+    async def pendientes_revision(
+        self, ahora: int, limite: int = 20
+    ) -> Sequence[EventoModel]:
+        """Memorias cuyo repaso óptimo (SRS) ya venció.
+
+        ``proxima_revision`` la fija la capa core desde la curva de
+        retención — este repo solo trae las vencidas, las más viejas
+        primero (las que más se están olvidando).
+        """
+        stmt = (
+            select(EventoModel)
+            .where(
+                EventoModel.proxima_revision.is_not(None),
+                EventoModel.proxima_revision <= ahora,
+                EventoModel.archivado.is_(False),
+                EventoModel.cuarentena.is_(False),
+                *self._vis(),
+            )
+            .order_by(EventoModel.proxima_revision)
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
+
+    async def fijar_proximas_revisiones(
+        self, revisiones: dict[uuid.UUID, int]
+    ) -> int:
+        """Fija ``proxima_revision`` por lote (UPDATE/CASE, no N+1).
+
+        Args:
+            revisiones: ``evento_id → timestamp`` del repaso óptimo.
+        """
+        if not revisiones:
+            return 0
+        whens = [
+            (EventoModel.id == eid, ts) for eid, ts in revisiones.items()
+        ]
+        stmt = (
+            update(EventoModel)
+            .where(EventoModel.id.in_(list(revisiones)))
+            .values(proxima_revision=case(*whens))
+        )
+        resultado = cast(
+            CursorResult[EventoModel], await self._session.execute(stmt)
+        )
+        return resultado.rowcount
+
+    async def marcar_olvido_dirigido(
+        self, evento_id: uuid.UUID, dirigido: bool
+    ) -> bool:
+        """Marca/desmarca el olvido dirigido de un evento."""
+        stmt = (
+            update(EventoModel)
+            .where(EventoModel.id == evento_id, *self._vis())
+            .values(olvido_dirigido=dirigido)
+        )
+        resultado = cast(
+            CursorResult[EventoModel], await self._session.execute(stmt)
+        )
+        return resultado.rowcount > 0
+
+    async def marcar_cuarentena(self, evento_id: uuid.UUID) -> None:
+        """Pone el evento en cuarentena (fuente no confiable)."""
+        await self._session.execute(
+            update(EventoModel)
+            .where(EventoModel.id == evento_id)
+            .values(cuarentena=True)
+        )
+
+    async def marcar_inaugura_epoca(self, evento_id: uuid.UUID) -> None:
+        """Marca el evento como frontera de época (sorpresa)."""
+        await self._session.execute(
+            update(EventoModel)
+            .where(EventoModel.id == evento_id)
+            .values(inaugura_epoca=True)
+        )
+
+    async def listar_cuarentena(
+        self, limite: int = 50
+    ) -> Sequence[EventoModel]:
+        """Eventos en cuarentena del workspace (auditoría inmune)."""
+        stmt = (
+            select(EventoModel)
+            .where(EventoModel.cuarentena.is_(True), *self._vis())
+            .order_by(EventoModel.timestamp_unix.desc())
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
+
+    async def aprobar_cuarentena_fuente(self, fuente: str) -> int:
+        """Saca de cuarentena todos los eventos de una fuente."""
+        stmt = (
+            update(EventoModel)
+            .where(
+                EventoModel.fuente == fuente,
+                EventoModel.cuarentena.is_(True),
+                *self._vis(),
+            )
+            .values(cuarentena=False)
+        )
+        resultado = cast(
+            CursorResult[EventoModel], await self._session.execute(stmt)
+        )
+        return resultado.rowcount
+
+    async def episodios_de_gist(
+        self, gist_id: uuid.UUID, limite: int = 3
+    ) -> Sequence[EventoModel]:
+        """Episodios miembros de un gist semántico (aristas ``gist``).
+
+        La relación es no dirigida: el gist puede ser origen o destino
+        del par canónico — el miembro es siempre el otro extremo.
+        """
+        otro = case(
+            (RelacionModel.origen_id == gist_id, RelacionModel.destino_id),
+            else_=RelacionModel.origen_id,
+        )
+        stmt = (
+            select(EventoModel)
+            .join(RelacionModel, EventoModel.id == otro)
+            .where(
+                RelacionModel.tipo == "gist",
+                or_(
+                    RelacionModel.origen_id == gist_id,
+                    RelacionModel.destino_id == gist_id,
+                ),
+            )
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
+
+    async def anterior_misma_fuente(
+        self, fuente: str, timestamp_unix: int, ventana_seg: int
+    ) -> EventoModel | None:
+        """Evento más reciente de la misma fuente dentro de la ventana.
+
+        El candidato a encadenar: el último evento del mismo origen
+        antes de este — la cadena episódica del flujo continuo.
+        """
+        stmt = (
+            select(EventoModel)
+            .where(
+                EventoModel.fuente == fuente,
+                EventoModel.timestamp_unix < timestamp_unix,
+                EventoModel.timestamp_unix >= timestamp_unix - ventana_seg,
+                EventoModel.archivado.is_(False),
+                *self._vis(),
+            )
+            .order_by(EventoModel.timestamp_unix.desc())
+            .limit(1)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalar_one_or_none()
 
     async def contar_podables(self, antes_de: int, amplitud_max: float, refuerzos_max: int) -> int:
         """Cuenta los eventos candidatos a poda sin eliminarlos.
@@ -1114,6 +1285,36 @@ class FuenteRepository:
             for fila in resultado.mappings().all()
         ]
 
+    async def es_confiable(self, nombre: str) -> bool:
+        """True si la fuente está aprobada (default: confiable).
+
+        Una fuente no registrada cuenta como confiable — la
+        cuarentena solo aplica a fuentes explícitamente marcadas
+        como no confiables, no a cualquier etiqueta nueva.
+        """
+        stmt = select(FuenteModel.confiable).where(
+            FuenteModel.nombre == nombre,
+            FuenteModel.workspace_id == self._ws,
+        )
+        resultado = await self._session.execute(stmt)
+        valor = resultado.scalar_one_or_none()
+        return True if valor is None else bool(valor)
+
+    async def marcar_confiable(self, nombre: str, confiable: bool) -> bool:
+        """Marca una fuente como confiable o en cuarentena."""
+        stmt = (
+            update(FuenteModel)
+            .where(
+                FuenteModel.nombre == nombre,
+                FuenteModel.workspace_id == self._ws,
+            )
+            .values(confiable=confiable)
+        )
+        resultado = cast(
+            CursorResult[FuenteModel], await self._session.execute(stmt)
+        )
+        return resultado.rowcount > 0
+
     async def crear(
         self,
         nombre: str,
@@ -1723,6 +1924,12 @@ class IntencionProspectivaRepository:
             IntencionProspectivaModel.trigger_tipo == "time",
             IntencionProspectivaModel.ejecutada.is_(False),
             IntencionProspectivaModel.cancelada.is_(False),
+            # Snooze: una intención aplazada no dispara aunque su
+            # trigger ya haya vencido — el aplazamiento manda.
+            or_(
+                IntencionProspectivaModel.aplazada_hasta.is_(None),
+                IntencionProspectivaModel.aplazada_hasta <= ahora_unix,
+            ),
             IntencionProspectivaModel.trigger_valor["ts"].astext.cast(
                 BigInteger
             )
@@ -1733,18 +1940,26 @@ class IntencionProspectivaRepository:
         return resultado.scalars().all()
 
     async def pendientes_por_evento(
-        self,
+        self, ahora_unix: int
     ) -> Sequence[IntencionProspectivaModel]:
         """Intenciones event-based pendientes — candidatas de evaluación.
 
+        Args:
+            ahora_unix: Timestamp actual; las aplazadas (snooze) con
+                ``aplazada_hasta > ahora`` quedan fuera.
+
         Returns:
             Intenciones con ``trigger_tipo='event'`` sin ejecutar ni
-            cancelar.
+            cancelar ni aplazar.
         """
         stmt = select(IntencionProspectivaModel).where(
             IntencionProspectivaModel.trigger_tipo == "event",
             IntencionProspectivaModel.ejecutada.is_(False),
             IntencionProspectivaModel.cancelada.is_(False),
+            or_(
+                IntencionProspectivaModel.aplazada_hasta.is_(None),
+                IntencionProspectivaModel.aplazada_hasta <= ahora_unix,
+            ),
             *self._vis(),
         )
         resultado = await self._session.execute(stmt)
@@ -1803,6 +2018,42 @@ class IntencionProspectivaRepository:
             await self._session.execute(stmt),
         )
         return resultado.rowcount > 0
+
+    async def aplazar(
+        self, intencion_id: uuid.UUID, hasta_unix: int
+    ) -> bool:
+        """Pospone el disparo de una intención pendiente (snooze).
+
+        La intención sigue viva — ni ejecutada ni cancelada — pero
+        ningún trigger la evalúa hasta ``hasta_unix``.
+
+        Returns:
+            True si la intención estaba pendiente y se aplazó.
+        """
+        stmt = (
+            update(IntencionProspectivaModel)
+            .where(
+                IntencionProspectivaModel.id == intencion_id,
+                IntencionProspectivaModel.ejecutada.is_(False),
+                IntencionProspectivaModel.cancelada.is_(False),
+            )
+            .values(aplazada_hasta=hasta_unix)
+        )
+        resultado = cast(
+            CursorResult[IntencionProspectivaModel],
+            await self._session.execute(stmt),
+        )
+        return resultado.rowcount > 0
+
+    async def fijar_preparacion(
+        self, intencion_id: uuid.UUID, pack: list[dict[str, Any]]
+    ) -> None:
+        """Adjunta el prep pack calculado al disparar la intención."""
+        await self._session.execute(
+            update(IntencionProspectivaModel)
+            .where(IntencionProspectivaModel.id == intencion_id)
+            .values(preparacion=pack)
+        )
 
 
 class ScriptRepository:

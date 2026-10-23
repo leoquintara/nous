@@ -16,12 +16,14 @@ from src.api.auth import (
 )
 from src.api.rate_limit import LimitadorIntentos
 from src.api.schemas import (
+    AplazarRequest,
     BenchmarkResponse,
     BorradorRequest,
     CanjearRequest,
     CanjearResponse,
     CerrarLoopRequest,
     CerrarObjetivoRequest,
+    ConfianzaFuenteRequest,
     CurarRequest,
     DecisionRequest,
     EventoRequest,
@@ -51,6 +53,7 @@ from src.api.schemas import (
     MiembroResumen,
     ObjetivoPatch,
     ObjetivoRequest,
+    OlvidoDirigidoRequest,
     PingsStats,
     PredecirRequest,
     ProveedorIARequest,
@@ -1413,3 +1416,61 @@ async def descartar_borrador_rest(
 ) -> dict[str, Any]:
     """Saca un borrador del buffer sin promoverlo."""
     return await tools_impl._descartar_borrador(borrador_id, workspace)
+
+
+# ── Neuro-3 ────────────────────────────────────────────────────
+
+
+@router.post(
+    "/eventos/{evento_id}/olvidar",
+    dependencies=[Depends(requerir_escritura)],
+)
+async def olvidar_gradual_rest(
+    evento_id: str, peticion: OlvidoDirigidoRequest
+) -> dict[str, Any]:
+    """Olvido dirigido: decay acelerado, no borrado ni archivo."""
+    return await tools_impl._olvidar_gradual(
+        evento_id, peticion.olvidar, peticion.workspace
+    )
+
+
+@router.get("/repasos", dependencies=[Depends(verificar_token)])
+async def repasos_pendientes_rest(
+    limite: int = 20, workspace: str | None = None
+) -> list[dict[str, Any]]:
+    """Memorias cuyo repaso óptimo (SRS) ya venció."""
+    return await tools_impl._repasos_pendientes(limite, workspace)
+
+
+@router.post(
+    "/intenciones/{intencion_id}/aplazar",
+    dependencies=[Depends(requerir_escritura)],
+)
+async def aplazar_intencion_rest(
+    intencion_id: str, peticion: AplazarRequest
+) -> dict[str, Any]:
+    """Pospone el disparo de una intención (snooze)."""
+    return await tools_impl._aplazar_intencion(
+        intencion_id, peticion.segundos, peticion.workspace
+    )
+
+
+@router.post(
+    "/fuentes/{nombre}/confianza",
+    dependencies=[Depends(requerir_escritura)],
+)
+async def confiar_fuente_rest(
+    nombre: str, peticion: ConfianzaFuenteRequest
+) -> dict[str, Any]:
+    """Aprueba una fuente (libera su cuarentena) o la aísla."""
+    return await tools_impl._confiar_fuente(
+        nombre, peticion.confiable, peticion.workspace
+    )
+
+
+@router.get("/cuarentena", dependencies=[Depends(verificar_token)])
+async def listar_cuarentena_rest(
+    limite: int = 50, workspace: str | None = None
+) -> list[dict[str, Any]]:
+    """Eventos retenidos en cuarentena por fuente no confiable."""
+    return await tools_impl._listar_cuarentena(limite, workspace)

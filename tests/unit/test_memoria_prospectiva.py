@@ -6,6 +6,8 @@ from src.core.memoria.prospectiva import (
     Intencion,
     IntencionInvalidaError,
     TriggerTipo,
+    aplazada,
+    aplazar,
     disparada_por_evento,
     disparada_por_tiempo,
     distancia_temporal,
@@ -25,6 +27,7 @@ def _intencion(
         creada_en=1_000_000,
         ejecutada=kw.get("ejecutada", False),
         cancelada=kw.get("cancelada", False),
+        aplazada_hasta=kw.get("aplazada_hasta"),
     )
 
 
@@ -94,3 +97,18 @@ def test_distancia_temporal() -> None:
         )
         == float("inf")
     )
+
+
+def test_snooze_silencia_el_disparo_temporal() -> None:
+    """Una intención aplazada no dispara aunque su ts ya venció."""
+    i = _intencion({"ts": 900}, aplazada_hasta=2_000)
+    assert aplazada(i, 1_000) is True
+    assert disparada_por_tiempo(i, 1_000) is False
+    # Pasado el snooze vuelve a disparar.
+    assert disparada_por_tiempo(i, 2_500) is True
+
+
+def test_aplazar_calcula_el_instante_destino() -> None:
+    """aplazar devuelve ahora+segundos (nunca en el pasado)."""
+    assert aplazar(_intencion({"ts": 0}), 3600, 1_000) == 4_600
+    assert aplazar(_intencion({"ts": 0}), -50, 1_000) == 1_000

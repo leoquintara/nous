@@ -52,6 +52,7 @@ class EventoConsolidable:
     archivado: bool
     curado: bool
     inaugura_epoca: bool = False
+    olvido_dirigido: bool = False
 
 
 @dataclass(slots=True)
@@ -66,6 +67,9 @@ class ResultadoConsolidacion:
     promover: list[str] = field(default_factory=list)
     archivar: dict[str, str] = field(default_factory=dict)
     ejecutado_en: int = 0
+    # Beneficio del sueño: memorias que habrían cruzado el umbral de
+    # archivo pero el replay las rescató — retención que se salvó.
+    salvados: list[str] = field(default_factory=list)
 
 
 def _factor_replay(evento: EventoConsolidable) -> float:
@@ -101,23 +105,7 @@ def decidir_consolidacion(
     for ev in eventos:
         if ev.archivado or ev.curado or ev.tipo in TIPOS_ACCIONABLES:
             continue
-        if (
-            ev.amplitud >= UMBRAL_PROMOCION_AMPLITUD
-            or ev.refuerzos >= UMBRAL_PROMOCION_REFUERZOS
-        ):
-            plan.promover.append(ev.id)
-            continue
-        if (
-            ev.amplitud >= UMBRAL_FORTALEZCA_AMPLITUD
-            or ev.refuerzos >= UMBRAL_FORTALEZCA_REFUERZOS
-        ):
-            plan.fortalecer[ev.id] = round(
-                min(ev.weight * _factor_replay(ev), 3.0), 4
-            )
-            continue
         dias = (ahora - ev.timestamp_unix) / 86400.0
-        if dias < DIAS_MINIMOS_PARA_ARCHIVAR:
-            continue
         intervalo = (
             (ev.ultimo_acceso - ev.timestamp_unix) / 86400.0 / ev.refuerzos
             if ev.refuerzos > 0
@@ -132,10 +120,32 @@ def decidir_consolidacion(
             ev.refuerzos,
             intervalo_medio_dias=intervalo,
             primacia=ev.inaugura_epoca,
+            olvido_dirigido=ev.olvido_dirigido,
         )
         desde = max(ev.timestamp_unix, ev.ultimo_acceso or 0)
         ret = retencion((ahora - desde) / 86400.0, vida)
-        if ret < UMBRAL_ARCHIVO_RETENCION:
+        archivable = dias >= DIAS_MINIMOS_PARA_ARCHIVAR and (
+            ret < UMBRAL_ARCHIVO_RETENCION
+        )
+        if (
+            ev.amplitud >= UMBRAL_PROMOCION_AMPLITUD
+            or ev.refuerzos >= UMBRAL_PROMOCION_REFUERZOS
+        ):
+            plan.promover.append(ev.id)
+            if archivable:
+                plan.salvados.append(ev.id)
+            continue
+        if (
+            ev.amplitud >= UMBRAL_FORTALEZCA_AMPLITUD
+            or ev.refuerzos >= UMBRAL_FORTALEZCA_REFUERZOS
+        ):
+            plan.fortalecer[ev.id] = round(
+                min(ev.weight * _factor_replay(ev), 3.0), 4
+            )
+            if archivable:
+                plan.salvados.append(ev.id)
+            continue
+        if archivable:
             plan.archivar[ev.id] = (
                 f"retencion={ret:.3f} tras {dias:.0f}d "
                 f"(vida={vida:.1f}d, sin acceso reciente)"
@@ -154,6 +164,8 @@ def resumen_legible(plan: ResultadoConsolidacion) -> str:
         partes.append(f"{len(plan.fortalecer)} fortalecidos")
     if plan.archivar:
         partes.append(f"{len(plan.archivar)} archivados (recuperables)")
+    if plan.salvados:
+        partes.append(f"{len(plan.salvados)} salvadas del olvido")
     return "Consolidación: " + ", ".join(partes) + "."
 
 

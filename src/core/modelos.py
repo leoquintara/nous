@@ -40,6 +40,8 @@ class Evento:
     estado_emocional: float | None = None
     weight: float = 1.0
     archivado: bool = False
+    tags: list[str] | None = None
+    tipo_memoria: str | None = None
 
     @classmethod
     def desde_modelo(cls, modelo: EventoModel) -> Evento:
@@ -55,6 +57,8 @@ class Evento:
             estado_emocional=modelo.estado_emocional,
             weight=modelo.weight,
             archivado=modelo.archivado,
+            tags=list(modelo.tags) if modelo.tags else None,
+            tipo_memoria=modelo.tipo_memoria,
         )
 
 
