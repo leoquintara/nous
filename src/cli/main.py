@@ -511,18 +511,24 @@ async def _poda(
 
 async def _consolidar_cli() -> dict[str, object]:
     """Ejecuta la corrida de sueño y persiste su reporte (ADR-003)."""
+    import time
+    import uuid
+
     from src.core.identidad import WORKSPACE_PERSONAL_ID
     from src.core.memoria.consolidacion import (
         EventoConsolidable,
         decidir_consolidacion,
         resumen_legible,
     )
+    from src.core.memoria.ritmos import ventana_optima_sueno
+    from src.core.memoria.semanticizacion import EpisodioGist, plan_gists
     from src.core.memoria.tipos import TipoMemoria
     from src.core.modelos import Dimension
     from src.storage.database import crear_engine, get_session
-    from src.storage.models import ReporteConsolidacionModel
+    from src.storage.models import EventoModel, ReporteConsolidacionModel
     from src.storage.repositories import (
         EventoRepository,
+        RelacionRepository,
         ReporteConsolidacionRepository,
     )
 
@@ -549,6 +555,7 @@ async def _consolidar_cli() -> dict[str, object]:
                         ultimo_acceso=m.ultimo_acceso,
                         archivado=m.archivado,
                         curado=m.curado,
+                        inaugura_epoca=m.inaugura_epoca,
                     )
                     for m in modelos
                 ]
@@ -559,6 +566,41 @@ async def _consolidar_cli() -> dict[str, object]:
                 plan.archivar,
                 plan.ejecutado_en,
             )
+            # Semanticización: episodios afines → gist semántico
+            # vinculado por aristas "gist" — el sueño abstrae.
+            episodicos = await repo.episodicas_con_embedding()
+            gists = plan_gists(
+                [
+                    EpisodioGist(
+                        id=str(e.id),
+                        contenido=e.contenido,
+                        weight=e.weight,
+                        embedding=e.embedding,
+                    )
+                    for e in episodicos
+                ]
+            )
+            ahora = int(time.time())
+            relaciones = RelacionRepository(session)
+            gist_ids: list[str] = []
+            for gist in gists:
+                evento_gist = EventoModel(
+                    timestamp_unix=ahora,
+                    dimension="cognitiva",
+                    fuente="sueno",
+                    contenido=gist.contenido,
+                    amplitud=0.8,
+                    tipo="hecho",
+                    tipo_memoria="semantica",
+                    tags=["gist", "semanticizacion"],
+                    workspace_id=WORKSPACE_PERSONAL_ID,
+                )
+                await repo.crear(evento_gist)
+                for miembro in gist.miembros:
+                    await relaciones.vincular(
+                        evento_gist.id, uuid.UUID(miembro), "gist"
+                    )
+                gist_ids.append(str(evento_gist.id))
             await ReporteConsolidacionRepository(session).crear(
                 ReporteConsolidacionModel(
                     workspace_id=WORKSPACE_PERSONAL_ID,
@@ -570,16 +612,26 @@ async def _consolidar_cli() -> dict[str, object]:
                         "fortalecidos": plan.fortalecer,
                         "promovidos": plan.promover,
                         "archivados": plan.archivar,
+                        "gists": gist_ids,
                     },
                 )
             )
             await session.commit()
+        ventana = ventana_optima_sueno(
+            [m.timestamp_unix for m in modelos]
+        )
         return {
             "evaluados": len(modelos),
             "fortalecidos": len(plan.fortalecer),
             "promovidos": len(plan.promover),
             "archivados": len(plan.archivar),
+            "semanticos": len(gist_ids),
             "resumen": resumen_legible(plan),
+            "ventana_sugerida": {
+                "hora_inicio": ventana.hora_inicio,
+                "duracion_horas": ventana.duracion_horas,
+                "confianza": ventana.confianza,
+            },
         }
     finally:
         await engine.dispose()
@@ -921,7 +973,17 @@ def _despachar(args: argparse.Namespace) -> int:
                     f"evaluados={datos['evaluados']} "
                     f"promovidos={datos['promovidos']} "
                     f"fortalecidos={datos['fortalecidos']} "
-                    f"archivados={datos['archivados']}"
+                    f"archivados={datos['archivados']} "
+                    f"semanticos={datos['semanticos']}"
+                )
+                + "\n"
+            )
+            v = cast(dict[str, Any], datos["ventana_sugerida"])
+            sys.stdout.write(
+                ui.suave(
+                    f"ventana óptima de sueño: {v['hora_inicio']}:00 "
+                    f"(+{v['duracion_horas']}h, "
+                    f"confianza {v['confianza']})"
                 )
                 + "\n"
             )

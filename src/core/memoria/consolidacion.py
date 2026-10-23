@@ -51,6 +51,7 @@ class EventoConsolidable:
     ultimo_acceso: int | None
     archivado: bool
     curado: bool
+    inaugura_epoca: bool = False
 
 
 @dataclass(slots=True)
@@ -117,8 +118,20 @@ def decidir_consolidacion(
         dias = (ahora - ev.timestamp_unix) / 86400.0
         if dias < DIAS_MINIMOS_PARA_ARCHIVAR:
             continue
+        intervalo = (
+            (ev.ultimo_acceso - ev.timestamp_unix) / 86400.0 / ev.refuerzos
+            if ev.refuerzos > 0
+            and ev.ultimo_acceso is not None
+            and ev.ultimo_acceso > ev.timestamp_unix
+            else None
+        )
         vida = media_vida_dias(
-            ev.dimension, ev.tipo_memoria, ev.amplitud, ev.refuerzos
+            ev.dimension,
+            ev.tipo_memoria,
+            ev.amplitud,
+            ev.refuerzos,
+            intervalo_medio_dias=intervalo,
+            primacia=ev.inaugura_epoca,
         )
         desde = max(ev.timestamp_unix, ev.ultimo_acceso or 0)
         ret = retencion((ahora - desde) / 86400.0, vida)

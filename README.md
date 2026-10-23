@@ -99,7 +99,7 @@ pensado para extraerse como paquete propio.
 ```
 ┌────────────┐  stdio/HTTP   ┌──────────────┐   ┌──────────────┐
 │ Agentes MCP │ ────────────▶ │  src/mcp     │   │  Dashboard   │
-└────────────┘               │  (35 tools)  │   │  repo propio │
+└────────────┘               │  (38 tools)  │   │  repo propio │
                              └──────┬───────┘   └──────┬───────┘
 ┌────────────┐                     │                   │ REST+token
 │  CLI `nous`│ ────────┐     ┌─────▼───────────────────▼─────┐

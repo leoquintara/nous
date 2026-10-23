@@ -68,3 +68,44 @@ def test_retencion_actual_usa_ultimo_acceso() -> None:
         ahora, hace_30d, acceso_reciente, Dimension.COGNITIVA
     )
     assert con_acceso > sin_acceso
+
+
+def test_spacing_effect_ensayos_espaciados_duran_mas() -> None:
+    """Repasos distribuidos consolidan más que repasos masivos."""
+    masivos = media_vida_dias(
+        Dimension.COGNITIVA, refuerzos=5, intervalo_medio_dias=0.1
+    )
+    espaciados = media_vida_dias(
+        Dimension.COGNITIVA, refuerzos=5, intervalo_medio_dias=5.0
+    )
+    assert espaciados > masivos
+
+
+def test_primacia_alarga_la_media_vida() -> None:
+    """El primer evento de una época persiste ~15% más."""
+    normal = media_vida_dias(Dimension.COGNITIVA)
+    primero = media_vida_dias(Dimension.COGNITIVA, primacia=True)
+    assert primero > normal
+
+
+def test_retencion_actual_aplica_spacing_automatico() -> None:
+    """El intervalo se deriva adentro: (acceso−creación)/refuerzos."""
+    ahora = 1_800_000_000
+    creado = ahora - 60 * 86400
+    acceso = ahora - 10 * 86400
+    # 4 refuerzos repartidos en 50 días → intervalo 12.5d → boost.
+    espaciada = retencion_actual(
+        ahora, creado, acceso, Dimension.COGNITIVA, refuerzos=4
+    )
+    assert espaciada > 0.0
+
+
+def test_retencion_actual_con_primacia_retiene_mas() -> None:
+    """La primacía también entra por el helper completo."""
+    ahora = 1_800_000_000
+    creado = ahora - 20 * 86400
+    normal = retencion_actual(ahora, creado, None, Dimension.COGNITIVA)
+    primero = retencion_actual(
+        ahora, creado, None, Dimension.COGNITIVA, primacia=True
+    )
+    assert primero > normal

@@ -17,6 +17,7 @@ from src.api.auth import (
 from src.api.rate_limit import LimitadorIntentos
 from src.api.schemas import (
     BenchmarkResponse,
+    BorradorRequest,
     CanjearRequest,
     CanjearResponse,
     CerrarLoopRequest,
@@ -1370,3 +1371,45 @@ async def desactivar_licencia_rest() -> dict[str, Any]:
 
     quitada = await asyncio.to_thread(lic_mod.desactivar_licencia)
     return {"activada": False, "archivo_eliminado": quitada}
+
+
+@router.post("/borradores", dependencies=[Depends(requerir_escritura)])
+async def crear_borrador(peticion: BorradorRequest) -> dict[str, Any]:
+    """Guarda un pensamiento volátil en la memoria de trabajo.
+
+    El buffer es corto a propósito: expira en ~30 min sin ensayo y
+    promueve a la línea de universo si se repite lo bastante.
+    """
+    return await tools_impl._recordar_borrador(
+        peticion.contenido, peticion.dimension, peticion.workspace
+    )
+
+
+@router.get("/borradores", dependencies=[Depends(verificar_token)])
+async def listar_borradores_rest(
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Borradores vivos del buffer de trabajo del workspace."""
+    return await tools_impl._listar_borrador(workspace)
+
+
+@router.post(
+    "/borradores/{borrador_id}/ensayar",
+    dependencies=[Depends(requerir_escritura)],
+)
+async def ensayar_borrador_rest(
+    borrador_id: str, workspace: str | None = None
+) -> dict[str, Any]:
+    """Ensaya un borrador — al llegar al umbral promueve a evento."""
+    return await tools_impl._ensayar_borrador(borrador_id, workspace)
+
+
+@router.delete(
+    "/borradores/{borrador_id}",
+    dependencies=[Depends(requerir_escritura)],
+)
+async def descartar_borrador_rest(
+    borrador_id: str, workspace: str | None = None
+) -> dict[str, Any]:
+    """Saca un borrador del buffer sin promoverlo."""
+    return await tools_impl._descartar_borrador(borrador_id, workspace)

@@ -11,16 +11,22 @@ explícitas a proveedores IA configurados por el usuario.
 MCP / REST / CLI  →  Core  →  Storage
 ```
 
-- **`src/mcp/`** — servidor MCP (stdio + streamable-HTTP, 25 tools):
+- **`src/mcp/`** — servidor MCP (stdio + streamable-HTTP, 38 tools):
   `recordar_evento`, `consultar_memoria`, `contexto_inicial`,
   `obtener_linea_de_universo`, `obtener_episodios`,
   `proyectar_trayectoria`, `compromisos_abiertos`, `cerrar_compromiso`,
   `listar/crear/cerrar_objetivo`, `olvidar_evento`, `listar_tags`,
   `listar_relaciones`, `listar_fuentes`, `ramificar_fuente`,
-  `leer/guardar_preferencia`, y gestión multi-tenant:
-  `listar/crear_workspace`, `listar_miembros`, `invitar_miembro`,
-  `cambiar_rol_miembro`, `quitar_miembro` (mismas reglas que REST:
-  gestión solo owners del destino). Solo orquesta; sin lógica de dominio.
+  `leer/guardar_preferencia`, patrones ADR-003:
+  `crear/listar/cancelar_intencion`, `consolidar_memoria`,
+  `listar_reportes_consolidacion`, `listar_archivados`,
+  `restaurar_evento`, `curar_evento`, `minar/listar_scripts`,
+  `consultar_decision`, memoria de trabajo:
+  `recordar/listar/ensayar/descartar_borrador`, y gestión
+  multi-tenant: `listar/crear_workspace`, `listar_miembros`,
+  `invitar_miembro`, `cambiar_rol_miembro`, `quitar_miembro`
+  (mismas reglas que REST: gestión solo owners del destino).
+  Solo orquesta; sin lógica de dominio.
 - **`src/api/`** — FastAPI: REST para el dashboard + MCP HTTP + auth
   Bearer + CORS restringido a los orígenes configurados.
 - **`src/cli/`** — argparse stdlib sobre `core`/`storage` (nunca duplica

@@ -69,7 +69,9 @@ async def test_recordar_evento_persiste_con_dimension_explicita(
             )
         ).one()
     assert fila[0] == "cognitiva"
-    assert fila[1] == pytest.approx(0.8)
+    # La sorpresa (prediction-error) puede premiar la amplitud en
+    # indexación: nunca la baja de lo declarado y nunca pasa de 1.0.
+    assert 0.8 <= fila[1] <= 1.0
     assert fila[2] is True
 
 

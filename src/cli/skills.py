@@ -148,6 +148,12 @@ Elige la tool según la forma de la pregunta:
 ## Interpretar resultados
 
 - `score_final` alto (>0.7) = evidencia fuerte. Cita los eventos.
+- `confianza` (0-1) = metamemoria: qué tan fiable es el recuerdo
+  devuelto según refuerzos, peso, antigüedad y si está archivado.
+  Confianza baja (<0.4) → preséntalo como "recuerdo tenue", no como
+  hecho; nunca pongas memoria frágil en un plan sin marcarla.
+- `evento.weight` = el peso vivo tras decay; `evento.archivado=true`
+  = está fuera del recall activo (restaurable).
 - `contexto_temporal` = la escena alrededor del recuerdo — suele
   contener el "porqué".
 - Los **tags** del evento (`evento.tags`) indican hilos temáticos;
@@ -589,8 +595,11 @@ description: Consolidación-sueño y olvido reversible de Nous —
 
 La memoria Nous se consolida como el cerebro al dormir:
 `consolidar_memoria()` reactiva huellas fuertes (replay), promueve
-lo destacado al tier **curado** (inmune al olvido) y **archiva** lo
-débil y sin acceso reciente — todo con reporte persistido.
+lo destacado al tier **curado** (inmune al olvido), **archiva** lo
+débil y sin acceso reciente, y **semanticiza**: clusters de
+episodios afines destilan un evento semántico (gist) vinculado a
+sus miembros — el sueño abstrae, no solo ordena. Todo con reporte
+persistido.
 
 ## Cuándo usarla
 
@@ -603,8 +612,11 @@ débil y sin acceso reciente — todo con reporte persistido.
 ## Cómo llamarla
 
 - `consolidar_memoria()` → `{evaluados, fortalecidos, promovidos,
-  archivados, resumen}`. Reporta el resumen al usuario en lenguaje
-  natural — el proceso es auditable, no silencioso.
+  archivados, semanticos, resumen, ventana_sugerida}`. Reporta el
+  resumen al usuario en lenguaje natural — el proceso es auditable,
+  no silencioso. `ventana_sugerida` indica la hora del día con
+  menos actividad histórica: la próxima corrida iría mejor ahí —
+  es recomendación, nunca un scheduler.
 - `listar_reportes_consolidacion()` → historial de corridas con
   `detalle` (ids y razones por acción). Usa esto para explicar qué
   pasó exactamente.
@@ -719,6 +731,46 @@ siguiente.
   "sueles hacer X después (confianza 0.7)" — nunca como orden.
 - No minar en bucle: una corrida tras una tanda de eventos es
   suficiente; los resultados persisten en `scripts_detectados`.
+"""
+
+
+_SKILL_TRABAJO = """---
+name: nous-trabajo
+description: Memoria de trabajo de Nous (buffer de Baddeley) —
+  recordar_borrador guarda pensamientos volátiles con TTL, ensayar
+  los promueve a la línea de universo y el resto expira. Usar para
+  hipótesis, borradores y contexto transitorio que aún no merece
+  largo plazo.
+---
+
+# Memoria de trabajo en Nous
+
+Los **borradores** son pensamientos volátiles: entran al buffer,
+viven ~30 minutos y desaparecen solos — el olvido del buffer es
+su función, no un bug. Solo lo que se **ensaya** (repite) lo
+bastante promueve a la línea de universo como evento real.
+
+## Cómo llamarlas
+
+- `recordar_borrador(contenido, dimension="cognitiva")` →
+  `{id, expira_en, capacidad}` — guarda un pensamiento temporal.
+  Capacidad máxima 15 borradores vivos por workspace.
+- `listar_borrador()` → `[{id, contenido, dimension, ensayos,
+  expira_en, expirado}]` — qué tiene el agente "en mente".
+- `ensayar_borrador(id)` → `{id, ensayos, promovido, evento_id?}` —
+  cada repaso suma; al llegar a 2 ensayos el borrador se gradúa
+  solo a evento y sale del buffer.
+- `descartar_borrador(id)` → `{id, descartado}` — saca el
+  pensamiento sin promoverlo.
+
+## Reglas
+
+- Borrador ≠ memoria: para algo durable usa `recordar_evento`
+  directamente; el buffer es para lo transitorio.
+- Promover manualmente NO existe: el ensayo es el mecanismo — si
+  el pensamiento importa, repásalo.
+- Un borrador expirado se pierde sin drama — es el equivalente
+  sano de "se me fue la idea"; no lo reportes como pérdida.
 """
 
 
@@ -924,6 +976,7 @@ ARTEFACTOS: tuple[Artefacto, ...] = (
     Artefacto("nous-consolidar", _SKILL_CONSOLIDAR, es_agente=False),
     Artefacto("nous-prospectiva", _SKILL_PROSPECTIVA, es_agente=False),
     Artefacto("nous-scripts", _SKILL_SCRIPTS, es_agente=False),
+    Artefacto("nous-trabajo", _SKILL_TRABAJO, es_agente=False),
     Artefacto("nous-decision", _SKILL_DECISION, es_agente=False),
     Artefacto("nous-keeper", _AGENT_MEMORISTA, es_agente=True),
     Artefacto("nous-curator", _AGENT_CURATOR, es_agente=True),

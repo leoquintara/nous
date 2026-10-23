@@ -465,3 +465,11 @@ class LicenciaActivarRequest(BaseModel):
     """Cuerpo para activar una license key desde el dashboard (ADR-001)."""
 
     key: str = Field(min_length=8, max_length=4_096)
+
+
+class BorradorRequest(BaseModel):
+    """Cuerpo para guardar un pensamiento volátil (buffer de trabajo)."""
+
+    contenido: str = Field(min_length=1, max_length=4_000)
+    dimension: Literal["cognitiva", "somatica", "conductual"] = "cognitiva"
+    workspace: str | None = Field(default=None, max_length=64)

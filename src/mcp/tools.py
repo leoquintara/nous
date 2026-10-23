@@ -38,10 +38,25 @@ from src.core.memoria.consolidacion import (
 )
 from src.core.memoria.contexto import ContextoActual, boost_contextual
 from src.core.memoria.interferencia import detectar_conflicto
+from src.core.memoria.novedad import amplitud_con_sorpresa, sorpresa
 from src.core.memoria.prospectiva import (
     Intencion,
     TriggerTipo,
     disparada_por_evento,
+)
+from src.core.memoria.retrieval import (
+    COACTIVA_DELTA,
+    COACTIVA_PESO_MAX,
+    confianza_de_evento,
+    esta_labil,
+    extincion_valencia,
+    pares_coactivos,
+    ventana_labil,
+)
+from src.core.memoria.ritmos import (
+    UMBRAL_EPOCA_SEG,
+    es_primero_de_epoca,
+    ventana_optima_sueno,
 )
 from src.core.memoria.scripts import (
     EventoSecuencia,
@@ -49,9 +64,20 @@ from src.core.memoria.scripts import (
 from src.core.memoria.scripts import (
     minar_scripts as _minar_patrones,
 )
+from src.core.memoria.semanticizacion import (
+    EpisodioGist,
+    plan_gists,
+)
 from src.core.memoria.tipos import (
     clasificar_tipo_memoria,
     estimar_estado_emocional,
+)
+from src.core.memoria.trabajo import (
+    CAPACIDAD_MAX,
+    TTL_BORRADOR_SEG,
+    debe_promover,
+    esta_expirado,
+    hay_cupo,
 )
 from src.core.modelos import Evento, ResultadoBusqueda, Trayectoria
 from src.core.reranker import ReordenadorLocal
@@ -59,6 +85,7 @@ from src.core.temporal import detectar_trayectorias, proyectar
 from src.mcp.server import mcp_server
 from src.storage.database import crear_engine, get_session, obtener_engine
 from src.storage.models import (
+    BorradorModel,
     EventoModel,
     IntencionProspectivaModel,
     ObjetivoModel,
@@ -67,6 +94,7 @@ from src.storage.models import (
     ScriptDetectadoModel,
 )
 from src.storage.repositories import (
+    BorradorRepository,
     ConfiguracionRepository,
     EventoRepository,
     FuenteRepository,
@@ -102,9 +130,16 @@ class _ItemIndexacion:
 
 @dataclass(frozen=True, slots=True)
 class _ItemConsolidacion:
-    """Trabajo de consolidación: refuerzo de huellas evocadas."""
+    """Trabajo de consolidación: efectos post-evocación.
+
+    Lleva las valencias codificadas de los resultados y el estado
+    actual para la extinción emocional — el worker aplica la lógica
+    pura de ``retrieval`` fuera del camino caliente.
+    """
 
     eventos_ids: tuple[uuid.UUID, ...]
+    valencias: tuple[tuple[uuid.UUID, float], ...] = ()
+    estado_actual: float | None = None
 
 
 _ItemFondo = _ItemIndexacion | _ItemConsolidacion
@@ -248,11 +283,11 @@ async def _ejecutar_lote(engine: AsyncEngine, items: list[_ItemFondo]) -> None:
     for item in items:
         if isinstance(item, _ItemIndexacion):
             await _indexar_luego(engine, item)
-    ids = [
-        eid for item in items if isinstance(item, _ItemConsolidacion) for eid in item.eventos_ids
+    consolidaciones = [
+        item for item in items if isinstance(item, _ItemConsolidacion)
     ]
-    if ids:
-        await _consolidar_luego(engine, ids)
+    if consolidaciones:
+        await _consolidar_luego(engine, consolidaciones)
 
 
 async def _drenar_fondo() -> None:
@@ -378,6 +413,8 @@ def _evento_a_dict(evento: Evento) -> dict[str, Any]:
         "refuerzos": evento.refuerzos,
         "contexto": evento.contexto,
         "estado_emocional": evento.estado_emocional,
+        "weight": evento.weight,
+        "archivado": evento.archivado,
     }
 
 
@@ -396,6 +433,17 @@ def _resultado_a_dict(r: ResultadoBusqueda) -> dict[str, Any]:
         "score_bm25": round(r.score_bm25, 4),
         "score_vectorial": round(r.score_vectorial, 4),
         "contexto_temporal": contexto,
+        # Metamemoria: qué tan fiable es el recuerdo devuelto —
+        # el agente pondera la respuesta en vez de tratar toda
+        # memoria como igualmente cierta.
+        "confianza": confianza_de_evento(
+            r.evento.refuerzos,
+            r.evento.weight,
+            r.evento.amplitud,
+            r.evento.timestamp_unix,
+            int(time.time()),
+            archivado=r.evento.archivado,
+        ),
     }
 
 
@@ -461,6 +509,13 @@ async def _recordar(
     tags_final = fusionar_tags(tags, contenido)
     async with get_session(obtener_engine()) as session:
         repo = EventoRepository(session, ctx)
+        previo_ts = await repo.timestamp_anterior(ts)
+        # Primacía de época: tras un hueco ≥ UMBRAL_EPOCA_SEG el
+        # evento inaugura periodo — el decay lo premia (~15% de
+        # media-vida). El primer evento de la historia también.
+        epoca_nueva = es_primero_de_epoca(
+            ts - previo_ts if previo_ts is not None else UMBRAL_EPOCA_SEG
+        )
         evento = EventoModel(
             timestamp_unix=ts,
             dimension=dimension,
@@ -491,6 +546,7 @@ async def _recordar(
             # fijar_tipo_memoria usa COALESCE.
             tipo_memoria=tipo_memoria,
             estado_emocional=estado_emocional,
+            inaugura_epoca=epoca_nueva,
         )
         await repo.crear(evento)
         await FuenteRepository(session, ctx).crear(fuente, tipo="agente")
@@ -506,13 +562,22 @@ async def _recordar(
                 raise ErrorValidacion(
                     f"reemplaza_id no es un UUID válido: {reemplaza_id!r}"
                 ) from e
-            if await repo.obtener(viejo_id) is None:
+            viejo = await repo.obtener(viejo_id)
+            if viejo is None:
                 raise ErrorValidacion(
                     f"el evento a reemplazar no existe: {reemplaza_id}"
                 )
             await repo.marcar_reemplazado(viejo_id, evento.id)
             if await relaciones.vincular(viejo_id, evento.id, "reemplaza"):
                 respuesta["reemplaza"] = str(viejo_id)
+            # Reconsolidación: el viejo quedó lábil al evocarlo
+            # hace poco — este supersede dentro de la ventana cuenta
+            # como reescritura de la huella viva, no solo versión.
+            if esta_labil(viejo.labil_hasta, int(time.time())):
+                await relaciones.vincular(
+                    viejo_id, evento.id, "reconsolida"
+                )
+                respuesta["reconsolida"] = True
         if relaciona_ids:
             for texto_id in relaciona_ids[:20]:
                 try:
@@ -617,6 +682,32 @@ async def _indexar_luego(engine: AsyncEngine, item: _ItemIndexacion) -> None:
                         item.contenido
                     ),
                 )
+                # Novedad / error de predicción: si el evento queda
+                # lejos de la trayectoria reciente, es inesperado —
+                # la sorpresa premia amplitud (dopamina = "esto
+                # importa"), nunca la baja.
+                recientes = await EventoRepository(
+                    session,
+                    Contexto(
+                        usuario_id=item.autor_id,
+                        workspace_id=item.workspace_id,
+                        rol="member",
+                    ),
+                ).embeddings_recientes(20)
+                s = sorpresa(
+                    vector,
+                    [
+                        r.embedding
+                        for r in recientes
+                        if r.embedding is not None
+                        and r.id != item.evento_id
+                    ],
+                )
+                nueva_amplitud = amplitud_con_sorpresa(item.amplitud, s)
+                if nueva_amplitud > item.amplitud:
+                    await repo.actualizar_amplitud(
+                        item.evento_id, nueva_amplitud
+                    )
                 # ADR-003: interferencia — marcador de superación +
                 # vecino semántico cercano = contradicción probable.
                 conflictos = detectar_conflicto(
@@ -751,14 +842,51 @@ async def _disparar_intenciones_temporales(
     return recordatorios
 
 
-async def _consolidar_luego(engine: AsyncEngine, eventos_ids: list[uuid.UUID]) -> None:
-    """Persiste los refuerzos de evocación fuera del camino caliente."""
+async def _consolidar_luego(
+    engine: AsyncEngine, items: list[_ItemConsolidacion]
+) -> None:
+    """Persiste los efectos post-evocación fuera del camino caliente.
+
+    Por lote de consultas: refuerzo + ventana lábil (reconsolidación),
+    aristas coactivas (hebbiana) y extinción de valencias en recuerdos
+    evocados en estado neutro.
+    """
     try:
+        ids = [eid for item in items for eid in item.eventos_ids]
+        if not ids:
+            return
         async with get_session(engine) as session:
-            await EventoRepository(session).reforzar(eventos_ids)
+            ahora = int(time.time())
+            await EventoRepository(session).reforzar(
+                ids, labil_hasta=ventana_labil(ahora)
+            )
+            relaciones = RelacionRepository(session)
+            for item in items:
+                if len(item.eventos_ids) >= 2:
+                    await relaciones.reforzar_coactivas(
+                        [
+                            (
+                                uuid.UUID(a) if isinstance(a, str) else a,
+                                uuid.UUID(b) if isinstance(b, str) else b,
+                            )
+                            for a, b in pares_coactivos(
+                                [str(e) for e in item.eventos_ids]
+                            )
+                        ],
+                        COACTIVA_DELTA,
+                        COACTIVA_PESO_MAX,
+                    )
+            extinciones: list[tuple[uuid.UUID, float]] = []
+            for item in items:
+                for eid, valencia in item.valencias:
+                    nueva = extincion_valencia(valencia, item.estado_actual)
+                    if nueva is not None:
+                        extinciones.append((eid, nueva))
+            if extinciones:
+                await EventoRepository(session).atenuar_valencias(extinciones)
             await session.commit()
     except Exception:  # noqa: BLE001 — el fallo no debe propagarse al loop
-        logger.exception("no se pudieron consolidar refuerzos")
+        logger.exception("no se pudieron consolidar efectos de evocación")
 
 
 async def _consultar(
@@ -805,16 +933,18 @@ async def _consultar(
             rama=rama,
             ctx=ctx,
         )
+        estado_actual: float | None = None
         if resultados:
             # ADR-003 patrón 6 — memoria dependiente de contexto/estado:
             # recuerdos codificados en una hora/fuente/estado parecidos
             # al actual suben de rango. Solo premia, nunca excluye.
+            estado_actual = await EventoRepository(
+                session, ctx
+            ).ultimo_estado_somatico()
             actual = ContextoActual(
                 hora_dia=time.localtime().tm_hour,
                 fuente="mcp",
-                estado_emocional=await EventoRepository(
-                    session, ctx
-                ).ultimo_estado_somatico(),
+                estado_emocional=estado_actual,
             )
             resultados = [
                 (
@@ -833,7 +963,17 @@ async def _consultar(
                 for r in resultados
             ]
             resultados.sort(key=lambda r: r.score_final, reverse=True)
-    _encolar_fondo(_ItemConsolidacion(tuple(uuid.UUID(r.evento_id) for r in resultados)))
+    _encolar_fondo(
+        _ItemConsolidacion(
+            tuple(uuid.UUID(r.evento_id) for r in resultados),
+            tuple(
+                (uuid.UUID(r.evento_id), r.evento.estado_emocional)
+                for r in resultados
+                if r.evento is not None and r.evento.estado_emocional is not None
+            ),
+            estado_actual,
+        )
+    )
     if resultados:
         _registrar_actividad("recall", consulta, [r.evento_id for r in resultados])
     return recordatorios + [_resultado_a_dict(r) for r in resultados]
@@ -2238,21 +2378,65 @@ def _a_consolidable(modelo: EventoModel) -> EventoConsolidable:
         ultimo_acceso=modelo.ultimo_acceso,
         archivado=modelo.archivado,
         curado=modelo.curado,
+        inaugura_epoca=modelo.inaugura_epoca,
     )
 
 
 async def _consolidar(workspace: str | None = None) -> dict[str, Any]:
-    """Ejecuta la corrida de consolidación-sueño y persiste su reporte."""
+    """Ejecuta la corrida de consolidación-sueño y persiste su reporte.
+
+    Además del replay/promoción/archivo de ADR-003, el sueño ahora
+    **semanticiza**: clusters de episodios afines destilan un evento
+    ``semantica`` (fuente ``sueno``) vinculado a sus miembros por
+    aristas ``gist`` — la memoria abstrae, no solo guarda.
+    """
     ctx = await _ctx_escritura(workspace)
+    ahora = int(time.time())
     async with get_session(obtener_engine()) as session:
-        eventos = await EventoRepository(session, ctx).listar_para_consolidacion()
+        repo = EventoRepository(session, ctx)
+        eventos = await repo.listar_para_consolidacion()
         plan = decidir_consolidacion([_a_consolidable(e) for e in eventos])
-        await EventoRepository(session, ctx).aplicar_consolidacion(
+        await repo.aplicar_consolidacion(
             plan.fortalecer,
             plan.promover,
             plan.archivar,
             plan.ejecutado_en,
         )
+        # Semanticización: episodios afines → gist semántico.
+        episodicos = await repo.episodicas_con_embedding()
+        gists = plan_gists(
+            [
+                EpisodioGist(
+                    id=str(e.id),
+                    contenido=e.contenido,
+                    weight=e.weight,
+                    embedding=e.embedding,
+                )
+                for e in episodicos
+            ]
+        )
+        relaciones = RelacionRepository(session, ctx)
+        gist_ids: list[str] = []
+        for gist in gists:
+            evento_gist = EventoModel(
+                timestamp_unix=ahora,
+                dimension="cognitiva",
+                fuente="sueno",
+                contenido=gist.contenido,
+                amplitud=0.8,
+                tipo="hecho",
+                tipo_memoria="semantica",
+                tags=["gist", "semanticizacion"],
+                workspace_id=ctx.workspace_id,
+                autor_id=ctx.usuario_id,
+                scope="personal",
+            )
+            await repo.crear(evento_gist)
+            for miembro in gist.miembros:
+                await relaciones.vincular(
+                    evento_gist.id, uuid.UUID(miembro), "gist"
+                )
+            gist_ids.append(str(evento_gist.id))
         reporte = ReporteConsolidacionModel(
             workspace_id=ctx.workspace_id,
             ejecutado_en=plan.ejecutado_en,
@@ -2263,17 +2447,29 @@ async def _consolidar(workspace: str | None = None) -> dict[str, Any]:
                 "fortalecidos": plan.fortalecer,
                 "promovidos": plan.promover,
                 "archivados": plan.archivar,
+                "gists": gist_ids,
             },
         )
         await ReporteConsolidacionRepository(session, ctx).crear(reporte)
         await session.commit()
+    # Ritmo circadiano: sugiere la ventana más quieta — recomendación,
+    # nunca un scheduler (el sueño de Nous lo decide el operador).
+    ventana = ventana_optima_sueno(
+        [e.timestamp_unix for e in eventos]
+    )
     return {
         "ejecutado_en": plan.ejecutado_en,
         "evaluados": len(eventos),
         "fortalecidos": len(plan.fortalecer),
         "promovidos": len(plan.promover),
         "archivados": len(plan.archivar),
+        "semanticos": len(gist_ids),
         "resumen": resumen_legible(plan),
+        "ventana_sugerida": {
+            "hora_inicio": ventana.hora_inicio,
+            "duracion_horas": ventana.duracion_horas,
+            "confianza": ventana.confianza,
+        },
     }
 
 
@@ -2749,3 +2945,195 @@ async def consultar_decision(
         confianza, riesgo_oculto, motor, contexto}.
     """
     return await _consultar_decision(dilema, opciones, workspace)
+
+
+def _borrador_a_dict(b: BorradorModel, ahora: int) -> dict[str, Any]:
+    """Serializa un borrador del buffer de trabajo."""
+    return {
+        "id": str(b.id),
+        "contenido": b.contenido,
+        "dimension": b.dimension,
+        "ensayos": b.ensayos,
+        "creado_en": b.creado_en,
+        "expira_en": b.expira_en,
+        "expirado": esta_expirado(b.creado_en, ahora, b.expira_en - b.creado_en),
+    }
+
+
+async def _recordar_borrador(
+    contenido: str,
+    dimension: Literal["cognitiva", "somatica", "conductual"],
+    workspace: str | None,
+) -> dict[str, Any]:
+    """Guarda un borrador si el buffer tiene cupo."""
+    ctx = await _ctx_escritura(workspace)
+    ahora = int(time.time())
+    async with get_session(obtener_engine()) as session:
+        repo = BorradorRepository(session, ctx)
+        activos = await repo.contar_vigentes(ahora)
+        if not hay_cupo(activos):
+            raise ErrorValidacion(
+                f"memoria de trabajo llena ({CAPACIDAD_MAX} borradores) — "
+                "ensaya uno para promoverlo o descarta"
+            )
+        b = await repo.crear(
+            BorradorModel(
+                contenido=contenido,
+                dimension=dimension,
+                creado_en=ahora,
+                expira_en=ahora + TTL_BORRADOR_SEG,
+                workspace_id=ctx.workspace_id,
+                autor_id=ctx.usuario_id,
+            )
+        )
+        await session.commit()
+    return {
+        "id": str(b.id),
+        "expira_en": b.expira_en,
+        "capacidad": f"{activos + 1}/{CAPACIDAD_MAX}",
+    }
+
+
+async def _listar_borrador(
+    workspace: str | None,
+) -> list[dict[str, Any]]:
+    """Borradores vivos del buffer (los no expirados)."""
+    ctx = await _ctx(workspace)
+    ahora = int(time.time())
+    async with get_session(obtener_engine()) as session:
+        filas = await BorradorRepository(session, ctx).listar_vigentes(ahora)
+    return [_borrador_a_dict(b, ahora) for b in filas]
+
+
+async def _ensayar_borrador(
+    borrador_id: str,
+    workspace: str | None,
+) -> dict[str, Any]:
+    """Suma un ensayo; al llegar al umbral promueve a evento."""
+    ctx = await _ctx_escritura(workspace)
+    ahora = int(time.time())
+    async with get_session(obtener_engine()) as session:
+        repo = BorradorRepository(session, ctx)
+        ensayos = await repo.ensayar(uuid.UUID(str(borrador_id)))
+        if ensayos is None:
+            raise ErrorValidacion(
+                f"borrador no existe o no es visible: {borrador_id}"
+            )
+        b = await repo.obtener(uuid.UUID(str(borrador_id)))
+        if b is None or esta_expirado(
+            b.creado_en, ahora, b.expira_en - b.creado_en
+        ):
+            raise ErrorValidacion("borrador ya expiró — se perdió")
+        respuesta: dict[str, Any] = {"id": borrador_id, "ensayos": ensayos}
+        if debe_promover(ensayos):
+            contenido, dimension = b.contenido, b.dimension
+            await repo.descartar(b.id)
+            await session.commit()
+            promovido = await _recordar(
+                contenido=contenido,
+                dimension=dimension,  # type: ignore[arg-type]
+                amplitud=0.7,
+                frecuencia=None,
+                timestamp_unix=None,
+                fuente="trabajo",
+                tipo="hecho",
+                workspace=workspace,
+            )
+            respuesta["promovido"] = True
+            respuesta["evento_id"] = promovido.get("id")
+        else:
+            await session.commit()
+            respuesta["promovido"] = False
+    return respuesta
+
+
+async def _descartar_borrador(
+    borrador_id: str,
+    workspace: str | None,
+) -> dict[str, Any]:
+    """Saca el borrador del buffer sin promoverlo."""
+    ctx = await _ctx_escritura(workspace)
+    async with get_session(obtener_engine()) as session:
+        ok = await BorradorRepository(session, ctx).descartar(
+            uuid.UUID(str(borrador_id))
+        )
+        await session.commit()
+    return {"id": borrador_id, "descartado": ok}
+
+
+@mcp_server.tool()
+async def recordar_borrador(
+    contenido: str,
+    dimension: Literal["cognitiva", "somatica", "conductual"] = "cognitiva",
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Guarda un pensamiento volátil en la memoria de trabajo.
+
+    USAR CUANDO: el pensamiento es transitorio — borrador, hipótesis,
+    contexto de sesión que no merece aún largo plazo. NO ES la línea
+    de universo: expira en ~30 min sin ensayo (el olvido del buffer
+    es su función). Si se ensaya lo bastante (≥2 repasos) promueve
+    solo a evento real — la repetición es la señal de que importa.
+    Para memoria durable usa ``recordar_evento``.
+
+    Args:
+        contenido: Texto del borrador.
+        dimension: Dimensión del pensamiento (default cognitiva).
+        workspace: Slug o UUID del workspace destino.
+
+    Returns:
+        {id, expira_en, capacidad} del borrador guardado.
+    """
+    return await _recordar_borrador(contenido, dimension, workspace)
+
+
+@mcp_server.tool()
+async def listar_borrador(
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Lista los borradores vivos de la memoria de trabajo.
+
+    USAR CUANDO: quieras ver qué tiene el agente "en mente" ahora —
+    pensamientos transitorios aún no promovidos ni expirados.
+
+    Returns:
+        [{id, contenido, dimension, ensayos, expira_en, expirado}].
+    """
+    return await _listar_borrador(workspace)
+
+
+@mcp_server.tool()
+async def ensayar_borrador(
+    borrador_id: str,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Ensaya (repasa) un borrador — la repetición lo promueve.
+
+    Cada ensayo suma una repetición; al llegar a
+    ``ENSAYOS_PARA_PROMOVER`` el borrador se gradúa solo: entra a la
+    línea de universo como evento real y sale del buffer. Es el
+    mecanismo por el que lo que importa sobrevive.
+
+    Args:
+        borrador_id: UUID del borrador a repasar.
+
+    Returns:
+        {id, ensayos, promovido, evento_id?}.
+    """
+    return await _ensayar_borrador(borrador_id, workspace)
+
+
+@mcp_server.tool()
+async def descartar_borrador(
+    borrador_id: str,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Saca un borrador del buffer sin promoverlo.
+
+    USAR CUANDO: el pensamiento ya no es útil — descartarlo es
+    sano: el buffer es corto a propósito.
+
+    Returns:
+        {id, descartado}.
+    """
+    return await _descartar_borrador(borrador_id, workspace)

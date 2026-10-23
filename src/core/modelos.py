@@ -38,6 +38,8 @@ class Evento:
     refuerzos: int = 0
     contexto: dict[str, Any] | None = None
     estado_emocional: float | None = None
+    weight: float = 1.0
+    archivado: bool = False
 
     @classmethod
     def desde_modelo(cls, modelo: EventoModel) -> Evento:
@@ -51,6 +53,8 @@ class Evento:
             refuerzos=modelo.refuerzos,
             contexto=modelo.contexto or None,
             estado_emocional=modelo.estado_emocional,
+            weight=modelo.weight,
+            archivado=modelo.archivado,
         )
 
 

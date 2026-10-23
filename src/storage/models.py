@@ -244,6 +244,11 @@ class EventoModel(Base):
     archivado_en: Mapped[int | None] = mapped_column(BigInteger)
     razon_archivo: Mapped[str | None] = mapped_column(Text)
     curado: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    # Neuro-2 — primacía de época y ventana lábil de reconsolidación.
+    inaugura_epoca: Mapped[bool] = mapped_column(
+        Boolean, server_default="false"
+    )
+    labil_hasta: Mapped[int | None] = mapped_column(BigInteger)
     contenido_tsv: Mapped[str | None] = mapped_column(
         TSVECTOR,
         Computed("to_tsvector('spanish', contenido)", persisted=True),
@@ -346,7 +351,7 @@ class RelacionModel(Base):
         CheckConstraint("origen_id < destino_id", name="ck_relaciones_orden"),
         CheckConstraint(
             "tipo IN ('explicita', 'semantica', 'reemplaza', 'cierra', "
-            "'contradice')",
+            "'contradice', 'coactiva', 'reconsolida', 'gist')",
             name="ck_relaciones_tipo",
         ),
         UniqueConstraint(
@@ -750,6 +755,54 @@ class ScriptDetectadoModel(Base):
     __table_args__ = (
         Index("ix_scripts_workspace", "workspace_id"),
         Index("ix_scripts_confianza", "confianza"),
+    )
+
+
+class BorradorModel(Base):
+    """Memoria de trabajo — buffer volátil de Baddeley.
+
+    Borradores/hipótesis/contexto transitorio del agente: expira si
+    nadie lo ensaya (el olvido es la función, no un bug — como las
+    intenciones, se evalúa al consultar, sin scheduler) y promueve a
+    la línea de universo si acumula repeticiones. Nunca contamina la
+    búsqueda principal: lo que sobrevive entra como evento real.
+    """
+
+    __tablename__ = "borradores"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        server_default=text(
+            "'00000000-0000-0000-0000-000000000002'::uuid"
+        ),
+        nullable=False,
+    )
+    autor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("usuarios.id", ondelete="SET NULL"),
+    )
+    contenido: Mapped[str] = mapped_column(Text, nullable=False)
+    dimension: Mapped[str] = mapped_column(
+        String(20), server_default="cognitiva"
+    )
+    ensayos: Mapped[int] = mapped_column(
+        Integer, server_default="0", nullable=False
+    )
+    creado_en: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    expira_en: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "dimension IN ('cognitiva', 'somatica', 'conductual')",
+            name="ck_borradores_dimension",
+        ),
+        Index("ix_borradores_workspace", "workspace_id", "expira_en"),
     )
 
 

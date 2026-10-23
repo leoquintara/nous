@@ -39,13 +39,18 @@ nous/
 │   │   ├── modelos.py          # Dataclasses y enums del dominio
 │   │   ├── exceptions.py       # Excepciones del dominio
 │   │   ├── memoria/            # Patrones neurocognitivos (ADR-003, puros/testeables)
-│   │   │   ├── decay.py        #   Decaimiento adaptativo (media-vida por dim/tipo)
+│   │   │   ├── decay.py        #   Decaimiento adaptativo + spacing + primacía
 │   │   │   ├── consolidacion.py#   Sueño: promueve/fortalece/archiva + reporte
 │   │   │   ├── prospectiva.py  #   Intenciones time/event + triggers
 │   │   │   ├── interferencia.py#   Detección de contradicciones (rel. 'contradice')
 │   │   │   ├── contexto.py     #   Boost contexto/estado-dependiente en búsqueda
 │   │   │   ├── scripts.py      #   Minería de secuencias recurrentes
-│   │   │   └── tipos.py        #   episódica/semántica/procedimental + valencia
+│   │   │   ├── tipos.py        #   episódica/semántica/procedimental + valencia
+│   │   │   ├── ritmos.py       #   Primacía de época + ventana circadiana de sueño
+│   │   │   ├── retrieval.py    #   Hebbiana, extinción, metamemoria, ventana lábil
+│   │   │   ├── novedad.py      #   Sorpresa / prediction-error → amplitud
+│   │   │   ├── trabajo.py      #   Buffer de trabajo (Baddeley): TTL + ensayo
+│   │   │   └── semanticizacion.py# Sueño: episodios afines → gist semántico
 │   │   └── decision/           # Proveedores System One (ADR-002, autocontenido)
 │   │       ├── provider.py     #   Protocolo /v1/systemone (choice/score/noul)
 │   │       ├── adapters.py     #   Laya/Ollama/HTTP/Jev con guardia de privacidad
@@ -328,6 +333,14 @@ async def test_fusion_rrf_con_dos_listas_ordena_por_score():
   con ids y razones — el olvido siempre es auditable, nunca silencioso.
 - Los providers de decisión degranan siempre: fallo de red/modelo →
   heurístico local, jamás excepción ni stall en el camino caliente.
+- **Buffer de trabajo** (`borradores`): efímero por diseño — expira
+  sin ensayo (el olvido es la función) y promueve a evento solo por
+  repetición. No es la línea de universo ni se archiva: nace y muere.
+- Aristas neurocognitivas: `coactiva` (evocados juntos — hebbiana,
+  con peso tope), `reconsolida` (supersede dentro de la ventana
+  lábil post-recall) y `gist` (episodio → semántica destilada en el
+  sueño). Los efectos post-evocación corren en la cola de fondo,
+  nunca en el camino caliente de `consultar_memoria`.
 
 ## 🚀 Cómo Ejecutar el Proyecto
 

@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import math
 
+from src.core.memoria.retrieval import factor_espaciado
+from src.core.memoria.ritmos import FACTOR_PRIMACIA
 from src.core.memoria.tipos import TipoMemoria
 from src.core.modelos import Dimension
 
@@ -49,6 +51,8 @@ def media_vida_dias(
     amplitud: float = 0.5,
     refuerzos: int = 0,
     curado: bool = False,
+    intervalo_medio_dias: float | None = None,
+    primacia: bool = False,
 ) -> float:
     """Media-vida efectiva de una memoria en días.
 
@@ -58,6 +62,11 @@ def media_vida_dias(
         amplitud: Intensidad 0-1 — modula episódicas y cognitivas.
         refuerzos: Veces que la memoria fue evocada (replay).
         curado: True = tier protegido → media-vida infinita simbólica.
+        intervalo_medio_dias: Espacio medio entre evocaciones —
+            el spacing effect: ensayos distribuidos consolidan más
+            que ensayos masivos (None = sin accesos registrados).
+        primacia: True si el evento inaugura época (efecto
+            primacía — el primer evento de un periodo persiste más).
 
     Returns:
         Días hasta que la retención cae a 0.5. Con ``curado`` retorna
@@ -71,6 +80,9 @@ def media_vida_dias(
     if dimension in (Dimension.COGNITIVA, Dimension.CONDUCTUAL):
         base *= 1.0 + amplitud * (_FACTOR_AMPLITUD_MAX - 1.0)
     base *= 1.0 + min(refuerzos, 5) * _FACTOR_REFUERZO
+    base *= factor_espaciado(intervalo_medio_dias)
+    if primacia:
+        base *= FACTOR_PRIMACIA
     return base
 
 
@@ -101,15 +113,32 @@ def retencion_actual(
     amplitud: float = 0.5,
     refuerzos: int = 0,
     curado: bool = False,
+    primacia: bool = False,
 ) -> float:
     """Retención completa de un evento ahora (helper de una llamada).
 
     El último acceso cuenta como "replay" — el reloj corre desde la
-    evocación más reciente, no desde la creación.
+    evocación más reciente, no desde la creación. El spacing effect
+    se deriva adentro: (ultimo_acceso − creación) / refuerzos es el
+    intervalo medio entre ensayos.
     """
     desde = max(timestamp_unix, ultimo_acceso or 0)
     dias = max(0.0, (ahora_unix - desde) / 86400.0)
+    intervalo = (
+        (ultimo_acceso - timestamp_unix) / 86400.0 / refuerzos
+        if refuerzos > 0 and ultimo_acceso is not None
+        and ultimo_acceso > timestamp_unix
+        else None
+    )
     return retencion(
         dias,
-        media_vida_dias(dimension, tipo_memoria, amplitud, refuerzos, curado),
+        media_vida_dias(
+            dimension,
+            tipo_memoria,
+            amplitud,
+            refuerzos,
+            curado,
+            intervalo,
+            primacia,
+        ),
     )

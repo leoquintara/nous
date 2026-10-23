@@ -22,6 +22,7 @@ from src.core.identidad import (
 )
 from src.storage.models import (
     BenchmarkRunModel,
+    BorradorModel,
     ConfiguracionModel,
     EventoModel,
     FuenteModel,
@@ -406,27 +407,36 @@ class EventoRepository:
         resultado = await self._session.execute(stmt.limit(1))
         return resultado.scalar_one_or_none() is not None
 
-    async def reforzar(self, eventos_ids: list[uuid.UUID]) -> int:
+    async def reforzar(
+        self, eventos_ids: list[uuid.UUID], labil_hasta: int | None = None
+    ) -> int:
         """Incrementa el contador de consolidación de los eventos evocados.
 
         Cada evocación fortalece la huella (reconsolidación): los
-        eventos más consultados decaen más lento en el ranking.
+        eventos más consultados decaen más lento en el ranking. Con
+        ``labil_hasta`` además abre la ventana de reconsolidación —
+        un supersede dentro de ella cuenta como ``reconsolida``.
 
         Args:
             eventos_ids: UUIDs de los eventos devueltos al agente.
+            labil_hasta: Fin de la ventana lábil (unix), calculado
+                por la capa core; None = solo refuerzo.
 
         Returns:
             Número de filas actualizadas.
         """
         if not eventos_ids:
             return 0
+        valores: dict[str, Any] = {
+            "refuerzos": EventoModel.refuerzos + 1,
+            "ultimo_acceso": int(time.time()),
+        }
+        if labil_hasta is not None:
+            valores["labil_hasta"] = labil_hasta
         stmt = (
             update(EventoModel)
             .where(EventoModel.id.in_(eventos_ids))
-            .values(
-                refuerzos=EventoModel.refuerzos + 1,
-                ultimo_acceso=int(time.time()),
-            )
+            .values(**valores)
         )
         resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
         return resultado.rowcount
@@ -725,6 +735,114 @@ class EventoRepository:
         )
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
+    async def timestamp_anterior(self, antes_de: int) -> int | None:
+        """Timestamp del evento visible más reciente anterior a una marca.
+
+        Sirve para detectar si el evento entrante inaugura época
+        (efecto primacía): el gap desde este timestamp decide.
+
+        Args:
+            antes_de: Marca temporal de referencia (exclusiva).
+
+        Returns:
+            timestamp_unix del evento previo, o None si no hay.
+        """
+        stmt = (
+            select(EventoModel.timestamp_unix)
+            .where(EventoModel.timestamp_unix < antes_de, *self._vis())
+            .order_by(EventoModel.timestamp_unix.desc())
+            .limit(1)
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def actualizar_amplitud(self, evento_id: uuid.UUID, amplitud: float) -> None:
+        """Actualiza la amplitud de un evento (boost de novedad post-index)."""
+        stmt = (
+            update(EventoModel)
+            .where(EventoModel.id == evento_id)
+            .values(amplitud=amplitud)
+        )
+        await self._session.execute(stmt)
+
+    async def atenuar_valencias(self, pares: list[tuple[uuid.UUID, float]]) -> int:
+        """Extingue la valencia de recuerdos evocados en estado neutro.
+
+        Args:
+            pares: ``(evento_id, nueva_valencia)`` ya calculados por
+                :func:`retrieval.extincion_valencia` — el repo solo
+                aplica, no decide.
+
+        Returns:
+            Filas actualizadas.
+        """
+        if not pares:
+            return 0
+        stmt = (
+            update(EventoModel)
+            .where(EventoModel.id.in_([eid for eid, _ in pares]))
+            .values(
+                estado_emocional=case(
+                    *[
+                        (EventoModel.id == eid, nueva)
+                        for eid, nueva in pares
+                    ]
+                )
+            )
+        )
+        resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
+        return resultado.rowcount
+
+    async def embeddings_recientes(
+        self, limite: int = 20
+    ) -> Sequence[EventoModel]:
+        """Eventos recientes con embedding — la trayectoria esperada.
+
+        La sorpresa del evento entrante se mide contra esta ventana,
+        no contra lo semánticamente más cercano.
+
+        Args:
+            limite: Tamaño de la ventana de expectativa.
+
+        Returns:
+            Eventos con embedding, más recientes primero.
+        """
+        stmt = (
+            select(EventoModel)
+            .where(
+                EventoModel.embedding.is_not(None),
+                EventoModel.archivado.is_(False),
+                *self._vis(),
+            )
+            .order_by(EventoModel.timestamp_unix.desc())
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
+
+    async def episodicas_con_embedding(
+        self, limite: int = 400
+    ) -> Sequence[EventoModel]:
+        """Episodios activos con embedding — materia prima del gist.
+
+        La semanticización (sueño) agrupa estos por similitud y
+        destila eventos ``semantica`` vinculados por aristas ``gist``.
+        """
+        stmt = (
+            select(EventoModel)
+            .where(
+                EventoModel.tipo_memoria == "episodica",
+                EventoModel.embedding.is_not(None),
+                EventoModel.archivado.is_(False),
+                EventoModel.reemplazado_por.is_(None),
+                EventoModel.fuente != "sueno",
+                *self._vis(),
+            )
+            .order_by(EventoModel.timestamp_unix.desc())
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
+
     async def listar_archivados(self, limite: int = 100) -> Sequence[EventoModel]:
         """Eventos archivados por consolidación — recuperables.
 
@@ -859,6 +977,55 @@ class RelacionRepository:
         )
         resultado = await self._session.execute(stmt)
         return cast(CursorResult[RelacionModel], resultado).rowcount > 0
+
+    async def reforzar_coactivas(
+        self,
+        pares: list[tuple[uuid.UUID, uuid.UUID]],
+        delta: float,
+        peso_max: float,
+    ) -> int:
+        """Crea o refuerza aristas ``coactiva`` entre co-evocados.
+
+        Hebbiana: cada co-recall suma ``delta`` al peso de la arista
+        con tope ``peso_max`` — la asociación se vuelve estable con
+        el uso, no se duplica. El par viaja en orden canónico.
+
+        Args:
+            pares: Pares de UUIDs co-evocados (de
+                :func:`retrieval.pares_coactivos`).
+            delta: Incremento por co-evocación.
+            peso_max: Tope fisiológico del vínculo.
+
+        Returns:
+            Aristas tocadas (creadas o reforzadas).
+        """
+        tocadas = 0
+        for a_id, b_id in pares:
+            if a_id == b_id:
+                continue
+            origen, destino = (a_id, b_id) if a_id < b_id else (b_id, a_id)
+            stmt = (
+                pg_insert(RelacionModel)
+                .values(
+                    origen_id=origen,
+                    destino_id=destino,
+                    tipo="coactiva",
+                    peso=delta,
+                )
+                .on_conflict_do_update(
+                    constraint="uq_relaciones_par_tipo",
+                    set_={
+                        "peso": func.least(
+                            RelacionModel.peso + delta, peso_max
+                        )
+                    },
+                )
+            )
+            resultado = await self._session.execute(stmt)
+            tocadas += cast(
+                CursorResult[RelacionModel], resultado
+            ).rowcount
+        return tocadas
 
     async def listar(self, limite: int = 2000) -> Sequence[RelacionModel]:
         """Lista los vínculos registrados, más recientes primero.
@@ -1769,3 +1936,97 @@ class ReporteConsolidacionRepository:
         )
         resultado = await self._session.execute(stmt)
         return resultado.scalars().all()
+
+
+class BorradorRepository:
+    """Acceso a datos de la memoria de trabajo (buffer de Baddeley).
+
+    Visibilidad: workspace ∪ propios ∪ sin atribuir — como los
+    eventos, salvo que el borrador no tiene ``scope``: es efímero
+    por naturaleza y siempre personal de quien lo escribió.
+    """
+
+    def __init__(
+        self, session: AsyncSession, ctx: Contexto | None = None
+    ) -> None:
+        """Inicializa con sesión y contexto de visibilidad opcional."""
+        self._session = session
+        self._ctx = ctx
+
+    def _vis(self) -> list[ColumnElement[bool]]:
+        if self._ctx is None:
+            return []
+        return [
+            and_(
+                BorradorModel.workspace_id == self._ctx.workspace_id,
+                or_(
+                    BorradorModel.autor_id == self._ctx.usuario_id,
+                    BorradorModel.autor_id.is_(None),
+                ),
+            )
+        ]
+
+    async def crear(self, borrador: BorradorModel) -> BorradorModel:
+        """Persiste un borrador en el buffer."""
+        self._session.add(borrador)
+        await self._session.flush()
+        return borrador
+
+    async def obtener(self, borrador_id: uuid.UUID) -> BorradorModel | None:
+        """Retorna el borrador por id si es visible."""
+        stmt = select(BorradorModel).where(
+            BorradorModel.id == borrador_id, *self._vis()
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def listar_vigentes(
+        self, ahora: int, limite: int = 50
+    ) -> Sequence[BorradorModel]:
+        """Borradores no expirados — el contenido vivo del buffer.
+
+        Args:
+            ahora: Timestamp unix actual.
+            limite: Máximo de filas.
+
+        Returns:
+            Borradores vigentes, más recientes primero.
+        """
+        stmt = (
+            select(BorradorModel)
+            .where(BorradorModel.expira_en > ahora, *self._vis())
+            .order_by(BorradorModel.creado_en.desc())
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
+
+    async def contar_vigentes(self, ahora: int) -> int:
+        """Cuántos borradores vivos hay — control de capacidad."""
+        stmt = select(func.count(BorradorModel.id)).where(
+            BorradorModel.expira_en > ahora, *self._vis()
+        )
+        return int((await self._session.execute(stmt)).scalar_one())
+
+    async def ensayar(self, borrador_id: uuid.UUID) -> int | None:
+        """Suma un ensayo (repetición) al borrador.
+
+        Returns:
+            El nuevo conteo de ensayos, o None si no existe/expiró.
+        """
+        stmt = (
+            update(BorradorModel)
+            .where(BorradorModel.id == borrador_id, *self._vis())
+            .values(ensayos=BorradorModel.ensayos + 1)
+            .returning(BorradorModel.ensayos)
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def descartar(self, borrador_id: uuid.UUID) -> bool:
+        """Saca el borrador del buffer (promovido o descartado)."""
+        stmt = delete(BorradorModel).where(
+            BorradorModel.id == borrador_id, *self._vis()
+        )
+        resultado = cast(
+            CursorResult[BorradorModel], await self._session.execute(stmt)
+        )
+        return resultado.rowcount > 0
