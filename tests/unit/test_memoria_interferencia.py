@@ -1,8 +1,11 @@
 """Tests unitarios de detección de interferencia (ADR-003)."""
 
 from src.core.memoria.interferencia import (
+    INTERFERENCIA_FACTOR,
+    INTERFERENCIA_MIN,
     UMBRAL_SIMILITUD,
     detectar_conflicto,
+    es_competidor_proactivo,
     marcar_superacion,
     tiene_negacion,
 )
@@ -48,3 +51,19 @@ def test_tiene_negacion() -> None:
     """Detecta negaciones explícitas en el texto."""
     assert tiene_negacion("no quiero café") is True
     assert tiene_negacion("quiero café siempre") is False
+
+
+def test_competidor_proactivo_banda_similar_distinto() -> None:
+    """Similar-pero-distinto compite el slot; afín o duplicado, no."""
+    dedup = 0.95
+    assert es_competidor_proactivo(0.90, dedup)
+    assert es_competidor_proactivo(INTERFERENCIA_MIN, dedup)
+    # Por debajo de la banda es tema afín — no roba el recuerdo.
+    assert not es_competidor_proactivo(0.70, dedup)
+    # Por encima del dedup es el mismo evento — no compite, se fusiona.
+    assert not es_competidor_proactivo(0.96, dedup)
+
+
+def test_factor_proactivo_mas_fuerte_que_rif() -> None:
+    """La codificación compite más que el recall: el golpe es mayor."""
+    assert INTERFERENCIA_FACTOR < 0.97  # vs RIF_FACTOR en retrieval

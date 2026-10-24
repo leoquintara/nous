@@ -6,8 +6,11 @@ import pytest
 
 from src.core.memoria.novedad import (
     BOOST_SORPRESA_MAX,
+    UMBRAL_FLASHBULB_SORPRESA,
+    UMBRAL_FLASHBULB_VALENCIA,
     UMBRAL_FRONTERA,
     amplitud_con_sorpresa,
+    es_flashbulb,
     marca_frontera,
     sorpresa,
 )
@@ -67,3 +70,26 @@ def test_marca_frontera_solo_con_pico_de_sorpresa() -> None:
     assert marca_frontera(UMBRAL_FRONTERA + 0.2)
     assert not marca_frontera(UMBRAL_FRONTERA - 0.01)
     assert not marca_frontera(0.0)
+
+
+def test_flashbulb_necesita_las_dos_senales() -> None:
+    """Sorpresa × emoción: cada una sola no basta para la codificación."""
+    # Ambas altas → flashbulb (euforia o impacto — la escala es [0,1]
+    # con 0.5 neutro: 0.8 y 0.2 están a la misma distancia).
+    assert es_flashbulb(UMBRAL_FLASHBULB_SORPRESA, 0.8)
+    assert es_flashbulb(UMBRAL_FLASHBULB_SORPRESA, 0.2)
+    # Sorpresa sin carga (0.4 ≈ neutro) = detalle curioso, no flashbulb.
+    assert not es_flashbulb(0.9, 0.4)
+    # Carga sin sorpresa = rutina emocional, no flashbulb.
+    assert not es_flashbulb(0.4, 0.9)
+    # Sin valencia estimada no hay señal — nunca se asume.
+    assert not es_flashbulb(1.0, None)
+
+
+def test_flashbulb_umbral_mas_laxo_que_frontera() -> None:
+    """La sorpresa de flashbulb puede ser menor que la de frontera:
+    la valencia ya hace parte del filtro."""
+    assert UMBRAL_FLASHBULB_SORPRESA < UMBRAL_FRONTERA
+    # El umbral es distancia al neutro 0.5: 0.3 exige valencia
+    # realmente extrema (≤0.2 o ≥0.8), no un "bien" suelto.
+    assert UMBRAL_FLASHBULB_VALENCIA == 0.3

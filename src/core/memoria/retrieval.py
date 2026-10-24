@@ -39,6 +39,68 @@ UMBRAL_ESTADO_NEUTRO = 0.2
 # Horas tras la evocación en que la memoria admite reconsolidación.
 VENTANA_LABIL_SEG = 6 * 3600
 
+# --- Efecto Zeigarnik (Neuro-4) ---
+# Los compromisos abiertos permanecen más accesibles al recall que
+# los cerrados — el cerebro no suelta lo pendiente. Boost modesto
+# porque el compromiso ya suele ser relevante por contenido.
+ZEIGARNIK_BOOST = 1.15
+
+# --- Retrieval-induced forgetting (Neuro-4) ---
+# Competidores recuperados pero no seleccionados se suprimen:
+# evocar al ganador debilita a los perdedores un ~3% por consulta.
+RIF_FACTOR = 0.97
+RIF_PISO_WEIGHT = 0.1  # debajo de esto el decay natural ya manda
+# Rango de competencia real: solo los que estuvieron cerca del
+# corte (top 2×top_n de cada lista) cuentan como competidores —
+# el resto nunca tuvo chance y no "perdió" nada.
+RIF_RANGO_COMPETENCIA = 2
+
+
+def factor_zeigarnik(tipo: str | None, cerrado: bool) -> float:
+    """Boost de saliencia para compromisos abiertos (efecto Zeigarnik).
+
+    Lo pendiente se recuerda mejor que lo terminado: un compromiso
+    sin cerrar merece subir en el ranking aunque su score semántico
+    sea modesto. Cerrado o no-compromiso → neutro (1.0).
+    """
+    return (
+        ZEIGARNIK_BOOST
+        if tipo == "compromiso" and not cerrado
+        else 1.0
+    )
+
+
+def competidores_rif(
+    candidatos_ids: list[str],
+    elegidos_ids: list[str],
+    rango: int = RIF_RANGO_COMPETENCIA,
+) -> list[str]:
+    """Ids recuperados que compitieron y perdieron la evocación.
+
+    Solo cuentan los que estuvieron dentro de ``rango`` × la
+    cantidad de elegidos en cada lista de candidatos — fuera de
+    ese corte no hubo competencia real, fue ruido de fondo.
+
+    Args:
+        candidatos_ids: Ids devueltos por las ramas de búsqueda,
+            en orden de relevancia de cada rama.
+        elegidos_ids: Ids de la selección final (los ganadores).
+        rango: Multiplicador del corte de competencia.
+
+    Returns:
+        Ids de los competidores suprimidos, sin duplicados. Sin
+        elegidos no hay evocación que suprima — lista vacía.
+    """
+    if not elegidos_ids:
+        return []
+    elegidos = set(elegidos_ids)
+    corte = max(len(elegidos_ids) * rango, 1)
+    return [
+        eid
+        for eid in dict.fromkeys(candidatos_ids[:corte])
+        if eid not in elegidos
+    ]
+
 
 def pares_coactivos(evento_ids: list[str]) -> list[tuple[str, str]]:
     """Pares únicos de los top-K resultados co-evocados.
@@ -99,6 +161,7 @@ def confianza(
     edad_dias: float,
     contradicciones: int = 0,
     archivado: bool = False,
+    fuente_confiable: bool | None = True,
 ) -> float:
     """Metamemoria: qué tan fiable es este recuerdo devuelto (0-1).
 
@@ -109,6 +172,11 @@ def confianza(
       (consolidación) y amplitud (codificación intensa).
     - Baja con antigüedad extrema (el pasado se vuelve anecdótico),
       contradicciones abiertas y estar archivado.
+    - **Amnesia de fuente** (Neuro-4): ``fuente_confiable`` pesa el
+      origen, no el contenido — ``None`` (sin fuente: el recuerdo
+      llegó sin firma, no se puede rastrear de dónde salió) baja la
+      confianza un 10%; ``False`` (fuente marcada no confiable — el
+      contenido se evoca pero su procedencia está en duda) un 25%.
 
     Returns:
         Confianza en [0.05, 0.98] — nunca certeza total: es una
@@ -124,7 +192,13 @@ def confianza(
     )
     senectud = 1.0 - min(edad_dias / 365.0, 0.25)
     penal = 1.0 - min(contradicciones, 3) * 0.15
-    return round(max(0.05, min(0.98, evidencia * senectud * penal)), 3)
+    procedencia = 1.0 if fuente_confiable else 0.75
+    if fuente_confiable is None:
+        procedencia = 0.9
+    return round(
+        max(0.05, min(0.98, evidencia * senectud * penal * procedencia)),
+        3,
+    )
 
 
 def confianza_de_evento(
@@ -134,10 +208,18 @@ def confianza_de_evento(
     timestamp_unix: int,
     ahora_unix: int,
     archivado: bool = False,
+    fuente_confiable: bool | None = True,
 ) -> float:
     """Atajo sobre campos del evento: deriva edad y delega."""
     edad = max(0.0, (ahora_unix - timestamp_unix) / 86400.0)
-    return confianza(refuerzos, weight, amplitud, edad, archivado=archivado)
+    return confianza(
+        refuerzos,
+        weight,
+        amplitud,
+        edad,
+        archivado=archivado,
+        fuente_confiable=fuente_confiable,
+    )
 
 
 # --- Spacing effect (se consume desde decay) ---

@@ -42,8 +42,11 @@ class Evento:
     archivado: bool = False
     tags: list[str] | None = None
     tipo_memoria: str | None = None
+    tipo: str = "evento"
+    fuente: str | None = None
     olvido_dirigido: bool = False
     cuarentena: bool = False
+    debilitados: int = 0
 
     @classmethod
     def desde_modelo(cls, modelo: EventoModel) -> Evento:
@@ -61,8 +64,11 @@ class Evento:
             archivado=modelo.archivado,
             tags=list(modelo.tags) if modelo.tags else None,
             tipo_memoria=modelo.tipo_memoria,
+            tipo=modelo.tipo or "evento",
+            fuente=modelo.fuente,
             olvido_dirigido=bool(getattr(modelo, "olvido_dirigido", False)),
             cuarentena=bool(getattr(modelo, "cuarentena", False)),
+            debilitados=int(getattr(modelo, "debilitados", 0) or 0),
         )
 
 

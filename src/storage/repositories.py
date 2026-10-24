@@ -562,6 +562,93 @@ class EventoRepository:
         )
         return resultado.rowcount
 
+    async def debilitar_lote(
+        self,
+        evento_ids: Sequence[uuid.UUID],
+        factor: float,
+        piso: float = 0.1,
+    ) -> int:
+        """Debilita en lote las memorias que perdieron una competencia.
+
+        RIF (competidor no seleccionado en el recall) e interferencia
+        proactiva (versión vieja ocluida por una nueva) comparten el
+        mecanismo: ``weight × factor`` + contador ``debilitados`` —
+        el contrapeso auditable de ``refuerzos``.
+
+        Lo curado es inmune (invariante del tier) y bajo ``piso`` el
+        decay natural ya hace el trabajo — no se castiga lo que el
+        tiempo ya olvidó.
+
+        Returns:
+            Cantidad de memorias debilitadas.
+        """
+        if not evento_ids:
+            return 0
+        stmt = (
+            update(EventoModel)
+            .where(
+                EventoModel.id.in_(list(evento_ids)),
+                EventoModel.curado.is_(False),
+                EventoModel.weight > piso,
+                *self._vis(),
+            )
+            .values(
+                weight=EventoModel.weight * factor,
+                debilitados=EventoModel.debilitados + 1,
+            )
+        )
+        resultado = cast(
+            CursorResult[EventoModel], await self._session.execute(stmt)
+        )
+        return resultado.rowcount
+
+    async def ids_compromisos_abiertos(
+        self, evento_ids: Sequence[uuid.UUID]
+    ) -> set[uuid.UUID]:
+        """Subconjunto de ``evento_ids`` que son compromisos abiertos.
+
+        Un compromiso está abierto si ninguna relación ``cierra`` lo
+        toca — mismo criterio que ``listar_compromisos_abiertos``,
+        restringido al lote pedido (Zeigarnik en el recall).
+        """
+        if not evento_ids:
+            return set()
+        cierre = select(RelacionModel.id).where(
+            RelacionModel.tipo == "cierra",
+            or_(
+                RelacionModel.origen_id == EventoModel.id,
+                RelacionModel.destino_id == EventoModel.id,
+            ),
+        )
+        stmt = select(EventoModel.id).where(
+            EventoModel.id.in_(list(evento_ids)),
+            EventoModel.tipo == "compromiso",
+            EventoModel.reemplazado_por.is_(None),
+            ~cierre.exists(),
+            *self._vis(),
+        )
+        resultado = await self._session.execute(stmt)
+        return set(resultado.scalars().all())
+
+    async def marcar_flashbulb(self, evento_id: uuid.UUID) -> None:
+        """Codificación flashbulb: weight ×1.5 (cap) + tag auditable.
+
+        El tag deja constancia de por qué la huella es tan fuerte —
+        "sorpresa × emoción" es una decisión del motor, no del
+        usuario, y debe poder auditarse como todo lo demás.
+        """
+        stmt = select(EventoModel).where(EventoModel.id == evento_id)
+        modelo = (
+            await self._session.execute(stmt)
+        ).scalar_one_or_none()
+        if modelo is None:
+            return
+        modelo.weight = min(modelo.weight * 1.5, 3.0)
+        tags = list(modelo.tags or [])
+        if "flashbulb" not in tags:
+            tags.append("flashbulb")
+            modelo.tags = tags
+
     async def episodios_de_gist(
         self, gist_id: uuid.UUID, limite: int = 3
     ) -> Sequence[EventoModel]:
@@ -1299,6 +1386,23 @@ class FuenteRepository:
         resultado = await self._session.execute(stmt)
         valor = resultado.scalar_one_or_none()
         return True if valor is None else bool(valor)
+
+    async def fuentes_confiables(
+        self, nombres: Sequence[str]
+    ) -> dict[str, bool]:
+        """Mapa nombre → confiable para un lote de fuentes.
+
+        Las no registradas no aparecen en el mapa — el llamante
+        decide cómo tratar lo anónimo (amnesia de fuente).
+        """
+        if not nombres:
+            return {}
+        stmt = select(FuenteModel.nombre, FuenteModel.confiable).where(
+            FuenteModel.nombre.in_(list(nombres)),
+            FuenteModel.workspace_id == self._ws,
+        )
+        resultado = await self._session.execute(stmt)
+        return {n: bool(c) for n, c in resultado.all()}
 
     async def marcar_confiable(self, nombre: str, confiable: bool) -> bool:
         """Marca una fuente como confiable o en cuarentena."""

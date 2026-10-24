@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     precalentar_modelos: bool = True
     reranker_habilitado: bool = True
     reranker_modelo: str = "cross-encoder/ms-marco-MiniLM-L12-v2"
+    # Candidatos que paga el cross-encoder por consulta. Cada uno es
+    # un forward pass: bajarlo (ej. 6) recorta el p95 del recall en
+    # hardware modesto a costa de reordenar menos profundidad.
+    reranker_candidatos: int = 10
     cache_embeddings_max: int = 256
     dedup_umbral: float = 0.95
     dedup_ventana_segundos: int = 3600

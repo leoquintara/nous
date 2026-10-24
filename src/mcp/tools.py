@@ -39,9 +39,14 @@ from src.core.memoria.consolidacion import (
 from src.core.memoria.contexto import ContextoActual, boost_contextual
 from src.core.memoria.decay import media_vida_dias, proxima_revision
 from src.core.memoria.diversidad import diversificar, es_casi_recuerdo
-from src.core.memoria.interferencia import detectar_conflicto
+from src.core.memoria.interferencia import (
+    INTERFERENCIA_FACTOR,
+    detectar_conflicto,
+    es_competidor_proactivo,
+)
 from src.core.memoria.novedad import (
     amplitud_con_sorpresa,
+    es_flashbulb,
     marca_frontera,
     sorpresa,
 )
@@ -54,9 +59,12 @@ from src.core.memoria.rem import pares_rem
 from src.core.memoria.retrieval import (
     COACTIVA_DELTA,
     COACTIVA_PESO_MAX,
+    RIF_FACTOR,
+    RIF_PISO_WEIGHT,
     confianza_de_evento,
     esta_labil,
     extincion_valencia,
+    factor_zeigarnik,
     pares_coactivos,
     ventana_labil,
 )
@@ -158,6 +166,9 @@ class _ItemConsolidacion:
     eventos_ids: tuple[uuid.UUID, ...]
     valencias: tuple[tuple[uuid.UUID, float], ...] = ()
     estado_actual: float | None = None
+    # RIF (Neuro-4): ids recuperados que compitieron y perdieron el
+    # corte — la evocación de los ganadores los suprime un poco.
+    debilitar_ids: tuple[uuid.UUID, ...] = ()
 
 
 _ItemFondo = _ItemIndexacion | _ItemConsolidacion
@@ -437,10 +448,15 @@ def _evento_a_dict(evento: Evento) -> dict[str, Any]:
         "archivado": evento.archivado,
         "olvido_dirigido": evento.olvido_dirigido,
         "cuarentena": evento.cuarentena,
+        "tipo": evento.tipo,
+        "fuente": evento.fuente,
+        "debilitados": evento.debilitados,
     }
 
 
-def _resultado_a_dict(r: ResultadoBusqueda) -> dict[str, Any]:
+def _resultado_a_dict(
+    r: ResultadoBusqueda, confiable: bool | None = True
+) -> dict[str, Any]:
     """Serializa un resultado de búsqueda con su contexto temporal."""
     assert r.evento is not None
     contexto = None
@@ -457,7 +473,8 @@ def _resultado_a_dict(r: ResultadoBusqueda) -> dict[str, Any]:
         "contexto_temporal": contexto,
         # Metamemoria: qué tan fiable es el recuerdo devuelto —
         # el agente pondera la respuesta en vez de tratar toda
-        # memoria como igualmente cierta.
+        # memoria como igualmente cierta. ``confiable`` es la
+        # confianza en la fuente de origen (amnesia de fuente).
         "confianza": confianza_de_evento(
             r.evento.refuerzos,
             r.evento.weight,
@@ -465,6 +482,7 @@ def _resultado_a_dict(r: ResultadoBusqueda) -> dict[str, Any]:
             r.evento.timestamp_unix,
             int(time.time()),
             archivado=r.evento.archivado,
+            fuente_confiable=confiable,
         ),
     }
 
@@ -693,17 +711,31 @@ async def _indexar_luego(engine: AsyncEngine, item: _ItemIndexacion) -> None:
                             item.evento_id, vecino.id, "semantica", sim
                         ):
                             creados += 1
+                # Interferencia proactiva (Neuro-4): los vecinos
+                # similar-pero-distintos compiten por el mismo slot
+                # de recall — la huella nueva los ocluye. Banda más
+                # estrecha que la del vínculo (0.80+): afín es tema,
+                # casi-igual es versión.
+                proactivos = [
+                    vecino.id
+                    for vecino, sim in similar
+                    if vecino.id != item.evento_id
+                    and es_competidor_proactivo(sim, settings.dedup_umbral)
+                ]
+                if proactivos:
+                    await repo.debilitar_lote(
+                        proactivos, INTERFERENCIA_FACTOR
+                    )
             if sobrevive:
                 # ADR-003: tipo de memoria (provider o heurístico).
                 tipo_mem = await clasificar_tipo_memoria(
                     item.contenido, _obtener_provider_decision()
                 )
+                valencia = estimar_estado_emocional(item.contenido)
                 await repo.fijar_tipo_memoria(
                     item.evento_id,
                     tipo_mem.value,
-                    estado_emocional=estimar_estado_emocional(
-                        item.contenido
-                    ),
+                    estado_emocional=valencia,
                 )
                 # Novedad / error de predicción: si el evento queda
                 # lejos de la trayectoria reciente, es inesperado —
@@ -735,6 +767,12 @@ async def _indexar_luego(engine: AsyncEngine, item: _ItemIndexacion) -> None:
                 # marca época — los periodos se delimitan solos por
                 # lo inesperado, no solo por calendario.
                 if marca_frontera(s):
+                    await repo.marcar_inaugura_epoca(item.evento_id)
+                # Flashbulb (Neuro-4): sorpresa × emoción intensa es
+                # la codificación más fuerte que existe — la huella
+                # salta de peso y queda etiquetada para auditoría.
+                if es_flashbulb(s, valencia):
+                    await repo.marcar_flashbulb(item.evento_id)
                     await repo.marcar_inaugura_epoca(item.evento_id)
                 # Encadenamiento episódico (Neuro-3): el evento se ata
                 # al anterior del mismo origen dentro de la ventana —
@@ -936,17 +974,32 @@ async def _consolidar_luego(
                 ids, labil_hasta=ventana_labil(ahora)
             )
             relaciones = RelacionRepository(session)
+            # Ids realmente existentes: un dedup-merge o un evento
+            # eliminado entre el recall y esta consolidación no debe
+            # romper el lote entero (un FK muerto en una coactiva
+            # rodaría refuerzo, SRS, extinción y RIF juntos).
+            repo_ev = EventoRepository(session)
+            modelos = await repo_ev.obtener_muchos(
+                ids + [e for it in items for e in it.debilitar_ids]
+            )
+            existentes = {m.id for m in modelos}
             for item in items:
-                if len(item.eventos_ids) >= 2:
+                pares = [
+                    par
+                    for par in pares_coactivos(
+                        [str(e) for e in item.eventos_ids]
+                    )
+                    if uuid.UUID(par[0]) in existentes
+                    and uuid.UUID(par[1]) in existentes
+                ]
+                if pares:
                     await relaciones.reforzar_coactivas(
                         [
                             (
                                 uuid.UUID(a) if isinstance(a, str) else a,
                                 uuid.UUID(b) if isinstance(b, str) else b,
                             )
-                            for a, b in pares_coactivos(
-                                [str(e) for e in item.eventos_ids]
-                            )
+                            for a, b in pares
                         ],
                         COACTIVA_DELTA,
                         COACTIVA_PESO_MAX,
@@ -962,10 +1015,12 @@ async def _consolidar_luego(
             # SRS (Neuro-3): cada evocación recalcula el repaso óptimo
             # — el momento en que la curva cruzará el umbral de repaso.
             # Repasar justo antes de olvidar es cuando más consolida.
-            repo_ev = EventoRepository(session)
-            modelos = await repo_ev.obtener_muchos(ids)
+            # Solo los evocados: los perdedores RIF no "repasan" nada.
+            evocados = set(ids)
             revisiones: dict[uuid.UUID, int] = {}
             for m in modelos:
+                if m.id not in evocados:
+                    continue
                 mv = media_vida_dias(
                     Dimension(m.dimension),
                     TipoMemoria(m.tipo_memoria) if m.tipo_memoria else None,
@@ -980,6 +1035,18 @@ async def _consolidar_luego(
                     revisiones[m.id] = proxima
             if revisiones:
                 await repo_ev.fijar_proximas_revisiones(revisiones)
+            # RIF (Neuro-4): los competidores no elegidos se suprimen
+            # — evocar al ganador debilita a los perdedores un poco.
+            perdedores = [
+                eid
+                for item in items
+                for eid in item.debilitar_ids
+                if eid in existentes
+            ]
+            if perdedores:
+                await repo_ev.debilitar_lote(
+                    perdedores, RIF_FACTOR, piso=RIF_PISO_WEIGHT
+                )
             await session.commit()
     except Exception:  # noqa: BLE001 — el fallo no debe propagarse al loop
         logger.exception("no se pudieron consolidar efectos de evocación")
@@ -1025,15 +1092,18 @@ async def _consultar(
                 }
                 for v in vencidas
             ]
+        competidores: list[str] = []
         resultados = await _obtener_busqueda().buscar(
             session,
             consulta,
             top_n=max(1, min(top_n, 50)),
             rama=rama,
             ctx=ctx,
+            competidores=competidores,
         )
         estado_actual: float | None = None
         episodios_por_gist: dict[str, list[dict[str, Any]]] = {}
+        confianza_fuentes: dict[str, bool] = {}
         if resultados:
             # ADR-003 patrón 6 — memoria dependiente de contexto/estado:
             # recuerdos codificados en una hora/fuente/estado parecidos
@@ -1085,6 +1155,39 @@ async def _consultar(
                 for r in resultados
             ]
             resultados.sort(key=lambda r: r.score_final, reverse=True)
+            # Zeigarnik (Neuro-4): los compromisos abiertos pesan más
+            # — el cerebro no suelta lo pendiente. Un solo query por
+            # lote, solo si hay compromisos entre los resultados.
+            posibles = [
+                r.evento_id
+                for r in resultados
+                if r.evento is not None and r.evento.tipo == "compromiso"
+            ]
+            if posibles:
+                abiertos = await EventoRepository(
+                    session, ctx
+                ).ids_compromisos_abiertos(
+                    [uuid.UUID(e) for e in posibles]
+                )
+                if abiertos:
+                    resultados = [
+                        (
+                            replace(
+                                r,
+                                score_final=r.score_final
+                                * factor_zeigarnik(
+                                    r.evento.tipo,
+                                    uuid.UUID(r.evento_id) not in abiertos,
+                                ),
+                            )
+                            if r.evento is not None
+                            else r
+                        )
+                        for r in resultados
+                    ]
+                    resultados.sort(
+                        key=lambda r: r.score_final, reverse=True
+                    )
             # Expansión de gist (Neuro-3): un resultado semántico
             # trae sus episodios miembros — la abstracción llega
             # con la evidencia que la sostiene.
@@ -1101,6 +1204,20 @@ async def _consultar(
                 episodios_por_gist[str(gid)] = [
                     _evento_a_dict(Evento.desde_modelo(m)) for m in miembros
                 ]
+            # Amnesia de fuente (Neuro-4): la confianza pesa el
+            # origen — un solo query por lote para todas las fuentes
+            # presentes en los resultados.
+            confianza_fuentes = await FuenteRepository(
+                session, ctx
+            ).fuentes_confiables(
+                list(
+                    {
+                        r.evento.fuente
+                        for r in resultados
+                        if r.evento is not None and r.evento.fuente
+                    }
+                )
+            )
     _encolar_fondo(
         _ItemConsolidacion(
             tuple(uuid.UUID(r.evento_id) for r in resultados),
@@ -1110,13 +1227,21 @@ async def _consultar(
                 if r.evento is not None and r.evento.estado_emocional is not None
             ),
             estado_actual,
+            tuple(uuid.UUID(e) for e in competidores),
         )
     )
     if resultados:
         _registrar_actividad("recall", consulta, [r.evento_id for r in resultados])
     serializados = []
     for r in resultados:
-        d = _resultado_a_dict(r)
+        d = _resultado_a_dict(
+            r,
+            confiable=(
+                confianza_fuentes.get(r.evento.fuente)
+                if r.evento is not None and r.evento.fuente
+                else None
+            ),
+        )
         # Tip-of-the-tongue: señal bajo el umbral de solidez se
         # declara honestamente ("casi recuerdo esto…"), ni amnesia
         # ni certeza fingida.

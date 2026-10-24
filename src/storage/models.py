@@ -257,6 +257,10 @@ class EventoModel(Base):
     cuarentena: Mapped[bool] = mapped_column(
         Boolean, server_default="false"
     )
+    # Neuro-4 — debilitamientos por competencia (RIF + proactiva).
+    debilitados: Mapped[int] = mapped_column(
+        Integer, server_default="0"
+    )
     contenido_tsv: Mapped[str | None] = mapped_column(
         TSVECTOR,
         Computed("to_tsvector('spanish', contenido)", persisted=True),

@@ -24,6 +24,26 @@ from src.core.memoria.semanticizacion import EpisodioGist, _coseno
 UMBRAL_REM_MIN = 0.55
 UMBRAL_REM_MAX = 0.78
 REM_MAX_POR_CORRIDA = 5
+# Tope de candidatos evaluados: la búsqueda es O(n²) — pasado el cap,
+# se muestrea por estratos (toda época del corpus sigue representada)
+# y el costo queda acotado a ~300²/2 = 45k cosenos por corrida.
+REM_MAX_CANDIDATOS = 300
+
+
+def _muestrear(
+    elegibles: list[EpisodioGist], cap: int
+) -> list[EpisodioGist]:
+    """Muestra estratificada determinista: stride uniforme por id.
+
+    Sin azar — la misma entrada produce el mismo sueño (reproducible
+    y testeable); el orden por id reparte todas las épocas del corpus
+    en vez de quedarse con lo más reciente.
+    """
+    if len(elegibles) <= cap:
+        return elegibles
+    ordenados = sorted(elegibles, key=lambda e: e.id)
+    paso = len(ordenados) / cap
+    return [ordenados[int(i * paso)] for i in range(cap)]
 
 
 def pares_rem(
@@ -31,6 +51,7 @@ def pares_rem(
     minimo: float = UMBRAL_REM_MIN,
     maximo: float = UMBRAL_REM_MAX,
     max_pares: int = REM_MAX_POR_CORRIDA,
+    max_candidatos: int = REM_MAX_CANDIDATOS,
 ) -> list[tuple[str, str]]:
     """Encuentra pares soñables: similares pero distantes.
 
@@ -44,11 +65,14 @@ def pares_rem(
         minimo: Coseno mínimo — bajo no hay relación real.
         maximo: Coseno máximo — más allá ya es un duplicado.
         max_pares: Tope de vínculos por corrida de sueño.
+        max_candidatos: Cap de evaluados — acota el O(n²).
 
     Returns:
         Pares ``(id_a, id_b)`` con ``id_a < id_b`` (orden canónico).
     """
-    elegibles = [e for e in episodios if e.embedding]
+    elegibles = _muestrear(
+        [e for e in episodios if e.embedding], max_candidatos
+    )
     candidatos: list[tuple[float, str, str]] = []
     for i, ev_a in enumerate(elegibles):
         for ev_b in elegibles[i + 1 :]:

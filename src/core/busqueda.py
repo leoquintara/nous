@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import get_settings
 from src.core.embeddings import GeneradorEmbeddings
 from src.core.identidad import Contexto
+from src.core.memoria.retrieval import competidores_rif
 from src.core.modelos import Contexto4D, Evento, ResultadoBusqueda
 from src.core.reranker import ReordenadorLocal
 from src.storage.models import EventoModel
@@ -31,7 +32,7 @@ BOOST_AMPLITUD = 0.25
 BOOST_PRIMING = 0.15
 UMBRAL_COSENO_MIN = 0.25
 SOBREMUESTREO = 4
-CANDIDATOS_RERANK = 10
+
 PESO_RERANK = 0.5
 SEGUNDOS_POR_DIA = 86_400
 
@@ -92,6 +93,7 @@ class BusquedaHibrida4D:
         cantidad_contexto: int = 3,
         vida_media_dias: float = 30.0,
         priming_segundos: int | None = None,
+        rerank_candidatos: int | None = None,
     ) -> None:
         """Inicializa el orquestador de búsqueda.
 
@@ -103,6 +105,8 @@ class BusquedaHibrida4D:
             vida_media_dias: Vida media del decaimiento por recencia.
             priming_segundos: TTL de la activación difusa (None =
                 ``settings.priming_segundos``, 0 = apagado).
+            rerank_candidatos: Profundidad del cross-encoder (None =
+                ``settings.reranker_candidatos``).
         """
         self._embeddings = embeddings
         self._reordenador = reordenador
@@ -113,6 +117,11 @@ class BusquedaHibrida4D:
             if priming_segundos is None
             else priming_segundos
         )
+        self._rerank_candidatos = (
+            get_settings().reranker_candidatos
+            if rerank_candidatos is None
+            else rerank_candidatos
+        )
         self._primados: dict[str, tuple[float, float]] = {}
 
     async def buscar(
@@ -122,6 +131,7 @@ class BusquedaHibrida4D:
         top_n: int = 10,
         rama: str | None = None,
         ctx: Contexto | None = None,
+        competidores: list[str] | None = None,
     ) -> list[ResultadoBusqueda]:
         """Ejecuta la búsqueda híbrida completa con contexto 4D.
 
@@ -136,6 +146,11 @@ class BusquedaHibrida4D:
             ctx: Contexto de identidad; acota la búsqueda a la
                 visibilidad del llamante (mías ∪ workspace ∪ sin
                 atribuir). None = sin filtro (tests de capa core).
+            competidores: Lista out opcional — si se pasa, recibe los
+                ids recuperados que compitieron y perdieron el corte
+                (RIF: la evocación del ganador suprime a los
+                perdedores). Solo los que estuvieron en rango real de
+                competencia, no todo el ruido de las ramas.
 
         Returns:
             Resultados ordenados por score_final con contexto temporal.
@@ -167,6 +182,17 @@ class BusquedaHibrida4D:
         else:
             finales = await self._contextualizar(repo, resultados[:top_n])
         self._primar(finales, ahora)
+        if competidores is not None:
+            elegidos = {r.evento_id for r in finales}
+            vistos: set[str] = set(elegidos)
+            for hits in (hits_texto, hits_vector):
+                for eid in competidores_rif(
+                    [str(m.id) for m, _ in hits],
+                    list(elegidos),
+                ):
+                    if eid not in vistos:
+                        vistos.add(eid)
+                        competidores.append(eid)
         return finales
 
     def _activaciones(self, ahora: float) -> dict[str, float]:
@@ -239,7 +265,7 @@ class BusquedaHibrida4D:
         """
         elegibles = [
             r
-            for r in resultados[: max(top_n, CANDIDATOS_RERANK)]
+            for r in resultados[: max(top_n, self._rerank_candidatos)]
             if r.evento is not None
         ]
         marcas = []
@@ -269,7 +295,7 @@ class BusquedaHibrida4D:
     ) -> list[ResultadoBusqueda]:
         """Reordena los mejores candidatos con el cross-encoder local."""
         assert self._reordenador is not None
-        candidatos = resultados[:CANDIDATOS_RERANK]
+        candidatos = resultados[: self._rerank_candidatos]
         textos = [r.evento.contenido if r.evento else "" for r in candidatos]
         logits = await self._reordenador.puntuar(query, textos)
         score_max = candidatos[0].score_final
@@ -284,7 +310,7 @@ class BusquedaHibrida4D:
             for r, logit in zip(candidatos, logits, strict=True)
         ]
         reordenados.sort(key=lambda r: r.score_final, reverse=True)
-        return reordenados + resultados[CANDIDATOS_RERANK:]
+        return reordenados + resultados[self._rerank_candidatos :]
 
 
 def _indice_modelos(

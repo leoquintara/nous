@@ -13,11 +13,15 @@ from src.core.memoria.retrieval import (
     COACTIVA_PESO_MAX,
     COACTIVA_TOP_K,
     EXTINCION_FACTOR,
+    RIF_PISO_WEIGHT,
+    ZEIGARNIK_BOOST,
+    competidores_rif,
     confianza,
     confianza_de_evento,
     esta_labil,
     extincion_valencia,
     factor_espaciado,
+    factor_zeigarnik,
     intervalo_medio,
     pares_coactivos,
     peso_coactiva,
@@ -152,3 +156,59 @@ def test_intervalo_medio_divide_el_span_entre_ensayos() -> None:
     assert intervalo_medio(creado, ultimo, 4) == pytest.approx(5.0)
     assert intervalo_medio(creado, None, 4) is None
     assert intervalo_medio(creado, ultimo, 0) is None
+
+
+def test_zeigarnik_premia_solo_compromisos_abiertos() -> None:
+    """Lo pendiente pesa; lo cerrado y lo no-compromiso no."""
+    assert factor_zeigarnik("compromiso", cerrado=False) == ZEIGARNIK_BOOST
+    assert factor_zeigarnik("compromiso", cerrado=True) == 1.0
+    assert factor_zeigarnik("evento", cerrado=False) == 1.0
+    assert factor_zeigarnik(None, cerrado=False) == 1.0
+
+
+def test_competidores_rif_solo_los_que_rivalisaron() -> None:
+    """Fuera del corte de competencia no hay "perdedor" — hay ruido."""
+    candidatos = _ids(10)
+    elegidos = candidatos[:2]
+    perdedores = competidores_rif(candidatos, elegidos, rango=2)
+    # corte = 2*2 = 4 primeros → perdedores = candidatos[2..3].
+    assert perdedores == candidatos[2:4]
+
+
+def test_competidores_rif_sin_elegidos_no_debilita() -> None:
+    """Sin ganador no hay supresión que aplicar."""
+    assert competidores_rif(_ids(5), []) == []
+
+
+def test_competidores_rif_deduplica_y_excluye_ganadores() -> None:
+    """Un elegido nunca aparece como perdedor aunque se repita."""
+    ids = _ids(4)
+    candidatos = [ids[0], ids[0], ids[1], ids[2]]
+    assert competidores_rif(candidatos, [ids[0]], rango=4) == [
+        ids[1],
+        ids[2],
+    ]
+
+
+def test_piso_rif_positivo() -> None:
+    """El piso evita castigar lo que el decay natural ya olvidó."""
+    assert 0 < RIF_PISO_WEIGHT < 1.0
+
+
+def test_confianza_amnesia_de_fuente() -> None:
+    """El contenido se evoca igual, pero sin origen se confía menos."""
+    base = confianza(3, 1.0, 0.6, 10.0, fuente_confiable=True)
+    anonima = confianza(3, 1.0, 0.6, 10.0, fuente_confiable=None)
+    dudosa = confianza(3, 1.0, 0.6, 10.0, fuente_confiable=False)
+    assert anonima < base
+    assert dudosa < anonima
+    assert dudosa >= 0.05
+
+
+def test_confianza_de_evento_propaga_fuente() -> None:
+    """El atajo también descuenta por procedencia."""
+    c_ok = confianza_de_evento(2, 1.0, 0.6, AHORA - 86400, AHORA)
+    c_sin = confianza_de_evento(
+        2, 1.0, 0.6, AHORA - 86400, AHORA, fuente_confiable=None
+    )
+    assert c_sin < c_ok

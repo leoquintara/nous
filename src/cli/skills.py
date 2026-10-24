@@ -152,6 +152,16 @@ Elige la tool según la forma de la pregunta:
   devuelto según refuerzos, peso, antigüedad y si está archivado.
   Confianza baja (<0.4) → preséntalo como "recuerdo tenue", no como
   hecho; nunca pongas memoria frágil en un plan sin marcarla.
+- `casi_recuerdo: true` = la memoria está en la punta de la lengua
+  (score bajo pero presente). Dilo honestamente — "algo me suena
+  pero no lo tengo claro" es mejor que silencio o que inventar.
+- `episodios` en un resultado semántico = los eventos miembros del
+  gist que sustentan la abstracción. Cita el gist como conclusión y
+  sus episodios como evidencia — nunca presentes un resumen
+  semántico sin sus episodios si el usuario pide detalle.
+- Los resultados ya vienen **diversificados**: la búsqueda penaliza
+  near-duplicados entre sí, así que 10 resultados = 10 memorias
+  distintas (no 10 versiones de la misma).
 - `evento.weight` = el peso vivo tras decay; `evento.archivado=true`
   = está fuera del recall activo (restaurable).
 - `contexto_temporal` = la escena alrededor del recuerdo — suele
@@ -612,11 +622,16 @@ persistido.
 ## Cómo llamarla
 
 - `consolidar_memoria()` → `{evaluados, fortalecidos, promovidos,
-  archivados, semanticos, resumen, ventana_sugerida}`. Reporta el
-  resumen al usuario en lenguaje natural — el proceso es auditable,
-  no silencioso. `ventana_sugerida` indica la hora del día con
-  menos actividad histórica: la próxima corrida iría mejor ahí —
-  es recomendación, nunca un scheduler.
+  archivados, semanticos, rem, salvados, olvido_dirigido, resumen,
+  ventana_sugerida}`. Reporta el resumen al usuario en lenguaje
+  natural — el proceso es auditable, no silencioso.
+  `ventana_sugerida` indica la hora del día con menos actividad
+  histórica: la próxima corrida iría mejor ahí — es recomendación,
+  nunca un scheduler.
+- `rem` = aristas creativas entre recuerdos distantes (la fase REM
+  del sueño: recombina lo que nunca se evocó junto). `salvados` =
+  memorias que el replay rescató justo antes del archivo — el
+  sueño también decide qué NO olvidar.
 - `listar_reportes_consolidacion()` → historial de corridas con
   `detalle` (ids y razones por acción). Usa esto para explicar qué
   pasó exactamente.
@@ -637,6 +652,67 @@ persistido.
   destilada (equivalente al MEMORY.md de otros sistemas).
 - Restaurar siempre bajo petición del usuario — "en realidad sí me
   acuerdo de X" → busca su id en `listar_archivados()` y restauralo.
+"""
+
+
+_SKILL_HIGIENE = """---
+name: nous-higiene
+description: Higiene de la memoria de Nous — olvido dirigido
+  (olvidar_gradual), repasos espaciados (repasos_pendientes) y el
+  sistema inmune de fuentes (confiar_fuente, listar_cuarentena).
+  Usar cuando el usuario pida olvidar algo sin borrarlo, repasar lo
+  que se le está olvidando, o aislar una fuente que inyecta ruido.
+---
+
+# Higiene de la memoria en Nous
+
+Tres operaciones de mantenimiento vivo — distintas de la
+consolidación-sueño (batch) porque actúan **en el momento**, sobre
+petición del usuario.
+
+## Olvido dirigido — "olvida esto, pero sin destruir"
+
+- `olvidar_gradual(evento_id, olvidar=True)` → la huella decae ~3x
+  más rápido por su curva natural. Reversible con `olvidar=False`.
+- **No es** `olvidar_evento` (DELETE irreversible — nunca lo uses
+  sin confirmación explícita) ni el archivo del sueño: es dejar que
+  el tiempo haga su trabajo antes de tiempo.
+- Usarlo cuando el usuario diga "no quiero que esto pese tanto" o
+  "olvidemos ese detalle" — la historia queda, el recuerdo se
+  desvanece antes.
+
+## Repaso espaciado — "qué se me está olvidando"
+
+- `repasos_pendientes(limite)` → las memorias cuyo repaso óptimo
+  (SRS) ya venció, ordenadas por `dias_atraso`. Cada evento lleva
+  `proxima_revision` calculada desde su propia curva de retención.
+- Consultarlas **es el repaso**: evocarlas refuerza la huella y
+  reprograma la siguiente revisión. Presenta el listado cuando el
+  usuario pida una sesión de repaso o al iniciar un bloque de
+  trabajo retomado tras días.
+
+## Sistema inmune — fuentes y cuarentena
+
+- `confiar_fuente(nombre, confiable)` → `False` pone la fuente en
+  cuarentena: sus eventos nuevos se indexan pero NO aparecen en el
+  recall (retenidos, auditables, invisibles). `True` la aprueba y
+  libera de una vez los eventos aislados (`liberados` en la
+  respuesta). Si la fuente no existía, queda registrada — la
+  desconfianza preventiva es legítima.
+- `listar_cuarentena(limite)` → los eventos retenidos con su
+  `fuente`. Preséntalo antes de rehabilitar: el usuario decide con
+  evidencia, no a ciegas.
+- Usarlo cuando una fuente externa empiece a inyectar ruido, datos
+  dudosos o contenido que el usuario no reconoce como suyo.
+
+## Reglas
+
+- Ninguna de estas operaciones borra ni archiva — olvido dirigido
+  acelera, cuarentena aísla, repaso refuerza. El borrado real solo
+  vive en `nous prune` y el archivo en la consolidación.
+- Siempre reporta en lenguaje natural qué hizo cada operación:
+  "marcado para olvidar antes de tiempo", "N eventos de X en
+  cuarentena", "M memorias vencidas de repaso".
 """
 
 
@@ -673,6 +749,10 @@ como recordatorio cuando su trigger se cumple.
   de los dos triggers. Devuelve `{id, trigger_tipo, …}`.
 - `listar_intenciones(ejecutadas=False)` → pendientes; `None` =
   todas; `True` = las ya disparadas (historial).
+- `aplazar_intencion(intencion_id, segundos)` → snooze: sigue viva
+  pero ningún trigger la evalúa hasta dentro de `segundos`. Para
+  "recuérdamelo luego" / "no ahora" — NO es cancelar: el
+  recordatorio vuelve.
 - `cancelar_intencion(intencion_id)` → el recordatorio deja de
   existir como pendiente (queda auditada, no borrada). Usa el id
   de `listar_intenciones`, nunca adivines.
@@ -682,11 +762,18 @@ como recordatorio cuando su trigger se cumple.
 - Al disparar, la intención queda `ejecutada` y un evento
   recordatorio (fuente `prospectiva`) entra en la línea — es
   trazable, no un popup efímero.
+- El recordatorio disparado puede traer **prep pack**: en
+  `preparacion` llegan hasta 3 memorias relevantes al trigger —
+  léelo antes de ejecutar la intención, es el contexto que el
+  usuario necesita "en el momento justo".
 - Si el usuario dice "recuérdame X" sin fecha ni condición,
   pregunta cuál de las dos — no adivines el trigger.
 - Los recordatorios disparados llegan **al inicio** de la respuesta
   de `consultar_memoria` con `recordatorio: true` — léelos antes de
   responder y menciónalo al usuario.
+- Distinguir siempre: `aplazar` (vuelve luego) ≠ `cancelar` (no
+  vuelve). Ante duda, aplaza — el snooze se puede deshacer solo al
+  vencer.
 """
 
 
@@ -974,6 +1061,7 @@ ARTEFACTOS: tuple[Artefacto, ...] = (
     Artefacto("nous-checkin", _SKILL_CHECKIN, es_agente=False),
     Artefacto("nous-somatic", _SKILL_SOMATICA, es_agente=False),
     Artefacto("nous-consolidar", _SKILL_CONSOLIDAR, es_agente=False),
+    Artefacto("nous-higiene", _SKILL_HIGIENE, es_agente=False),
     Artefacto("nous-prospectiva", _SKILL_PROSPECTIVA, es_agente=False),
     Artefacto("nous-scripts", _SKILL_SCRIPTS, es_agente=False),
     Artefacto("nous-trabajo", _SKILL_TRABAJO, es_agente=False),

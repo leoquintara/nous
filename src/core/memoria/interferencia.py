@@ -95,3 +95,38 @@ def detectar_conflicto(
 def tiene_negacion(texto: str) -> bool:
     """True si el texto contiene una negación explícita."""
     return bool(_RE_NEGACION.search(texto))
+
+
+# --- Interferencia proactiva (Neuro-4) ---
+# La interferencia retroactiva (este módulo, arriba) es la memoria
+# NUEVA contradiciendo a la vieja. La proactiva es la vieja
+# compitiendo con la nueva: cuando se codifica un evento muy
+# similar a uno previo, la huella vieja queda ocluida — "la versión
+# anterior gana el slot de recall" es exactamente lo que el nuevo
+# recuerdo evita al debilitarla.
+#
+# La banda es más estrecha que la de vínculo semántico: por encima
+# de 0.80 el vecino compite por el mismo recuerdo; por debajo solo
+# es tema afín (compite por atención, no por identidad). Por encima
+# del umbral de dedup NO es competencia — es el mismo evento.
+INTERFERENCIA_MIN = 0.80
+INTERFERENCIA_FACTOR = 0.92  # la codificación compite más que el recall
+
+
+def es_competidor_proactivo(
+    similitud: float,
+    dedup_umbral: float,
+    minimo: float = INTERFERENCIA_MIN,
+) -> bool:
+    """True si el vecino compite por el mismo slot de recall.
+
+    Similar-pero-distinto: lo bastante parecido para evocarse con
+    las mismas consultas, lo bastante distinto para no ser el mismo
+    evento (eso ya lo resuelve la deduplicación).
+
+    Args:
+        similitud: Coseno del vecino con el evento nuevo.
+        dedup_umbral: A partir de aquí ya es duplicado (settings).
+        minimo: Banda inferior de competencia real.
+    """
+    return minimo <= similitud < dedup_umbral

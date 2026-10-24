@@ -72,3 +72,40 @@ def marca_frontera(sorpresa_val: float) -> bool:
     decay — el cerebro codifica los cortes con más fuerza.
     """
     return sorpresa_val >= UMBRAL_FRONTERA
+
+
+# --- Memoria flashbulb (Neuro-4) ---
+# Sorpresa sola → frontera de época. Sorpresa × emoción intensa →
+# flashbulb: la combinación "inesperado + cargado" produce la
+# codificación más fuerte que existe ("dónde estabas cuando…").
+# Umbrales más laxos que la frontera pura porque la valencia ya
+# filtra lo cotidiano sorprendente.
+UMBRAL_FLASHBULB_SORPRESA = 0.55
+# Intensidad emocional = distancia al neutro. El campo
+# estado_emocional vive en [0,1] con 0.5 neutro (0 = devastador,
+# 1 = eufórico), así que 0.3 pide ~3 marcadores netos del mismo
+# signo — carga real, no un "bien" suelto. Entradas en escala
+# [-1,1] (valencias manuales) se miden por magnitud directa.
+UMBRAL_FLASHBULB_VALENCIA = 0.3
+FLASHBULB_FACTOR = 1.5  # weight × 1.5, capped por el tope fisiológico
+FLASHBULB_WEIGHT_MAX = 3.0
+
+
+def es_flashbulb(sorpresa_val: float, valencia: float | None) -> bool:
+    """True si el evento merece codificación flashbulb.
+
+    Necesita las dos señales: lo inesperado (sorpresa) Y lo intenso
+    (emoción extrema — da igual si es euforia o impacto). Una sola
+    no basta: sorpresa sin carga es un detalle curioso; carga sin
+    sorpresa es rutina emocional.
+    """
+    if valencia is None:
+        return False
+    if 0.0 <= valencia <= 1.0:
+        intensidad = abs(valencia - 0.5)
+    else:
+        intensidad = abs(valencia)
+    return (
+        sorpresa_val >= UMBRAL_FLASHBULB_SORPRESA
+        and intensidad >= UMBRAL_FLASHBULB_VALENCIA
+    )

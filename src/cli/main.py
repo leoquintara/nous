@@ -192,6 +192,38 @@ def _parser() -> argparse.ArgumentParser:
     )
     res.add_argument("evento_id", help="UUID del evento archivado.")
 
+    olv = sub.add_parser(
+        "olvidar",
+        help="Olvido dirigido: acelera el olvido natural de una memoria.",
+    )
+    olv.add_argument("evento_id", help="UUID del evento a olvidar.")
+    olv.add_argument(
+        "--deshacer", action="store_true",
+        help="Quita la marca: la memoria vuelve a decaer normal.",
+    )
+
+    sub.add_parser(
+        "cuarentena",
+        help="Lista memorias aisladas por fuente no confiable.",
+    )
+
+    cf = sub.add_parser(
+        "confiar",
+        help="Aprueba una fuente (o la desconfía con --desconfiar).",
+    )
+    cf.add_argument("fuente", help="Nombre de la fuente.")
+    cf.add_argument(
+        "--desconfiar", action="store_true",
+        help="Marca la fuente como no confiable (cuarentena).",
+    )
+
+    ap = sub.add_parser(
+        "aplazar",
+        help="Snooze: pospone el disparo de una intención pendiente.",
+    )
+    ap.add_argument("intencion_id", help="UUID de la intención.")
+    ap.add_argument("horas", type=int, help="Horas a posponer.")
+
     al = sub.add_parser(
         "activate-license",
         help="Activa una license key Pro (~/.nous/license.jwt).",
@@ -760,6 +792,87 @@ async def _restaurar_cli(evento_id: str) -> bool:
         await engine.dispose()
 
 
+async def _olvidar_cli(evento_id: str, deshacer: bool) -> bool:
+    """Marca/desmarca el olvido dirigido de un evento por UUID."""
+    import uuid as _uuid
+
+    from src.storage.database import crear_engine, get_session
+    from src.storage.repositories import EventoRepository
+
+    engine = crear_engine()
+    try:
+        async with get_session(engine) as session:
+            ok = await EventoRepository(session).marcar_olvido_dirigido(
+                _uuid.UUID(evento_id), not deshacer
+            )
+            await session.commit()
+        return ok
+    finally:
+        await engine.dispose()
+
+
+async def _listar_cuarentena_cli() -> list[dict[str, object]]:
+    """Lista los eventos en cuarentena por fuente no confiable."""
+    from src.storage.database import crear_engine, get_session
+    from src.storage.repositories import EventoRepository
+
+    engine = crear_engine()
+    try:
+        async with get_session(engine) as session:
+            filas = await EventoRepository(session).listar_cuarentena()
+        return [
+            {
+                "id": str(f.id),
+                "contenido": f.contenido[:120],
+                "fuente": f.fuente,
+            }
+            for f in filas
+        ]
+    finally:
+        await engine.dispose()
+
+
+async def _confiar_cli(fuente: str, confiable: bool) -> None:
+    """Registra la fuente si falta y ajusta su confianza."""
+    from src.storage.database import crear_engine, get_session
+    from src.storage.repositories import EventoRepository, FuenteRepository
+
+    engine = crear_engine()
+    try:
+        async with get_session(engine) as session:
+            repo_f = FuenteRepository(session)
+            await repo_f.crear(fuente)
+            await repo_f.marcar_confiable(fuente, confiable)
+            if confiable:
+                await EventoRepository(
+                    session
+                ).aprobar_cuarentena_fuente(fuente)
+            await session.commit()
+    finally:
+        await engine.dispose()
+
+
+async def _aplazar_cli(intencion_id: str, horas: int) -> bool:
+    """Pospone el disparo de una intención N horas (snooze)."""
+    import time
+    import uuid as _uuid
+
+    from src.storage.database import crear_engine, get_session
+    from src.storage.repositories import IntencionProspectivaRepository
+
+    engine = crear_engine()
+    try:
+        hasta = int(time.time()) + horas * 3600
+        async with get_session(engine) as session:
+            ok = await IntencionProspectivaRepository(session).aplazar(
+                _uuid.UUID(intencion_id), hasta
+            )
+            await session.commit()
+        return ok
+    finally:
+        await engine.dispose()
+
+
 def _cmd_benchmark() -> int:
     """Ejecuta la suite de benchmarks como subproceso."""
     import subprocess
@@ -1088,6 +1201,65 @@ def _despachar(args: argparse.Namespace) -> int:
             return 0
         sys.stderr.write(
             ui.error("El evento no existe o no está archivado.") + "\n"
+        )
+        return 1
+    if comando == "olvidar":
+        try:
+            ok = asyncio.run(
+                _olvidar_cli(args.evento_id, args.deshacer)
+            )
+        except ValueError:
+            sys.stderr.write(
+                ui.error(f"UUID inválido: {args.evento_id}") + "\n"
+            )
+            return 2
+        if ok:
+            accion = "Olvido normal restaurado." if args.deshacer else (
+                "Olvido dirigido marcado."
+            )
+            sys.stdout.write(ui.ok(accion) + "\n")
+            return 0
+        sys.stderr.write(ui.error("El evento no existe.") + "\n")
+        return 1
+    if comando == "cuarentena":
+        filas = asyncio.run(_listar_cuarentena_cli())
+        if not filas:
+            sys.stdout.write(ui.suave("Sin memorias en cuarentena.\n"))
+        for f in filas:
+            sys.stdout.write(
+                f"{ui.acento(str(f['fuente']))} "
+                f"{ui.suave(str(f['id']))} {f['contenido']}\n"
+            )
+        return 0
+    if comando == "confiar":
+        asyncio.run(_confiar_cli(args.fuente, not args.desconfiar))
+        if args.desconfiar:
+            sys.stdout.write(
+                ui.ok(f"Fuente '{args.fuente}' en cuarentena.") + "\n"
+            )
+        else:
+            sys.stdout.write(
+                ui.ok(f"Fuente '{args.fuente}' aprobada.") + "\n"
+            )
+        return 0
+    if comando == "aplazar":
+        try:
+            ok = asyncio.run(
+                _aplazar_cli(args.intencion_id, args.horas)
+            )
+        except ValueError:
+            sys.stderr.write(
+                ui.error(f"UUID inválido: {args.intencion_id}") + "\n"
+            )
+            return 2
+        if ok:
+            sys.stdout.write(
+                ui.ok(f"Intención aplazada {args.horas}h.") + "\n"
+            )
+            return 0
+        sys.stderr.write(
+            ui.error("La intención no existe o ya no está pendiente.")
+            + "\n"
         )
         return 1
     return 2
