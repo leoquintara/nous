@@ -39,18 +39,20 @@ nous/
 │   │   ├── modelos.py          # Dataclasses y enums del dominio
 │   │   ├── exceptions.py       # Excepciones del dominio
 │   │   ├── memoria/            # Patrones neurocognitivos (ADR-003, puros/testeables)
-│   │   │   ├── decay.py        #   Decaimiento adaptativo + spacing + primacía
-│   │   │   ├── consolidacion.py#   Sueño: promueve/fortalece/archiva + reporte
-│   │   │   ├── prospectiva.py  #   Intenciones time/event + triggers
+│   │   │   ├── decay.py        #   Decay adaptativo + spacing + primacía + olvido dirigido + SRS
+│   │   │   ├── consolidacion.py#   Sueño: promueve/fortalece/archiva + reporte + salvados
+│   │   │   ├── prospectiva.py  #   Intenciones time/event + triggers + snooze
 │   │   │   ├── interferencia.py#   Detección de contradicciones (rel. 'contradice')
 │   │   │   ├── contexto.py     #   Boost contexto/estado-dependiente en búsqueda
 │   │   │   ├── scripts.py      #   Minería de secuencias recurrentes
 │   │   │   ├── tipos.py        #   episódica/semántica/procedimental + valencia
 │   │   │   ├── ritmos.py       #   Primacía de época + ventana circadiana de sueño
 │   │   │   ├── retrieval.py    #   Hebbiana, extinción, metamemoria, ventana lábil
-│   │   │   ├── novedad.py      #   Sorpresa / prediction-error → amplitud
+│   │   │   ├── novedad.py      #   Sorpresa → amplitud + frontera de época
 │   │   │   ├── trabajo.py      #   Buffer de trabajo (Baddeley): TTL + ensayo
-│   │   │   └── semanticizacion.py# Sueño: episodios afines → gist semántico
+│   │   │   ├── semanticizacion.py# Sueño: episodios afines → gist semántico
+│   │   │   ├── diversidad.py   #   Fan effect en resultados + tip-of-the-tongue
+│   │   │   └── rem.py          #   Sueño REM: pares soñables (rel. 'rem')
 │   │   └── decision/           # Proveedores System One (ADR-002, autocontenido)
 │   │       ├── provider.py     #   Protocolo /v1/systemone (choice/score/noul)
 │   │       ├── adapters.py     #   Laya/Ollama/HTTP/Jev con guardia de privacidad
