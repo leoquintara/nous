@@ -414,6 +414,8 @@ def _modelo_a_dict(modelo: EventoModel) -> dict[str, Any]:
         "weight": modelo.weight,
         "archivado": modelo.archivado,
         "curado": modelo.curado,
+        "olvido_dirigido": modelo.olvido_dirigido,
+        "cuarentena": modelo.cuarentena,
         "scope": modelo.scope,
         "workspace_id": str(modelo.workspace_id),
         "autor_id": str(modelo.autor_id) if modelo.autor_id else None,
@@ -433,6 +435,8 @@ def _evento_a_dict(evento: Evento) -> dict[str, Any]:
         "estado_emocional": evento.estado_emocional,
         "weight": evento.weight,
         "archivado": evento.archivado,
+        "olvido_dirigido": evento.olvido_dirigido,
+        "cuarentena": evento.cuarentena,
     }
 
 
@@ -1148,6 +1152,7 @@ async def _fuentes(workspace: str | None = None) -> list[dict[str, Any]]:
                 "rama_origen": f.rama_origen,
                 "metadata": f.extra,
                 "eventos": n,
+                "confiable": f.confiable,
             }
             for f, n in filas
         ]
@@ -1167,6 +1172,7 @@ async def _fuentes(workspace: str | None = None) -> list[dict[str, Any]]:
                         "rama_origen": "main",
                         "metadata": {},
                         "eventos": int(n),
+                        "confiable": True,
                     }
                 )
     return resultado

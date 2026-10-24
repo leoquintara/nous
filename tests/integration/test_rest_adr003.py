@@ -165,3 +165,99 @@ async def test_evento_campos_declarados_persisten(
         },
     )
     assert resp.status_code == 200
+
+
+# ── Neuro-3: superficie REST de los patrones nuevos ─────────
+
+
+@pytest.mark.asyncio
+async def test_olvidar_gradual_marca_y_revierte(
+    cliente: AsyncClient,
+) -> None:
+    """POST /eventos/{id}/olvidar → olvido_dirigido, reversible."""
+    alta = await cliente.post(
+        "/api/eventos",
+        json={
+            "contenido": "recuerdo que debería desvanecerse antes",
+            "fuente": FUENTE_TEST,
+        },
+    )
+    assert alta.status_code == 200
+    eid = alta.json()["id"]
+    resp = await cliente.post(
+        f"/api/eventos/{eid}/olvidar", json={"olvidar": True}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["olvido_dirigido"] is True
+    # Reversible: desmarcar restaura el decay normal.
+    resp = await cliente.post(
+        f"/api/eventos/{eid}/olvidar", json={"olvidar": False}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["olvido_dirigido"] is False
+
+
+@pytest.mark.asyncio
+async def test_repasos_lista_forma_y_vacia(cliente: AsyncClient) -> None:
+    """GET /repasos → lista (quizá vacía) con el shape del SRS."""
+    resp = await cliente.get("/api/repasos", params={"limite": 5})
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
+
+
+@pytest.mark.asyncio
+async def test_confianza_fuente_aisla_y_aprueba(
+    cliente: AsyncClient,
+) -> None:
+    """POST /fuentes/{n}/confianza → cuarentena y liberación."""
+    nombre = f"{FUENTE_TEST}_no_confiable"
+    alta = await cliente.post(
+        "/api/eventos",
+        json={
+            "contenido": "dato sospechoso indexado igual",
+            "fuente": nombre,
+        },
+    )
+    assert alta.status_code == 200
+    # Aislar: la fuente queda marcada y sus eventos nuevos entran
+    # en cuarentena.
+    resp = await cliente.post(
+        f"/api/fuentes/{nombre}/confianza", json={"confiable": False}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["confiable"] is False
+    # Aprobar: libera la cuarentena acumulada.
+    resp = await cliente.post(
+        f"/api/fuentes/{nombre}/confianza", json={"confiable": True}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["confiable"] is True
+
+
+@pytest.mark.asyncio
+async def test_cuarentena_lista_forma(cliente: AsyncClient) -> None:
+    """GET /cuarentena → lista de eventos aislados por fuente."""
+    resp = await cliente.get("/api/cuarentena", params={"limite": 10})
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
+
+
+@pytest.mark.asyncio
+async def test_aplazar_intencion_devuelve_timestamp(
+    cliente: AsyncClient,
+) -> None:
+    """POST /intenciones/{id}/aplazar → nueva marca temporal."""
+    alta = await cliente.post(
+        "/api/intenciones",
+        json={
+            "intencion": "revisar el deploy de mañana",
+            "en": "2d",
+        },
+    )
+    assert alta.status_code == 200
+    iid = alta.json()["id"]
+    resp = await cliente.post(
+        f"/api/intenciones/{iid}/aplazar", json={"segundos": 7200}
+    )
+    assert resp.status_code == 200
+    assert "aplazada_hasta" in resp.json()
