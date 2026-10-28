@@ -587,7 +587,12 @@ class EventoRepository:
         return resultado.scalars().all()
 
     async def aprobar_staged(self, evento_ids: list[uuid.UUID]) -> int:
-        """Convierte propuestas staged en memorias reales."""
+        """Convierte propuestas staged en memorias reales.
+
+        La aprobación humana ES corroboración: borra también la marca
+        ``parametrica`` — un humano leyó la escritura y la avaló, así
+        que el techo paramétrico ya no aplica.
+        """
         if not evento_ids:
             return 0
         stmt = (
@@ -597,7 +602,7 @@ class EventoRepository:
                 EventoModel.staged.is_(True),
                 *self._vis(),
             )
-            .values(staged=False)
+            .values(staged=False, parametrica=False)
         )
         resultado = cast(
             CursorResult[EventoModel], await self._session.execute(stmt)
@@ -1349,41 +1354,51 @@ class RelacionRepository:
         pares: list[tuple[uuid.UUID, uuid.UUID]],
         delta: float,
         peso_max: float,
+        ahora_unix: int,
     ) -> int:
         """Crea o refuerza aristas ``coactiva`` entre co-evocados.
 
         Hebbiana: cada co-recall suma ``delta`` al peso de la arista
         con tope ``peso_max`` — la asociación se vuelve estable con
         el uso, no se duplica. El par viaja en orden canónico.
+        ``ahora_unix`` sella el co-encendido: la lectura lo convierte
+        en STP (potenciación rápida ~6h) sobre el peso LTP.
 
         Args:
             pares: Pares de UUIDs co-evocados (de
                 :func:`retrieval.pares_coactivos`).
             delta: Incremento por co-evocación.
             peso_max: Tope fisiológico del vínculo.
+            ahora_unix: Epoch del co-encendido (sello STP).
 
         Returns:
             Aristas tocadas (creadas o reforzadas).
         """
         tocadas = 0
+        ws = self._ctx.workspace_id if self._ctx is not None else None
         for a_id, b_id in pares:
             if a_id == b_id:
                 continue
             origen, destino = (a_id, b_id) if a_id < b_id else (b_id, a_id)
+            valores: dict[str, Any] = {
+                "origen_id": origen,
+                "destino_id": destino,
+                "tipo": "coactiva",
+                "peso": delta,
+                "ultima_coactiva": ahora_unix,
+            }
+            if ws is not None:
+                valores["workspace_id"] = ws
             stmt = (
                 pg_insert(RelacionModel)
-                .values(
-                    origen_id=origen,
-                    destino_id=destino,
-                    tipo="coactiva",
-                    peso=delta,
-                )
+                .values(**valores)
                 .on_conflict_do_update(
                     constraint="uq_relaciones_par_tipo",
                     set_={
                         "peso": func.least(
                             RelacionModel.peso + delta, peso_max
-                        )
+                        ),
+                        "ultima_coactiva": ahora_unix,
                     },
                 )
             )
@@ -1392,6 +1407,44 @@ class RelacionRepository:
                 CursorResult[RelacionModel], resultado
             ).rowcount
         return tocadas
+
+    async def vecinos_coactivos(
+        self,
+        evento_ids: list[uuid.UUID],
+        limite: int = 24,
+    ) -> Sequence[RelacionModel]:
+        """Aristas coactivas que tocan a alguno de los eventos dados.
+
+        La otra mitad del hebbianismo: ``reforzar_coactivas`` graba
+        quién se encendió junto; este método lo lee para que la
+        expansión en recall traiga a los vecinos históricos — lo que
+        se evoca junto, se recuerda junto.
+
+        Args:
+            evento_ids: Eventos ancla (los ganadores del recall).
+            limite: Máximo de aristas a devolver.
+
+        Returns:
+            Aristas ordenadas por peso LTP descendente; el STP se
+            evalúa en la capa de negocio (función pura).
+        """
+        if not evento_ids:
+            return []
+        stmt = (
+            select(RelacionModel)
+            .where(
+                RelacionModel.tipo == "coactiva",
+                or_(
+                    RelacionModel.origen_id.in_(evento_ids),
+                    RelacionModel.destino_id.in_(evento_ids),
+                ),
+                *self._vis(),
+            )
+            .order_by(RelacionModel.peso.desc())
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
 
     async def listar(self, limite: int = 2000) -> Sequence[RelacionModel]:
         """Lista los vínculos registrados, más recientes primero.

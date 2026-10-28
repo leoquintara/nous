@@ -582,6 +582,89 @@ aísla por fuente no confiable; esta posterga por criterio humano.
 el Sistema 1 propone rápido; el Sistema 2 aprueba lento. La
 memoria que se escribe sin revisión es una alucinación firmada.
 
+## Ronda 6 — capa epistémica
+
+De la ronda 5 el agente quedó honesto sobre *sus sesiones*; la
+ronda 6 lo hace honesto sobre *su conocimiento*: qué parte de lo
+recuperado fue observado y qué parte salió de los pesos del modelo.
+Inspirado en el sustrato epistémico de base76-research-lab/Nous —
+tomadas solo las piezas con valor de producto demostrable (el
+techo paramétrico, el desglose y las lagunas); el TDA y el grafo
+NetworkX quedaron fuera por no aportar ventaja medible sobre
+pgvector.
+
+### 41. Techo paramétrico — `techo_parametrica` + `parametrica`
+
+**Código:** `src/core/memoria/retrieval.py` (`TECHO_PARAMETRICA`,
+`CORROBORACION_REFUERZOS`), columna `eventos.parametrica`
+
+Una afirmación que el agente escribió desde sus propios pesos —
+sin observación externa — se guarda con `parametrica=true` y su
+confianza queda topada a **0.70** mientras la realidad no la avale.
+El techo se levanta por dos vías: (a) **corroboración por uso** —
+`CORROBORACION_REFUERZOS` evocaciones que el recuerdo sobrevive
+cuentan como validación empírica; (b) **aprobación humana** —
+aprobar una escritura staged limpia el flag (un humano la avaló).
+El sistema no puede autopromoverse: sus conjeturas nunca alcanzan
+el rango de hecho por inercia.
+
+*Fundamento:* monitoreo de fuente interna vs externa (Johnson,
+Hashtroudi & Lindsay, 1993) — confundir lo imaginado con lo
+percibido es el error epistémico humano por excelencia; el techo
+es la barrera estructural que lo impide.
+
+### 42. Desglose de confianza — `desglose_confianza`
+
+**Código:** `src/core/memoria/retrieval.py`, expuesto por
+resultado en `consultar_memoria`
+
+La metamemoria de la ronda 2 devolvía un número; ahora devuelve
+también la radiografía: `evidencia`, `senectud`, `penalizacion`
+por contradicciones, `procedencia`, el `techo` que aplicó, el flag
+`parametrica` y el `final`. «0.68» pasa a ser «0.68 porque la
+fuente es confiable, el contenido es viejo y nunca fue
+corroborado» — la confianza deja de ser un oráculo.
+
+*Fundamento:* evaluación de justificación en metamemoria
+(Koriat, 1993) — el humano no solo siente "qué tan seguro", sabe
+enumerar por qué; la explicación es parte del juicio.
+
+### 43. Mapa de lagunas — `detectar_lagunas` + `mapa_lagunas`
+
+**Código:** `src/core/memoria/epistemica.py`; tool MCP
+`mapa_lagunas`, REST `GET /api/lagunas`, CLI `nous lagunas`
+
+Una respuesta honesta no es solo «esto es lo que sé» — es «y esto
+es lo que me falta». La tool ejecuta la búsqueda normal y devuelve
+la radiografía de lo NO recuperado: `cobertura` (resultados /
+pedidos), `confianza_media`, la lista de huecos concretos (sin
+evidencia somática, evidencia débil, todo paramétrico, cobertura
+parcial) y `es_laguna_total` cuando no hay nada. El "no sé" queda
+como dato estructurado, no como silencio.
+
+*Fundamento:* sentimiento-de-no-saber (Koriat, 1995) — el
+metaconocimiento humano distingue "lo tengo pero no sale"
+(punta-de-la-lengua, ronda 3) de "nunca lo tuve"; ambos estados
+son ahora consultables.
+
+### 44. Expansión hebbiana STP/LTP — `vecinos_coactivos` + sello `ultima_coactiva`
+
+**Código:** `reforzar_coactivas` sella cada co-encendido;
+`vecinos_coactivos` lee las aristas; `peso_efectivo_coactiva`
+aplica STP (boost que decae con media-vida ~6h) sobre el LTP.
+
+Las aristas `coactiva` se escribían desde la ronda 2 pero nadie
+las leía — la vía hebbiana grababa sin efecto en el recall. Ahora
+la consulta devuelve además los **vecinos coactivos** de los
+anclas (marcados `via="coactiva"`, con `peso_efectivo`): lo que
+se encendió junto antes, asoma junto otra vez. La STP es
+potenciación, nunca descuento — el peso efectivo no baja del LTP.
+
+*Fundamento:* potenciación a corto/largo plazo (STP/LTP) —
+Markram & Tsodyks (1996), Hebb (1949). Una asociación recién
+usada es más fuerte que su peso acumulado; el efecto se desvanece
+en horas, no en días.
+
 ## Referencias
 
 - Nader, Schafe & LeDoux (2000). *Fear memories require protein
@@ -602,6 +685,14 @@ memoria que se escribe sin revisión es una alucinación firmada.
 - Koriat & Goldsmith (1996). *Monitoring and control processes in
   the strategic regulation of memory accuracy.* (metamemoria, FoK)
 - Hebb (1949). *The Organization of Behavior.* (coactivación)
+- Markram & Tsodyks (1996). *Redistribution of synaptic efficacy
+  between neocortical pyramidal neurons.* (STP/LTP)
+- Johnson, Hashtroudi & Lindsay (1993). *Source monitoring.*
+  (memoria de procedencia / realidad vs imaginación)
+- Koriat (1993). *How do we know that we know? The accessibility
+  model of the feeling of knowing.* (metamemoria justificada)
+- Koriat (1995). *Dissociating knowing and the feeling of
+  knowing: further evidence for the accessibility model.*
 - Bouton (2004). *Context and behavioral processes in extinction.*;
   Quirk & Mueller (2008). *Neural mechanisms of extinction learning.*
 - Schultz (1998). *Predictive reward signal of dopamine neurons.*

@@ -266,6 +266,12 @@ class EventoModel(Base):
     staged: Mapped[bool] = mapped_column(
         Boolean, server_default="false"
     )
+    # Neuro-6 — contenido afirmado desde conocimiento paramétrico del
+    # agente (sus pesos), no observado: la metamemoria lo techifica a
+    # TECHO_PARAMETRICA hasta que la corroboración lo levante.
+    parametrica: Mapped[bool] = mapped_column(
+        Boolean, server_default="false"
+    )
     contenido_tsv: Mapped[str | None] = mapped_column(
         TSVECTOR,
         Computed("to_tsvector('spanish', contenido)", persisted=True),
@@ -362,6 +368,9 @@ class RelacionModel(Base):
     )
     tipo: Mapped[str] = mapped_column(String(20), nullable=False)
     peso: Mapped[float] = mapped_column(Float, server_default="1.0")
+    # Neuro-6 — último co-recall que encendió la arista (unix):
+    # la lectura suma STP (media-vida ~6h) sobre el peso LTP.
+    ultima_coactiva: Mapped[int | None] = mapped_column(BigInteger)
     creado_en: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

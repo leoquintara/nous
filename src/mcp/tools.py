@@ -51,6 +51,7 @@ from src.core.memoria.consolidacion import (
 from src.core.memoria.contexto import ContextoActual, boost_contextual
 from src.core.memoria.decay import media_vida_dias, proxima_revision
 from src.core.memoria.diversidad import diversificar, es_casi_recuerdo
+from src.core.memoria.epistemica import detectar_lagunas
 from src.core.memoria.handoff import generar_handoff
 from src.core.memoria.interferencia import (
     INTERFERENCIA_FACTOR,
@@ -72,13 +73,16 @@ from src.core.memoria.rem import pares_rem
 from src.core.memoria.retrieval import (
     COACTIVA_DELTA,
     COACTIVA_PESO_MAX,
+    COACTIVA_TOP_K,
     RIF_FACTOR,
     RIF_PISO_WEIGHT,
     confianza_de_evento,
+    desglose_confianza,
     esta_labil,
     extincion_valencia,
     factor_zeigarnik,
     pares_coactivos,
+    peso_efectivo_coactiva,
     ventana_labil,
 )
 from src.core.memoria.ritmos import (
@@ -451,6 +455,7 @@ def _modelo_a_dict(modelo: EventoModel) -> dict[str, Any]:
         "olvido_dirigido": modelo.olvido_dirigido,
         "cuarentena": modelo.cuarentena,
         "staged": modelo.staged,
+        "parametrica": modelo.parametrica,
         "debilitados": modelo.debilitados,
         "scope": modelo.scope,
         "workspace_id": str(modelo.workspace_id),
@@ -477,6 +482,7 @@ def _evento_a_dict(evento: Evento) -> dict[str, Any]:
         "fuente": evento.fuente,
         "debilitados": evento.debilitados,
         "staged": evento.staged,
+        "parametrica": evento.parametrica,
     }
 
 
@@ -485,6 +491,7 @@ def _resultado_a_dict(
 ) -> dict[str, Any]:
     """Serializa un resultado de búsqueda con su contexto temporal."""
     assert r.evento is not None
+    ahora = int(time.time())
     contexto = None
     if r.contexto is not None:
         contexto = {
@@ -500,15 +507,28 @@ def _resultado_a_dict(
         # Metamemoria: qué tan fiable es el recuerdo devuelto —
         # el agente pondera la respuesta en vez de tratar toda
         # memoria como igualmente cierta. ``confiable`` es la
-        # confianza en la fuente de origen (amnesia de fuente).
+        # confianza en la fuente de origen (amnesia de fuente) y
+        # ``parametrica`` el techo epistémico (Neuro-6).
         "confianza": confianza_de_evento(
             r.evento.refuerzos,
             r.evento.weight,
             r.evento.amplitud,
             r.evento.timestamp_unix,
-            int(time.time()),
+            ahora,
             archivado=r.evento.archivado,
             fuente_confiable=confiable,
+            parametrica=r.evento.parametrica,
+        ),
+        # Neuro-6 — la confianza descompuesta: cada señal por
+        # separado, auditable, no un número opaco.
+        "desglose_confianza": desglose_confianza(
+            r.evento.refuerzos,
+            r.evento.weight,
+            r.evento.amplitud,
+            max(0.0, (ahora - r.evento.timestamp_unix) / 86400.0),
+            archivado=r.evento.archivado,
+            fuente_confiable=confiable,
+            parametrica=r.evento.parametrica,
         ),
     }
 
@@ -542,6 +562,7 @@ async def _recordar(
     tipo_memoria: str | None = None,
     estado_emocional: float | None = None,
     contexto_extra: dict[str, Any] | None = None,
+    parametrica: bool = False,
 ) -> dict[str, Any]:
     """Persiste un evento con indexación write-behind.
 
@@ -624,6 +645,9 @@ async def _recordar(
             # propuesta (staged) — indexada pero fuera del recall
             # hasta que el humano apruebe.
             staged=get_settings().escritura_aprobacion,
+            # Neuro-6 — contenido afirmado desde los pesos del
+            # modelo, no observado: techo epistémico al recall.
+            parametrica=parametrica,
         )
         await repo.crear(evento)
         await FuenteRepository(session, ctx).crear(fuente, tipo="agente")
@@ -1046,6 +1070,7 @@ async def _consolidar_luego(
                         ],
                         COACTIVA_DELTA,
                         COACTIVA_PESO_MAX,
+                        int(time.time()),
                     )
             extinciones: list[tuple[uuid.UUID, float]] = []
             for item in items:
@@ -1147,6 +1172,7 @@ async def _consultar(
         estado_actual: float | None = None
         episodios_por_gist: dict[str, list[dict[str, Any]]] = {}
         confianza_fuentes: dict[str, bool] = {}
+        asociados: list[tuple[EventoModel, float]] = []
         if resultados:
             # ADR-003 patrón 6 — memoria dependiente de contexto/estado:
             # recuerdos codificados en una hora/fuente/estado parecidos
@@ -1261,6 +1287,48 @@ async def _consultar(
                     }
                 )
             )
+            # Expansión hebbiana (Neuro-6): las aristas coactivas
+            # grabadas por co-recalls previos traen a los vecinos
+            # históricos — lo que se evocó junto, se recuerda junto.
+            # STP pondera la recencia del último co-encendido.
+            ahora_consulta = int(time.time())
+            ganadores = {
+                uuid.UUID(r.evento_id)
+                for r in resultados[:COACTIVA_TOP_K]
+                if r.evento is not None
+            }
+            if ganadores:
+                aristas = await RelacionRepository(
+                    session, ctx
+                ).vecinos_coactivos(list(ganadores), limite=24)
+                mejores: dict[uuid.UUID, float] = {}
+                for ar in aristas:
+                    peso_e = peso_efectivo_coactiva(
+                        ar.peso, ar.ultima_coactiva, ahora_consulta
+                    )
+                    for extremo in (ar.origen_id, ar.destino_id):
+                        if extremo in ganadores or str(extremo) in {
+                            r.evento_id for r in resultados
+                        }:
+                            continue
+                        if peso_e > mejores.get(extremo, 0.0):
+                            mejores[extremo] = peso_e
+                top_vecinos = sorted(
+                    mejores.items(), key=lambda kv: kv[1], reverse=True
+                )[:4]
+                if top_vecinos:
+                    modelos = await EventoRepository(
+                        session, ctx
+                    ).obtener_muchos([e for e, _ in top_vecinos])
+                    pesos = dict(top_vecinos)
+                    asociados = [
+                        (m, pesos[m.id])
+                        for m in modelos
+                        if not m.staged
+                        and not m.archivado
+                        and not m.cuarentena
+                        and m.reemplazado_por is None
+                    ]
     _encolar_fondo(
         _ItemConsolidacion(
             tuple(uuid.UUID(r.evento_id) for r in resultados),
@@ -1293,6 +1361,26 @@ async def _consultar(
         if r.evento_id in episodios_por_gist:
             d["episodios"] = episodios_por_gist[r.evento_id]
         serializados.append(d)
+    # Vecinos hebbianos — llegan marcados como asociados, nunca se
+    # confunden con resultados de la consulta.
+    for modelo, peso_e in asociados:
+        ev = Evento.desde_modelo(modelo)
+        serializados.append(
+            {
+                "evento": _evento_a_dict(ev),
+                "via": "coactiva",
+                "peso_efectivo": round(peso_e, 3),
+                "confianza": confianza_de_evento(
+                    ev.refuerzos,
+                    ev.weight,
+                    ev.amplitud,
+                    ev.timestamp_unix,
+                    int(time.time()),
+                    archivado=ev.archivado,
+                    parametrica=ev.parametrica,
+                ),
+            }
+        )
     return recordatorios + serializados
 
 
@@ -1851,6 +1939,7 @@ async def recordar_evento(
         Literal["episodica", "semantica", "procedimental"] | None
     ) = None,
     estado_emocional: float | None = None,
+    parametrica: bool = False,
 ) -> dict[str, Any]:
     """Guarda un evento nuevo en la memoria persistente 4D del usuario.
 
@@ -1916,6 +2005,12 @@ async def recordar_evento(
         estado_emocional: Valencia afectiva declarada entre -1.0 y
             1.0 (negativo → positivo). Si viene, el estimador léxico
             no la sobrescribe. Útil para check-ins somáticos.
+        parametrica: True si el contenido se afirma desde el
+            conocimiento paramétrico del agente (sus pesos), no de
+            una observación o fuente — la confianza al evocarlo
+            queda techada a 0.70 hasta que la realidad lo corrobore
+            (3 refuerzos útiles o aprobación humana). USAR para
+            honestidad epistémica: "creo que…" ≠ "vi que…".
 
     Returns:
         Dict con "id", "timestamp_unix", "dimension" usada,
@@ -1945,6 +2040,7 @@ async def recordar_evento(
         workspace,
         tipo_memoria=tipo_memoria,
         estado_emocional=estado_emocional,
+        parametrica=parametrica,
     )
 
 
@@ -2151,6 +2247,65 @@ async def consultar_memoria(
     return await _consultar(
         consulta, top_n, None if rama == "*" else rama, workspace
     )
+
+
+async def _mapa_lagunas(
+    consulta: str,
+    top_n: int,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Radiografía de lo que la consulta NO cubrió — las lagunas."""
+    items = await _consultar(consulta, top_n, workspace=workspace)
+    ev_items = [i for i in items if isinstance(i.get("evento"), dict)]
+    lagunas = detectar_lagunas(
+        n_resultados=len(ev_items),
+        top_n=max(1, top_n),
+        dimensiones=[
+            str(i["evento"].get("dimension", "")) for i in ev_items
+        ],
+        confianzas=[float(i.get("confianza", 0.0)) for i in ev_items],
+        n_parametricas=sum(
+            1 for i in ev_items if i["evento"].get("parametrica")
+        ),
+    )
+    return {
+        "consulta": consulta,
+        "resultados": len(ev_items),
+        "cobertura": lagunas.cobertura,
+        "confianza_media": lagunas.confianza_media,
+        "lagunas": lagunas.lagunas,
+        "es_laguna_total": lagunas.es_laguna_total,
+        "n_parametricas": lagunas.n_parametricas,
+    }
+
+
+@mcp_server.tool()
+async def mapa_lagunas(
+    consulta: str,
+    top_n: int = 10,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Lo que la memoria NO sabe sobre la consulta — el mapa de huecos.
+
+    USAR CUANDO: antes de afirmar algo conviene saber si la memoria
+    lo respalda — una respuesta honesta declara qué faltó, no solo
+    qué encontró. Ejecuta la misma búsqueda que consultar_memoria y
+    reporta cobertura, confianza media y las lagunas concretas
+    (dimensiones sin evidencia, evidencia débil, contenido puramente
+    paramétrico).
+
+    Args:
+        consulta: Pregunta o tema en lenguaje natural.
+        top_n: Máximo de resultados a evaluar (default 10).
+        workspace: Slug o UUID del workspace a consultar.
+
+    Returns:
+        {consulta, resultados, cobertura, confianza_media, lagunas,
+        es_laguna_total, n_parametricas} — ``lagunas`` lista cada
+        hueco en lenguaje legible; vacía = la consulta quedó bien
+        cubierta.
+    """
+    return await _mapa_lagunas(consulta, top_n, workspace)
 
 
 @mcp_server.tool()

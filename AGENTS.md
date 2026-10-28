@@ -56,7 +56,8 @@ nous/
 │   │   │   ├── bootstrap.py    #   Neuro-5: pack de arranque presupuestado + snapshot
 │   │   │   ├── verificacion.py #   Neuro-5: veredicto de censores pre-acción
 │   │   │   ├── calibracion.py  #   Neuro-5: Brier + curva de confiabilidad
-│   │   │   └── handoff.py      #   Neuro-5: documento de continuidad de sesión
+│   │   │   ├── handoff.py      #   Neuro-5: documento de continuidad de sesión
+│   │   │   └── epistemica.py   #   Neuro-6: lagunas — lo que la consulta NO cubrió
 │   │   └── decision/           # Proveedores System One (ADR-002, autocontenido)
 │   │       ├── provider.py     #   Protocolo /v1/systemone (choice/score/noul)
 │   │       ├── adapters.py     #   Laya/Ollama/HTTP/Jev con guardia de privacidad + scrub
@@ -355,6 +356,14 @@ async def test_fusion_rrf_con_dos_listas_ordena_por_score():
 - **Scrub saliente**: todo payload a proveedor externo pasa por
   `redactar_secretos` — el scrub es la red de seguridad tras el
   guard de bloqueo.
+- **Capa epistémica** (Neuro-6): `parametrica` marca contenido
+  afirmado desde los pesos del modelo sin corroboración — su
+  confianza topea a 0.70 hasta 3 refuerzos o aprobación humana.
+  `desglose_confianza` explica cada señal por separado.
+  `mapa_lagunas` declara lo que la consulta NO cubrió.
+  `vecinos_coactivos` cierra la vía hebbiana: las aristas coactivas
+  ya se leen — los asociados asoman `via="coactiva"` con peso
+  efectivo STP (media-vida ~6h) sobre el LTP duradero.
 - Toda corrida de consolidación persiste un `reportes_consolidacion`
   con ids y razones — el olvido siempre es auditable, nunca silencioso.
 - Los providers de decisión degranan siempre: fallo de red/modelo →

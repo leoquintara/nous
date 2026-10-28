@@ -48,6 +48,7 @@ class Evento:
     cuarentena: bool = False
     debilitados: int = 0
     staged: bool = False
+    parametrica: bool = False
 
     @classmethod
     def desde_modelo(cls, modelo: EventoModel) -> Evento:
@@ -71,6 +72,7 @@ class Evento:
             cuarentena=bool(getattr(modelo, "cuarentena", False)),
             debilitados=int(getattr(modelo, "debilitados", 0) or 0),
             staged=bool(getattr(modelo, "staged", False)),
+            parametrica=bool(getattr(modelo, "parametrica", False)),
         )
 
 

@@ -210,6 +210,7 @@ async def crear_evento(peticion: EventoRequest) -> dict[str, Any]:
         tipo_memoria=peticion.tipo_memoria,
         estado_emocional=peticion.estado_emocional,
         contexto_extra=peticion.contexto,
+        parametrica=peticion.parametrica,
     )
 
 
@@ -448,6 +449,30 @@ async def buscar(
     return await tools_impl._consultar(
         q, top_n, None if rama == "*" else rama, workspace
     )
+
+
+@router.get("/lagunas", dependencies=[Depends(verificar_token)])
+async def lagunas(
+    q: str,
+    top_n: int = 10,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Mapa de lagunas — lo que la memoria NO sabe sobre la consulta.
+
+    Misma búsqueda que ``/buscar`` pero la respuesta es la
+    radiografía de lo faltante: cobertura, confianza media y cada
+    hueco concreto (dimensiones sin evidencia, evidencia débil,
+    contenido puramente paramétrico).
+
+    Args:
+        q: Consulta en lenguaje natural.
+        top_n: Máximo de resultados a evaluar (1-50).
+
+    Returns:
+        {consulta, resultados, cobertura, confianza_media, lagunas,
+        es_laguna_total, n_parametricas}.
+    """
+    return await tools_impl._mapa_lagunas(q, top_n, workspace)
 
 
 @router.post("/proyeccion", dependencies=[Depends(requerir_escritura)])

@@ -39,6 +39,24 @@ UMBRAL_ESTADO_NEUTRO = 0.2
 # Horas tras la evocación en que la memoria admite reconsolidación.
 VENTANA_LABIL_SEG = 6 * 3600
 
+# --- Techo paramétrico (Neuro-6) ---
+# Lo que el agente afirma desde sus pesos — no observado ni
+# corroborado — nunca alcanza confianza alta solo por repetirse.
+# Sin techo, el sistema se autocita: el modelo dice X → la memoria
+# guarda X → el recall devuelve X como si fuera evidencia. El techo
+# se levanta cuando la realidad avala: suficientes evocaciones útiles
+# o una aprobación humana (el flujo staged limpia ``parametrica``).
+TECHO_PARAMETRICA = 0.70
+CORROBORACION_REFUERZOS = 3
+
+# --- STP/LTP coactiva (Neuro-6) ---
+# La arista hebbiana tiene dos componentes: LTP (``peso``, duradero,
+# crece con cada co-evocación) y STP (potenciación rápida que decae
+# con media-vida ~6h desde la última co-activación). Lo recién
+# asociado empuja; lo duradero permanece.
+STP_BOOST = 0.4
+STP_MEDIA_VIDA_SEG = 6 * 3600
+
 # --- Efecto Zeigarnik (Neuro-4) ---
 # Los compromisos abiertos permanecen más accesibles al recall que
 # los cerrados — el cerebro no suelta lo pendiente. Boost modesto
@@ -119,6 +137,34 @@ def peso_coactiva(peso_actual: float) -> float:
     return min(peso_actual + COACTIVA_DELTA, COACTIVA_PESO_MAX)
 
 
+def peso_efectivo_coactiva(
+    peso_ltp: float,
+    ultima_coactiva: int | None,
+    ahora_unix: int,
+) -> float:
+    """Peso efectivo de la arista: LTP duradero + STP que decae ~6h.
+
+    La potenciación a corto plazo (STP) es un boost fijo que se
+    desvanece con media-vida ``STP_MEDIA_VIDA_SEG`` desde el último
+    co-recall — dos memorias que se encendieron juntas ayer empujan
+    más que dos que lo hicieron hace un mes.
+
+    Args:
+        peso_ltp: Peso duradero acumulado de la arista.
+        ultima_coactiva: Unix del último co-encendido; ``None`` = la
+            arista existe pero nunca se re-encendió (STP agotada).
+        ahora_unix: Tiempo actual en epoch.
+
+    Returns:
+        ``peso_ltp + STP`` en [peso_ltp, peso_ltp + STP_BOOST].
+    """
+    if ultima_coactiva is None:
+        return peso_ltp
+    dt = max(0, ahora_unix - ultima_coactiva)
+    stp: float = STP_BOOST * (0.5 ** (dt / STP_MEDIA_VIDA_SEG))
+    return peso_ltp + stp
+
+
 def extincion_valencia(
     valencia_memoria: float | None,
     estado_actual: float | None,
@@ -154,6 +200,22 @@ def esta_labil(labil_hasta: int | None, ahora_unix: int) -> bool:
     return labil_hasta is not None and ahora_unix <= labil_hasta
 
 
+def techo_parametrica(parametrica: bool, refuerzos: int) -> float:
+    """Tope de confianza para contenido paramétrico (sin corroborar).
+
+    Una memoria afirmada desde los pesos del modelo no puede superar
+    ``TECHO_PARAMETRICA`` mientras la realidad no la avale — el
+    sistema no se autocita. La corroboración levanta el techo: cada
+    evocación que la memoria sobrevive cuenta como uso validado; a
+    ``CORROBORACION_REFUERZOS`` refuerzos el contenido ya rindió y el
+    descuento paramétrico expira. La aprobación humana del flujo
+    staged también la levanta (borra el flag al aprobar).
+    """
+    if not parametrica or refuerzos >= CORROBORACION_REFUERZOS:
+        return 1.0
+    return TECHO_PARAMETRICA
+
+
 def confianza(
     refuerzos: int,
     weight: float,
@@ -162,6 +224,7 @@ def confianza(
     contradicciones: int = 0,
     archivado: bool = False,
     fuente_confiable: bool | None = True,
+    parametrica: bool = False,
 ) -> float:
     """Metamemoria: qué tan fiable es este recuerdo devuelto (0-1).
 
@@ -177,6 +240,9 @@ def confianza(
       llegó sin firma, no se puede rastrear de dónde salió) baja la
       confianza un 10%; ``False`` (fuente marcada no confiable — el
       contenido se evoca pero su procedencia está en duda) un 25%.
+    - **Techo paramétrico** (Neuro-6): contenido afirmado desde los
+      pesos del modelo (``parametrica``) se topa en
+      ``TECHO_PARAMETRICA`` hasta que la corroboración lo levante.
 
     Returns:
         Confianza en [0.05, 0.98] — nunca certeza total: es una
@@ -195,10 +261,73 @@ def confianza(
     procedencia = 1.0 if fuente_confiable else 0.75
     if fuente_confiable is None:
         procedencia = 0.9
+    techo = techo_parametrica(parametrica, refuerzos)
     return round(
-        max(0.05, min(0.98, evidencia * senectud * penal * procedencia)),
+        max(
+            0.05,
+            min(0.98, evidencia * senectud * penal * procedencia, techo),
+        ),
         3,
     )
+
+
+def desglose_confianza(
+    refuerzos: int,
+    weight: float,
+    amplitud: float,
+    edad_dias: float,
+    contradicciones: int = 0,
+    archivado: bool = False,
+    fuente_confiable: bool | None = True,
+    parametrica: bool = False,
+) -> dict[str, float | bool | None]:
+    """La metamemoria descompuesta — cada señal, por separado.
+
+    Una sola cifra de confianza esconde POR QUÉ es así; el desglose
+    declara qué la subió, qué la bajó y qué techo aplicó — la
+    diferencia entre "0.68" y "0.68 porque es paramétrica, la fuente
+    es confiable y no tiene contradicciones".
+
+    Returns:
+        Dict con ``evidencia``, ``senectud``, ``penalizacion``,
+        ``procedencia``, ``techo``, ``parametrica`` y ``final``.
+    """
+    evidencia = (
+        0.45
+        + min(refuerzos, 8) * 0.045
+        + min(max(weight, 0.0), 3.0) * 0.08
+        + amplitud * 0.1
+    )
+    senectud = 1.0 - min(edad_dias / 365.0, 0.25)
+    penal = 1.0 - min(contradicciones, 3) * 0.15
+    procedencia = 1.0 if fuente_confiable else 0.75
+    if fuente_confiable is None:
+        procedencia = 0.9
+    techo = techo_parametrica(parametrica, refuerzos)
+    final = (
+        0.05
+        if archivado
+        else round(
+            max(
+                0.05,
+                min(
+                    0.98,
+                    evidencia * senectud * penal * procedencia,
+                    techo,
+                ),
+            ),
+            3,
+        )
+    )
+    return {
+        "evidencia": round(evidencia, 3),
+        "senectud": round(senectud, 3),
+        "penalizacion": round(penal, 3),
+        "procedencia": round(procedencia, 3),
+        "techo": round(techo, 3),
+        "parametrica": parametrica,
+        "final": final,
+    }
 
 
 def confianza_de_evento(
@@ -209,6 +338,7 @@ def confianza_de_evento(
     ahora_unix: int,
     archivado: bool = False,
     fuente_confiable: bool | None = True,
+    parametrica: bool = False,
 ) -> float:
     """Atajo sobre campos del evento: deriva edad y delega."""
     edad = max(0.0, (ahora_unix - timestamp_unix) / 86400.0)
@@ -219,6 +349,7 @@ def confianza_de_evento(
         edad,
         archivado=archivado,
         fuente_confiable=fuente_confiable,
+        parametrica=parametrica,
     )
 
 

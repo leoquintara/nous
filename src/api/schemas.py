@@ -64,6 +64,9 @@ class EventoRequest(BaseModel):
     tipo_memoria: Literal["episodica", "semantica", "procedimental"] | None = None
     estado_emocional: float | None = Field(default=None, ge=-1.0, le=1.0)
     contexto: dict[str, Any] | None = Field(default=None)
+    # Neuro-6: True = contenido afirmado desde los pesos del agente,
+    # no observado — techo epistémico en el recall.
+    parametrica: bool = False
 
     @field_validator("contexto")
     @classmethod

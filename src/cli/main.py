@@ -299,6 +299,14 @@ def _parser() -> argparse.ArgumentParser:
         "rechazar", help="Rechaza una escritura staged (la descarta)."
     )
     rec.add_argument("evento_id", help="UUID de la propuesta.")
+    lag = sub.add_parser(
+        "lagunas", help="Mapa de lagunas — lo que la memoria no sabe."
+    )
+    lag.add_argument("consulta", help="El tema a sondear.")
+    lag.add_argument(
+        "--top", type=int, default=10,
+        help="Resultados a evaluar (default 10).",
+    )
 
     from src.cli.identidad import registrar_subparsers
 
@@ -1526,6 +1534,23 @@ def _despachar(args: argparse.Namespace) -> int:
             sys.stderr.write(ui.error(str(e)) + "\n")
             return 1
         sys.stdout.write(ui.ok("Propuesta descartada.") + "\n")
+        return 0
+    if comando == "lagunas":
+        from src.mcp.tools import _mapa_lagunas
+
+        datos = asyncio.run(_mapa_lagunas(args.consulta, args.top))
+        if datos["es_laguna_total"]:
+            sys.stdout.write(
+                ui.aviso("Laguna total — sin evidencia alguna.") + "\n"
+            )
+            return 0
+        sys.stdout.write(
+            f"cobertura {datos['cobertura']:.0%} · "
+            f"confianza media {datos['confianza_media']} · "
+            f"paramétricas {datos['n_parametricas']}\n"
+        )
+        for lag_ in cast("list[str]", datos["lagunas"]):
+            sys.stdout.write(f"  {ui.aviso('·')} {lag_}\n")
         return 0
     return 2
 
