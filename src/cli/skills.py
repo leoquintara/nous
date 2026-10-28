@@ -1439,10 +1439,21 @@ Claves punteadas por archivo:
   `prohibido` (qué puede hacer solo / con permiso / jamás).
 - `ritmo.*` → HEARTBEAT.md: `checkin`, `revisiones` (su cadencia).
 
-Un agente puede leer el banco por MCP: `leer_preferencia(
-"persona.respuestas")`. Escribirlo es del CLI o del usuario —
-`guardar_preferencia` también sirve, pero `nous persona set` es el
-camino con catálogo.
+Un agente opera el ciclo completo por MCP: `leer_preferencia(
+"persona.respuestas")` lee el banco, `guardar_preferencia` actualiza
+respuestas (o `nous persona set` en CLI — es el camino con catálogo)
+y `render_persona` materializa.
+
+## MCP
+
+- `render_persona(archivo?)` → `{hash, archivos, faltantes,
+  catalogo}`. Devuelve el CONTENIDO de cada archivo listo — escribe
+  los .md tú en la raíz del proyecto (el servidor puede correr en un
+  contenedor donde el path no existe). Un archivo con claves sin
+  responder sale en `faltantes`, no en `archivos`.
+- `leer_preferencia("persona.respuestas")` → el banco crudo.
+- `guardar_preferencia("persona.respuestas", {...})` → upsert del
+  banco entero (lee-modifica-guarda para tocar una clave).
 
 ## CLI
 
@@ -1452,15 +1463,14 @@ camino con catálogo.
   cobertura por archivo (qué claves faltan).
 - `nous persona claves` — el catálogo completo de requeridas.
 - `nous persona render [--only SOUL.md] [--out DIR] [--check]` —
-  materializa los archivos. `--check` solo reporta faltantes.
-  Rechaza renderizar un archivo con claves vacías (lista cuáles).
+  materializa a disco. `--check` solo reporta faltantes.
 
 ## Reglas
 
-- **El hash es el read-back ritual**: `show`/`render` imprimen la
-  huella del banco. Si un .md existe pero el banco cambió (hash
-  distinto al que produjo el archivo), hay drift — propón
-  re-render.
+- **El hash es el read-back ritual**: `render_persona`/`show`/
+  `render` imprimen la huella del banco. Si un .md existe pero el
+  banco cambió (hash distinto al que produjo el archivo), hay
+  drift — propón re-render.
 - Respuestas verbatim del usuario — el agente propone candidatos,
   el humano dicta el texto final. La identidad no se inventa.
 - `render` sobrescribe los .md: si el archivo tenía ediciones
@@ -1491,14 +1501,17 @@ los .md como vistas que no divergen.
 
 ## Auditoría (el ciclo completo)
 
-1. `leer_preferencia("persona.respuestas")` → el banco actual y su
-   cobertura.
+1. `leer_preferencia("persona.respuestas")` → el banco actual;
+   `render_persona()` → su `hash`, cobertura (`faltantes`) y el
+   contenido que produciría cada archivo.
 2. Lee los .md en disco (SOUL.md, USER.md, ACCESS_POLICY.md,
-   HEARTBEAT.md si existen) — compara contenido vs banco:
-   - **Drift de render**: el archivo difiere de lo que el banco
-     produciría → alguien editó a mano o el banco cambió después.
-     Propón `nous persona render` (o rescatar la edición al banco
-     si era mejor).
+   HEARTBEAT.md si existen) — compara contra lo que el banco
+   produciría:
+   - **Drift de render**: el archivo difiere del contenido devuelto
+     → alguien editó a mano o el banco cambió después. Propón
+     re-render (escribir el contenido de `render_persona` al .md,
+     o `nous persona render` en CLI) — o rescatar la edición al
+     banco si era mejor.
    - **Respuestas viejas**: "trabaja en X" donde la línea dice que
      ya no → propón `nous persona set` actualizado con la evidencia
      (`consultar_memoria`/`entidad` como respaldo).

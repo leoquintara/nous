@@ -124,6 +124,14 @@ from src.core.modelos import (
     ResultadoBusqueda,
     Trayectoria,
 )
+from src.core.persona import (
+    ARCHIVOS,
+    CLAVE_BANCO,
+    catalogo,
+    faltantes,
+    hash_banco,
+    render,
+)
 from src.core.reranker import ReordenadorLocal
 from src.core.routing import (
     IntencionConsulta,
@@ -2736,6 +2744,54 @@ async def guardar_preferencia(
     """
     await _preferencia_guardar(clave, valor)
     return {"clave": clave, "guardado": True}
+
+
+@mcp_server.tool()
+async def render_persona(
+    archivo: str | None = None,
+) -> dict[str, Any]:
+    """Renderiza los archivos de identidad desde el banco de respuestas.
+
+    USAR CUANDO: el banco ``persona.respuestas`` esté completo (o
+    actualizado) y haya que materializar SOUL.md / USER.md /
+    ACCESS_POLICY.md / HEARTBEAT.md. Devuelve el CONTENIDO — escribe
+    los archivos tú en el proyecto: el servidor puede correr en un
+    contenedor donde el path del proyecto no existe.
+
+    El banco se lee con ``leer_preferencia("persona.respuestas")`` y se
+    actualiza con ``guardar_preferencia`` o ``nous persona set`` — el
+    CLI materializa además a disco vía ``nous persona render``.
+
+    Args:
+        archivo: Renderiza solo este archivo (p. ej. "SOUL.md"), o
+            None para los cuatro.
+
+    Returns:
+        {hash, archivos: {nombre: contenido}, faltantes: {nombre: [claves]}}.
+        `faltantes` vacío = render limpio; si un archivo tiene claves
+        sin responder se reporta y NO se incluye en `archivos`. El
+        `hash` es la huella del banco — si el .md en disco no salió de
+        este hash, hay drift.
+    """
+    banco = await _preferencia_leer(CLAVE_BANCO)
+    objetivos = [archivo] if archivo else list(ARCHIVOS)
+    for a in objetivos:
+        if a not in ARCHIVOS:
+            raise ErrorValidacion(
+                f"archivo de identidad desconocido: {a!r} — "
+                f"válidos: {', '.join(ARCHIVOS)}"
+            )
+    faltan = {a: list(faltantes(a, banco)) for a in objetivos}
+    faltan = {a: f for a, f in faltan.items() if f}
+    contenidos = {
+        a: render(a, banco) for a in objetivos if a not in faltan
+    }
+    return {
+        "hash": hash_banco(banco),
+        "archivos": contenidos,
+        "faltantes": faltan,
+        "catalogo": {a: list(claves) for a, claves in catalogo().items()},
+    }
 
 
 # ---------------------------------------------------------------------
