@@ -22,12 +22,21 @@ class IntencionConsulta(StrEnum):
     TEMA = "tema"
 
 
+# Las formas «quién es X» admiten un prefijo de cortesía
+# («dime», «sabes», «cuéntame», «me puedes decir») — la
+# ancla ^ sigue protegiendo oraciones donde «qué es» va
+# embebido («no sé qué es lo que falla» → tema).
 _RE_ENTIDAD = re.compile(
     r"^\s*(?:[¿¡]?\s*)"
-    r"(?:qui[eé]n(?:es)?\s+(?:es|son|era|fue|fueron)|"
-    r"qu[eé]\s+(?:es|son|significa)|"
-    r"dime\s+(?:de|sobre)|"
-    r"h[áa]blame\s+de)\s+(.+?)\s*[?¿!.,;:]*\s*$",
+    r"(?:"
+    r"(?:(?:dime|cu[eé]ntame|sabes|me\s+puedes?\s+decir(?:me)?|"
+    r"me\s+interesa|quiero\s+saber)\s+)?"
+    r"qui[eé]n(?:es)?\s+(?:es|son|era|fue|fueron)"
+    r"|qu[eé]\s+(?:es|son|significa)"
+    r"|cu[aá]l\s+es\s+(?:el|la)\s+(?:rol|trabajo|puesto|funci[oó]n)"
+    r"\s+(?:de|del|de\s+(?:el|la|los|las))"
+    r"|(?:dime|cu[eé]ntame|h[áa]blame)\s+(?:de|sobre|del)"
+    r")\s+(.+?)\s*[?¿!.,;:]*\s*$",
     re.IGNORECASE,
 )
 
@@ -48,11 +57,24 @@ _RE_ARTICULOS = re.compile(
     r"^(?:el|la|los|las|un|una|unos|unas|del|de)\s+", re.IGNORECASE
 )
 
+# Si la cola de «qué es X» no es un nombre sino un pronombre
+# («qué es eso», «qué es lo que falla»), no hay entidad que
+# buscar — la consulta es de tema.
+_NO_ENTIDAD = frozenset(
+    {"lo", "eso", "esto", "ello", "algo", "aquello", "tal", "nada"}
+)
+
 
 def _limpiar_nombre(texto: str) -> str:
     """Extrae el nombre propio de la cola de la pregunta."""
     nombre = _RE_CORTE_NOMBRE.split(texto.strip(), maxsplit=1)[0]
-    return _RE_ARTICULOS.sub("", nombre).strip()
+    limpio = _RE_ARTICULOS.sub("", nombre).strip()
+    # El nombre no puede EMPEZAR por pronombre: «lo mas delicado»,
+    # «eso del sync» no son entidades aunque traigan más texto.
+    if limpio.lower() in _NO_ENTIDAD:
+        return ""
+    primer = limpio.split(maxsplit=1)[0].lower() if limpio else ""
+    return "" if primer in _NO_ENTIDAD else limpio
 
 
 def clasificar_intencion(consulta: str) -> tuple[IntencionConsulta, str | None]:

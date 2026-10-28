@@ -25,6 +25,43 @@ def test_entidad_dime_sobre() -> None:
     assert nombre == "samay"
 
 
+def test_entidad_dime_quien_es_con_prefijo() -> None:
+    intencion, nombre = clasificar_intencion(
+        "dime quien es samay y cual es su rol"
+    )
+    assert intencion == IntencionConsulta.ENTIDAD
+    assert nombre == "samay"
+
+
+def test_entidad_sabes_quien_es() -> None:
+    intencion, nombre = clasificar_intencion("sabes quien es carlos")
+    assert intencion == IntencionConsulta.ENTIDAD
+    assert nombre == "carlos"
+
+
+def test_entidad_cual_es_el_rol_de() -> None:
+    intencion, nombre = clasificar_intencion("cual es el rol de samay")
+    assert intencion == IntencionConsulta.ENTIDAD
+    assert nombre == "samay"
+
+
+def test_que_es_lo_pronombre_es_tema() -> None:
+    intencion, nombre = clasificar_intencion("que es eso")
+    assert intencion == IntencionConsulta.TEMA
+    assert nombre is None
+    intencion, nombre = clasificar_intencion("que es lo que falla")
+    assert intencion == IntencionConsulta.TEMA
+    assert nombre is None
+
+
+def test_que_es_lo_adjetivo_no_es_entidad() -> None:
+    intencion, nombre = clasificar_intencion(
+        "que es lo mas delicado de la arquitectura gatsby"
+    )
+    assert intencion == IntencionConsulta.TEMA
+    assert nombre is None
+
+
 def test_temporal_cuando() -> None:
     intencion, nombre = clasificar_intencion(
         "cuando fue el primer mensaje de samay"
