@@ -95,3 +95,63 @@ def test_cmd_skills_list_retorna_cero(
     assert "nous-keeper" in salida
     assert "nous-pathfinder" in salida
     assert "nous-preferences" in salida
+
+
+def test_registro_incluye_las_skills_migradas() -> None:
+    """Las skills nuevas (sesión, guardrails, corrección…) están en
+    el registro empaquetado."""
+    nombres = {art.nombre for art in skills.ARTEFACTOS}
+    for nombre in (
+        "nous-sesion",
+        "nous-guardrails",
+        "nous-calibracion",
+        "nous-correccion",
+        "nous-resolve",
+        "nous-archive",
+        "nous-persona",
+        "nous-soulkeeper",
+    ):
+        assert nombre in nombres, f"falta {nombre} en ARTEFACTOS"
+
+
+def test_nombres_de_artefacto_son_unicos() -> None:
+    """No hay dos artefactos con el mismo nombre en el registro."""
+    nombres = [art.nombre for art in skills.ARTEFACTOS]
+    assert len(nombres) == len(set(nombres))
+
+
+def test_skill_persona_documenta_banco_y_cli(tmp_path: Path) -> None:
+    """nous-persona explica el banco persona.respuestas y el CLI."""
+    skills.instalar(".agents", tmp_path)
+    texto = (
+        tmp_path / ".agents" / "skills" / "nous-persona" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    for concepto in (
+        "persona.respuestas",
+        "nous persona set",
+        "nous persona render",
+        "SOUL.md",
+        "USER.md",
+    ):
+        assert concepto in texto
+
+
+def test_agente_soulkeeper_se_instala_y_audita(tmp_path: Path) -> None:
+    """nous-soulkeeper se instala como agente y documenta la auditoría
+    del banco contra los archivos."""
+    skills.instalar(".agents", tmp_path)
+    texto = (
+        tmp_path / ".agents" / "agents" / "nous-soulkeeper.md"
+    ).read_text(encoding="utf-8")
+    assert "persona.respuestas" in texto
+    assert "leer_preferencia" in texto
+    assert "propón" in texto.lower() or "propon" in texto.lower()
+
+
+def test_ningun_artefacto_ordena_escribir_a_gbrain_o_memlord() -> None:
+    """Los artefactos empaquetados no llevan instrucciones activas a
+    los stores retirados."""
+    for art in skills.ARTEFACTOS:
+        texto = art.contenido.lower()
+        assert "gbrain" not in texto, f"{art.nombre} menciona gbrain"
+        assert "store_memory" not in texto, f"{art.nombre} usa memlord"

@@ -314,8 +314,10 @@ def _parser() -> argparse.ArgumentParser:
     )
 
     from src.cli.identidad import registrar_subparsers
+    from src.cli.persona import registrar_subparsers as reg_persona
 
     registrar_subparsers(sub)
+    reg_persona(sub)
     return p
 
 
@@ -1239,6 +1241,10 @@ def _despachar(args: argparse.Namespace) -> int:
         from src.cli.identidad import cmd_identidad
 
         return cmd_identidad(comando, args)
+    if comando == "persona":
+        from src.cli.persona import cmd_persona
+
+        return cmd_persona(args)
     if comando == "prune":
         datos = asyncio.run(_poda(args.dias, args.amplitud, args.aplicar))
         if args.json:
