@@ -139,6 +139,96 @@ async def test_curado_recibe_boost_en_score_final(
     assert resultados[0].evento_id == str(curado.id)
 
 
+async def test_pata_or_recupera_entidad_en_pregunta_natural(
+    session: AsyncSession,
+) -> None:
+    """«quién es X y cuánto tiempo tiene» muere en AND, vive en OR."""
+    repo = EventoRepository(session)
+    carlos = await repo.crear(
+        EventoModel(
+            timestamp_unix=1_700_000_400,
+            dimension="cognitiva",
+            fuente="test",
+            contenido=(
+                "# Carlos\n\nDev semi-senior del equipo de "
+                "Digital Booting. GitLab: charlyp04."
+            ),
+        )
+    )
+    pregunta = (
+        "quien es carlos y cuanto tiempo tiene en digital booting"
+    )
+
+    hits_and = await repo.buscar_por_texto(pregunta, rama=None)
+    hits_or = await repo.buscar_por_texto_or(pregunta, rama=None)
+
+    assert all(str(m.id) != str(carlos.id) for m, _ in hits_and)
+    assert any(str(m.id) == str(carlos.id) for m, _ in hits_or)
+
+
+async def test_pata_titulo_prioriza_lexema_raro(
+    session: AsyncSession,
+) -> None:
+    """El documento titulado con el término más raro gana la pata."""
+    repo = EventoRepository(session)
+    carlos = await repo.crear(
+        EventoModel(
+            timestamp_unix=1_700_000_600,
+            dimension="cognitiva",
+            fuente="test",
+            contenido="# Carlos\n\nDev semi-senior del equipo.",
+        )
+    )
+    await repo.crear(
+        EventoModel(
+            timestamp_unix=1_700_000_601,
+            dimension="cognitiva",
+            fuente="test",
+            contenido="# Equipo de Digital Booting\n\nÍndice general.",
+        )
+    )
+
+    hits = await repo.buscar_por_titulo(
+        "quien es carlos del equipo digital", rama=None
+    )
+
+    assert hits
+    assert str(hits[0][0].id) == str(carlos.id)
+
+
+async def test_pata_or_no_desplaza_al_match_completo(
+    session: AsyncSession,
+) -> None:
+    """El documento que cubre todos los lexemas sigue encabezando."""
+    repo = EventoRepository(session)
+    completo = await repo.crear(
+        EventoModel(
+            timestamp_unix=1_700_000_500,
+            dimension="cognitiva",
+            fuente="test",
+            contenido=(
+                "Protocolo de ventana de tiempo para responder "
+                "mensajes: cinco minutos máximo."
+            ),
+        )
+    )
+    await repo.crear(
+        EventoModel(
+            timestamp_unix=1_700_000_501,
+            dimension="cognitiva",
+            fuente="test",
+            contenido="Lista de mensajes pendientes del día.",
+        )
+    )
+
+    hits_or = await repo.buscar_por_texto_or(
+        "ventana tiempo responder mensajes", rama=None
+    )
+
+    assert hits_or
+    assert str(hits_or[0][0].id) == str(completo.id)
+
+
 async def test_requiere_troceo_solo_para_contenido_largo() -> None:
     """El umbral de troceo solo aplica a contenido que lo excede."""
     assert not requiere_troceo("breve")

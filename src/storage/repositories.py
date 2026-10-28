@@ -9,11 +9,29 @@ import uuid
 from collections.abc import Sequence
 from typing import Any, cast
 
-from sqlalchemy import BigInteger, and_, case, delete, func, literal, or_, select, union_all, update
+from sqlalchemy import (
+    BigInteger,
+    Text,
+    and_,
+    case,
+    delete,
+    func,
+    literal,
+    or_,
+    select,
+    union_all,
+    update,
+)
+from sqlalchemy import (
+    cast as sa_cast,
+)
+from sqlalchemy.dialects.postgresql import TSQUERY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 from sqlalchemy.sql.elements import ColumnElement
+from sqlalchemy.sql.selectable import Subquery
 
 from src.core.identidad import (
     USUARIO_SISTEMA_ID,
@@ -37,6 +55,120 @@ from src.storage.models import (
     ScriptDetectadoModel,
     SesionModel,
 )
+
+
+def _tsquery(query: str, operador: str) -> ColumnElement[Any]:
+    """Construye el tsquery de una consulta en español.
+
+    ``plainto_tsquery`` hace stemming y descarta stopwords, pero
+    siempre une con ``&``. Para la pata OR se toma su salida ya
+    normalizada y se intercambian los conectores por ``|`` — los
+    lexemas siguen siendo los de Postgres, no una tokenización
+    propia. Una consulta sin lexemas produce ``NULL``, que jamás
+    satisface ``@@`` (cero filas, como corresponde).
+    """
+    plain = func.plainto_tsquery("spanish", query)
+    if operador == "|":
+        texto = func.replace(sa_cast(plain, Text), "&", "|")
+        return sa_cast(func.nullif(texto, ""), TSQUERY)
+    return sa_cast(plain, TSQUERY)
+
+
+def _titulo_tsv(columna: Any) -> ColumnElement[Any]:
+    """tsvector en español de la primera línea de un texto.
+
+    En markdown la primera línea suele ser el encabezado
+    (``# Título``, ``## Sección``) — el nombre de la entidad o
+    de la mini-sección. Para contenido plano de una sola línea
+    (facts) la línea es el propio texto: la búsqueda de título
+    degenera en búsqueda del fact completo, que es lo correcto.
+    """
+    return func.to_tsvector(
+        "spanish",
+        func.split_part(columna, func.chr(10), 1),
+    )
+
+
+def _lexemas_consulta(query: str) -> Subquery:
+    """Filas de lexemas ya stemmeados de la consulta.
+
+    ``to_tsvector`` aplica el stemmer español y descarta
+    stopwords; ``tsvector_to_array``+``unnest`` los descompone en
+    una fila por término — la misma normalización que indexa los
+    documentos, no una tokenización propia.
+    """
+    return select(
+        func.unnest(
+            func.tsvector_to_array(func.to_tsvector("spanish", query))
+        ).label("lexema")
+    ).subquery()
+
+
+def _score_idf(
+    titulo_tsv: ColumnElement[Any],
+    lexemas: Subquery,
+    ctx: Contexto | None,
+) -> ColumnElement[Any]:
+    """Scalar subquery: max ln(1 + N/df) de los lexemas en el título.
+
+    ``df`` cuenta, por lexema de la consulta, en cuántos
+    documentos visibles aparece en el cuerpo — una rareza del
+    corpus, no una propiedad del título. El score es el idf del
+    lexema más raro que el título cubre: un documento titulado
+    «Carlos» (3 docs) supera a «Paquetes Digital Booting»
+    (términos en 50+ docs) — el nombre de la entidad es el
+    término más raro de la pregunta, no el más repetido.
+    ``ev_df``/``ev_total`` son alias porque la tabla externa
+    también es ``eventos`` — sin alias, SQLAlchemy
+    autocorrelacionaría el conteo a la fila de fuera (producto
+    cartesiano).
+    """
+    ev_df = aliased(EventoModel)
+    vis_df = _vis_generico(ev_df, ctx)
+    df = (
+        select(
+            lexemas.c.lexema,
+            func.count(ev_df.id).label("docs"),
+        )
+        .select_from(lexemas)
+        .join(
+            ev_df,
+            and_(
+                ev_df.contenido_tsv.op("@@")(
+                    func.to_tsquery("spanish", lexemas.c.lexema)
+                ),
+                *([vis_df] if vis_df is not None else []),
+            ),
+            isouter=True,
+        )
+        .group_by(lexemas.c.lexema)
+        .subquery()
+    )
+    ev_total = aliased(EventoModel)
+    vis_total = _vis_generico(ev_total, ctx)
+    total = (
+        select(func.count(ev_total.id))
+        .where(*([vis_total] if vis_total is not None else []))
+        .scalar_subquery()
+    )
+    return (
+        select(
+            func.coalesce(
+                func.max(
+                    func.ln(1.0 + total / func.greatest(df.c.docs, 1))
+                ),
+                0.0,
+            )
+        )
+        .select_from(df)
+        .where(
+            titulo_tsv.op("@@")(
+                func.to_tsquery("spanish", df.c.lexema)
+            )
+        )
+        .scalar_subquery()
+        .label("score")
+    )
 
 
 def _vis_eventos(ctx: Contexto | None) -> ColumnElement[bool] | None:
@@ -303,10 +435,13 @@ class EventoRepository:
     async def buscar_por_texto(
         self, query: str, limite: int = 20, rama: str | None = None
     ) -> Sequence[tuple[EventoModel, float]]:
-        """Búsqueda full-text sobre contenido vía tsvector (español).
+        """Búsqueda full-text AND sobre contenido vía tsvector (español).
+
+        ``plainto_tsquery`` une los lexemas con ``&``: exige que
+        TODOS los términos aparezcan. Pata de precisión.
 
         Args:
-            query: Texto a buscar (plainto_tsquery).
+            query: Texto a buscar.
             limite: Máximo de resultados.
             rama: Línea de universo a la que limitar la búsqueda
                 (None = todas las ramas).
@@ -314,7 +449,42 @@ class EventoRepository:
         Returns:
             Tuplas (evento, ts_rank) ordenadas por rank descendente.
         """
-        tsquery = func.plainto_tsquery("spanish", query)
+        return await self._buscar_por_texto(
+            query, _tsquery(query, "&"), limite, rama
+        )
+
+    async def buscar_por_texto_or(
+        self, query: str, limite: int = 20, rama: str | None = None
+    ) -> Sequence[tuple[EventoModel, float]]:
+        """Búsqueda full-text OR: basta con que un lexema aparezca.
+
+        Las preguntas naturales llevan palabras que ningún
+        documento contiene («quién es», «cuánto tiempo tiene») —
+        con ``&`` la pata lexical devuelve cero filas y la entidad
+        exacta se ahoga en la señal vectorial. El ``|`` devuelve a
+        esos documentos a la contienda; ``ts_rank`` ya premia a
+        quien cubre más términos, así la precisión no se pierde.
+
+        Args:
+            query: Texto a buscar.
+            limite: Máximo de resultados.
+            rama: Línea de universo (None = todas).
+
+        Returns:
+            Tuplas (evento, ts_rank) ordenadas por rank descendente.
+        """
+        return await self._buscar_por_texto(
+            query, _tsquery(query, "|"), limite, rama
+        )
+
+    async def _buscar_por_texto(
+        self,
+        query: str,
+        tsquery: ColumnElement[Any],
+        limite: int,
+        rama: str | None,
+    ) -> Sequence[tuple[EventoModel, float]]:
+        """Cuerpo compartido de la búsqueda full-text sobre eventos."""
         rank = func.ts_rank(EventoModel.contenido_tsv, tsquery).label("score")
         filtros = self._filtros_evocables()
         # Los tags explícitos también hacen match (no caben en el
@@ -438,12 +608,35 @@ class EventoRepository:
     async def buscar_chunks_por_texto(
         self, query: str, limite: int = 20, rama: str | None = None
     ) -> Sequence[tuple[EventoModel, float]]:
-        """Búsqueda full-text sobre chunks; devuelve el evento padre.
+        """Búsqueda full-text AND sobre chunks; devuelve el padre.
 
         El score del evento es el del mejor fragmento — la unidad de
         respuesta sigue siendo el evento completo.
         """
-        tsquery = func.plainto_tsquery("spanish", query)
+        return await self._buscar_chunks_por_texto(
+            query, _tsquery(query, "&"), limite, rama
+        )
+
+    async def buscar_chunks_por_texto_or(
+        self, query: str, limite: int = 20, rama: str | None = None
+    ) -> Sequence[tuple[EventoModel, float]]:
+        """Búsqueda full-text OR sobre chunks; devuelve el padre.
+
+        Misma motivación que ``buscar_por_texto_or``: la pregunta
+        natural no muere en el ``&``.
+        """
+        return await self._buscar_chunks_por_texto(
+            query, _tsquery(query, "|"), limite, rama
+        )
+
+    async def _buscar_chunks_por_texto(
+        self,
+        query: str,
+        tsquery: ColumnElement[Any],
+        limite: int,
+        rama: str | None,
+    ) -> Sequence[tuple[EventoModel, float]]:
+        """Cuerpo compartido de la búsqueda full-text sobre chunks."""
         rank = func.ts_rank(EventoChunkModel.contenido_tsv, tsquery)
         mejores = (
             select(
@@ -461,6 +654,86 @@ class EventoRepository:
             )
             .group_by(EventoChunkModel.evento_id)
             .order_by(func.max(rank).desc())
+            .limit(limite)
+            .subquery()
+        )
+        stmt = select(EventoModel, mejores.c.score).join(
+            mejores, mejores.c.evento_id == EventoModel.id
+        )
+        resultado = await self._session.execute(stmt)
+        return [
+            (fila["EventoModel"], float(fila["score"]))
+            for fila in resultado.mappings().all()
+        ]
+
+    async def buscar_por_titulo(
+        self, query: str, limite: int = 20, rama: str | None = None
+    ) -> Sequence[tuple[EventoModel, float]]:
+        """Búsqueda IDF sobre la primera línea del evento (el título).
+
+        Para «quién es X» el nombre de la entidad vive en el
+        encabezado («# Carlos»), no repartido en el cuerpo. El
+        score es la suma de ``ln(1 + N/df)`` de los lexemas del
+        título que también están en la consulta: «carlos» (3 docs)
+        pesa mucho más que «digital» (50 docs). Es la equivalencia
+        del entity-card lookup de gbrain sin necesitar extracción
+        de entidades — la rareza hace la discriminación.
+
+        Args:
+            query: Texto de la consulta.
+            limite: Máximo de resultados.
+            rama: Línea de universo (None = todas).
+
+        Returns:
+            Tuplas (evento, score idf del título) por score desc.
+        """
+        titulo_tsv = _titulo_tsv(EventoModel.contenido)
+        lexemas = _lexemas_consulta(query)
+        filtros = self._filtros_evocables()
+        if rama is not None:
+            filtros.append(EventoModel.rama == rama)
+        score = _score_idf(titulo_tsv, lexemas, self._ctx)
+        stmt = (
+            select(EventoModel, score)
+            .where(
+                titulo_tsv.op("@@")(_tsquery(query, "|")),
+                *filtros,
+            )
+            .order_by(score.desc())
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return [(fila["EventoModel"], float(fila["score"])) for fila in resultado.mappings().all()]
+
+    async def buscar_chunks_por_titulo(
+        self, query: str, limite: int = 20, rama: str | None = None
+    ) -> Sequence[tuple[EventoModel, float]]:
+        """Búsqueda IDF sobre la primera línea del chunk (## sección).
+
+        Misma lógica que ``buscar_por_titulo``: el score del padre
+        lo da el mejor fragmento.
+        """
+        titulo_tsv = _titulo_tsv(EventoChunkModel.contenido)
+        lexemas = _lexemas_consulta(query)
+        filtros = self._filtros_evocables()
+        if rama is not None:
+            filtros.append(EventoModel.rama == rama)
+        score = _score_idf(titulo_tsv, lexemas, self._ctx)
+        mejores = (
+            select(
+                EventoChunkModel.evento_id,
+                func.max(score).label("score"),
+            )
+            .join(
+                EventoModel,
+                EventoModel.id == EventoChunkModel.evento_id,
+            )
+            .where(
+                titulo_tsv.op("@@")(_tsquery(query, "|")),
+                *filtros,
+            )
+            .group_by(EventoChunkModel.evento_id)
+            .order_by(func.max(score).desc())
             .limit(limite)
             .subquery()
         )

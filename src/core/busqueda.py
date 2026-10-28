@@ -32,6 +32,7 @@ PESO_RECENCIA = 0.1
 BOOST_AMPLITUD = 0.25
 BOOST_PRIMING = 0.15
 BOOST_CURADO = 0.2
+BOOST_TITULO = 1.0
 UMBRAL_COSENO_MIN = 0.25
 SOBREMUESTREO = 4
 
@@ -172,19 +173,59 @@ class BusquedaHibrida4D:
         hits_chunks_vector = await repo.buscar_chunks_por_vector(
             vector_query, rama=rama
         )
+        # Patas léxicas OR: plainto_tsquery une con & — exige TODOS
+        # los términos y una pregunta natural («quién es X y cuánto
+        # tiempo tiene») devuelve cero filas. La OR deja entrar al
+        # documento que solo cubre la entidad; ts_rank lo ordena
+        # detrás de quien cubre más términos. Son inputs RRF
+        # separados: el AND sigue mandando cuando existe.
+        hits_texto_or = await repo.buscar_por_texto_or(query, rama=rama)
+        hits_chunks_texto_or = await repo.buscar_chunks_por_texto_or(
+            query, rama=rama
+        )
+        # Patas de título: «quién es X» se responde por el nombre de
+        # la entidad, que vive en la primera línea («# Carlos»,
+        # «## Sección») — no en la densidad del cuerpo. Es la
+        # equivalencia del entity-card lookup de gbrain.
+        hits_titulo = await repo.buscar_por_titulo(query, rama=rama)
+        hits_chunks_titulo = await repo.buscar_chunks_por_titulo(
+            query, rama=rama
+        )
 
         modelos = _indice_modelos(
-            hits_texto, hits_vector, hits_chunks_texto, hits_chunks_vector
+            hits_texto,
+            hits_vector,
+            hits_chunks_texto,
+            hits_chunks_vector,
+            hits_texto_or,
+            hits_chunks_texto_or,
+            hits_titulo,
+            hits_chunks_titulo,
         )
         fusionados = _fusionar(
             hits_texto,
             hits_vector,
             hits_chunks_texto,
             hits_chunks_vector,
+            hits_texto_or,
+            hits_chunks_texto_or,
+            hits_titulo,
+            hits_chunks_titulo,
             top_n,
         )
         if not fusionados:
             return []
+
+        # Match de título: el nombre de la entidad es el lexema
+        # más raro de la consulta en la primera línea — señal
+        # multiplicativa post-fusión, como amplitud o curado.
+        titulo_scores: dict[str, float] = {}
+        for hits in (hits_titulo, hits_chunks_titulo):
+            for m, score in hits:
+                eid = str(m.id)
+                titulo_scores[eid] = max(
+                    titulo_scores.get(eid, 0.0), score
+                )
 
         ahora = int(time.time())
         resultados = _re_scored(
@@ -194,6 +235,7 @@ class BusquedaHibrida4D:
             ahora,
             self._vida_media_dias,
             self._activaciones(ahora),
+            titulo_scores,
         )
         resultados = _deduplicar(resultados)
         # Fan effect: dos páginas casi idénticas no deberían ocupar
@@ -215,6 +257,10 @@ class BusquedaHibrida4D:
                 hits_vector,
                 hits_chunks_texto,
                 hits_chunks_vector,
+                hits_texto_or,
+                hits_chunks_texto_or,
+                hits_titulo,
+                hits_chunks_titulo,
             ):
                 for eid in competidores_rif(
                     [str(m.id) for m, _ in hits],
@@ -359,37 +405,33 @@ def _fusionar(
     hits_vector: Sequence[tuple[EventoModel, float]],
     hits_chunks_texto: Sequence[tuple[EventoModel, float]],
     hits_chunks_vector: Sequence[tuple[EventoModel, float]],
+    hits_texto_or: Sequence[tuple[EventoModel, float]],
+    hits_chunks_texto_or: Sequence[tuple[EventoModel, float]],
+    hits_titulo: Sequence[tuple[EventoModel, float]],
+    hits_chunks_titulo: Sequence[tuple[EventoModel, float]],
     top_n: int,
 ) -> list[ResultadoBusqueda]:
     """Convierte los hits en ResultadoBusqueda y los fusiona con RRF."""
-    lista_bm25 = [
-        ResultadoBusqueda(evento_id=str(m.id), score_bm25=score)
-        for m, score in hits_texto
-    ]
-    lista_vector = [
-        ResultadoBusqueda(evento_id=str(m.id), score_vectorial=score)
-        for m, score in hits_vector
-        if score >= UMBRAL_COSENO_MIN
-    ]
-    lista_chunks_bm25 = [
-        ResultadoBusqueda(evento_id=str(m.id), score_bm25=score)
-        for m, score in hits_chunks_texto
-    ]
-    lista_chunks_vector = [
-        ResultadoBusqueda(evento_id=str(m.id), score_vectorial=score)
-        for m, score in hits_chunks_vector
-        if score >= UMBRAL_COSENO_MIN
-    ]
     listas = [
-        lista
-        for lista in (
-            lista_bm25,
-            lista_vector,
-            lista_chunks_bm25,
-            lista_chunks_vector,
+        [ResultadoBusqueda(evento_id=str(m.id), score_bm25=score) for m, score in hits]
+        for hits in (
+            hits_texto,
+            hits_chunks_texto,
+            hits_texto_or,
+            hits_chunks_texto_or,
+            hits_titulo,
+            hits_chunks_titulo,
         )
-        if lista
     ]
+    listas += [
+        [
+            ResultadoBusqueda(evento_id=str(m.id), score_vectorial=score)
+            for m, score in hits
+            if score >= UMBRAL_COSENO_MIN
+        ]
+        for hits in (hits_vector, hits_chunks_vector)
+    ]
+    listas = [lista for lista in listas if lista]
     if not listas:
         return []
     return fusion_rrf(*listas, top_n=top_n * SOBREMUESTREO)
@@ -402,9 +444,11 @@ def _re_scored(
     ahora: int,
     vida_media_dias: float,
     activaciones: dict[str, float] | None = None,
+    titulo_scores: dict[str, float] | None = None,
 ) -> list[ResultadoBusqueda]:
     """Mezcla RRF con coseno y recencia; aplica amplitud y priming."""
     rrf_max = max(r.score_rrf for r in fusionados)
+    titulo_max = max(titulo_scores.values()) if titulo_scores else 0.0
     resultados = []
     for r in fusionados:
         modelo = modelos[r.evento_id]
@@ -423,6 +467,13 @@ def _re_scored(
         # el mismo voto de confianza pesa también en el recall.
         if modelo.curado:
             score_final *= 1.0 + BOOST_CURADO
+        # Título con el término más raro de la consulta = el
+        # documento ES sobre esa entidad («# Carlos» para «quién
+        # es carlos»). Normalizado contra el idf máximo visto.
+        if titulo_scores and titulo_max > 0:
+            score_final *= 1.0 + BOOST_TITULO * (
+                titulo_scores.get(r.evento_id, 0.0) / titulo_max
+            )
         if activaciones:
             score_final *= 1.0 + BOOST_PRIMING * activaciones.get(
                 r.evento_id, 0.0
