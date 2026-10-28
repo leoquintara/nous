@@ -30,7 +30,10 @@ logger = logging.getLogger("nous.cli.importador_remoto")
 _PROTOCOLO_MCP = "2025-03-26"
 _MAX_PAGINAS_GBRAIN = 500
 _MAX_FACTS_GBRAIN = 500
-_MAX_MEMORIAS = 2_000
+# Techo de seguridad por si la instancia pagina sin fin; una migración
+# real de memlord (capturas signal/whatsapp) supera con creces los
+# miles — un default de 2k cortaba el historial por la mitad.
+_MAX_MEMORIAS = 50_000
 
 # Tools candidatos para listar memorias en memlord (por orden de
 # preferencia); se elige el primero que el servidor anuncie en
