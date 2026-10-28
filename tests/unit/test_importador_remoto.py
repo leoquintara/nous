@@ -187,6 +187,42 @@ async def test_memlord_importa_con_paginacion_y_detalle() -> None:
     assert set(filas[0]["tags"]) >= {"dev", "personal"}
 
 
+def test_fila_memlord_preserva_remitente_en_contenido_y_tags() -> None:
+    """metadata.sender queda consultable: «mensaje DE samay» existe."""
+    from src.cli.importador_remoto import _fila_memlord
+
+    fila = _fila_memlord(
+        {
+            "name": "memory-137",
+            "content": "Hola @Samay Reyes buenos dias",
+            "memory_type": "fact",
+            "workspace": "group-atencion-db",
+            "metadata": {
+                "sender": "Leonardo Quintana",
+                "source": "signal",
+            },
+            "created_at": "2026-05-19T15:44:00+00:00",
+        },
+        "memlord",
+    )
+
+    assert "Leonardo Quintana: Hola @Samay Reyes" in fila["contenido"]
+    assert "sender:leonardo-quintana" in fila["tags"]
+    assert "src:signal" in fila["tags"]
+    assert "group-atencion-db" in fila["tags"]
+
+
+def test_fila_memlord_sin_remitente_conserva_contenido_plano() -> None:
+    from src.cli.importador_remoto import _fila_memlord
+
+    fila = _fila_memlord(
+        {"name": "regla-1", "content": "usa tabs", "memory_type": "fact"},
+        "memlord",
+    )
+    assert fila["contenido"].endswith("usa tabs")
+    assert not any(t.startswith("sender:") for t in fila["tags"])
+
+
 @pytest.mark.asyncio
 async def test_memlord_sin_tool_de_listado_falla_claro() -> None:
     herramientas = {

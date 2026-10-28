@@ -465,19 +465,36 @@ async def _memlord_paginas(
 
 
 def _fila_memlord(obj: dict[str, Any], fuente: str) -> FilaEvento:
-    """Normaliza un MemoryDetail de memlord a FilaEvento con id estable."""
+    """Normaliza un MemoryDetail de memlord a FilaEvento con id estable.
+
+    ``metadata.sender``/``source`` se incrustan en el contenido y en
+    tags — sin ellos «el mensaje DE samay» es indistinguible de un
+    mensaje que solo la menciona, y el remitente es la señal
+    principal en memorias de captura (signal/whatsapp).
+    """
     from src.cli.importadores import _fila_base
     nombre = str(obj.get("name") or "")
     contenido = str(obj.get("content") or obj.get("text") or "")
     if not contenido:
         raise ValueError("memoria sin contenido")
+    meta = obj.get("metadata")
+    sender = str(meta.get("sender") or "").strip() if isinstance(meta, dict) else ""
+    source = str(meta.get("source") or "").strip() if isinstance(meta, dict) else ""
     tags = obj.get("tags")
     lista_tags = list(tags) if isinstance(tags, list | set | tuple) else []
     workspace = obj.get("workspace") or obj.get("workspace_name")
     if workspace:
         lista_tags.append(str(workspace))
+    if sender:
+        lista_tags.append(f"sender:{sender.lower().replace(' ', '-')}")
+    if source:
+        lista_tags.append(f"src:{source.lower()}")
+    cuerpo = (
+        f"{nombre}\n\n{sender}: {contenido}" if sender
+        else f"{nombre}\n\n{contenido}"
+    )
     return _fila_base(
-        f"{nombre}\n\n{contenido}".strip(),
+        cuerpo.strip(),
         fuente,
         lista_tags or None,
         ts=_ts_iso(obj.get("created_at")),
