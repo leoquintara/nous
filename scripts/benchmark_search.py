@@ -339,8 +339,10 @@ async def main() -> None:
     engine = crear_engine()
 
     async with get_session(engine) as session:
+        # Sin commit: las semillas viven solo en esta transacción — la
+        # medición las ve (misma sesión) y el rollback las deshace al
+        # cerrar. Nunca deben quedar como ruido en la memoria real.
         sembrados = await _sembrar(session, args.sembrar)
-        await session.commit()
         logger.info("Eventos sembrados: %d", sembrados)
         resultados_a = await _benchmark_busqueda(
             session, embeddings, args.iteraciones
@@ -375,7 +377,6 @@ async def main() -> None:
     engine = crear_engine()
     async with get_session(engine) as session:
         sembrados_mem = await _sembrar(session, 10_000)
-        await session.commit()
         if sembrados_mem:
             logger.info("Corpus de memoria: %d eventos", 10_000)
         resultados_d = await _benchmark_memoria(session, embeddings)

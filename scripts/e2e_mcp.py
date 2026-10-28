@@ -102,18 +102,29 @@ async def _ejecutar_cliente(puerto: int, token: str) -> dict[str, Any]:
     return resultados
 
 
-def _leer_token_env() -> str:
-    """Obtiene NOUS_API_TOKEN del entorno o del .env del proyecto."""
-    token = os.environ.get("NOUS_API_TOKEN", "")
-    if token:
-        return token
+def _leer_var(nombre: str) -> str:
+    """Obtiene una variable del entorno o del .env del proyecto."""
+    valor = os.environ.get(nombre, "")
+    if valor:
+        return valor
     try:
         for linea in open(".env", encoding="utf-8"):  # noqa: SIM115
-            if linea.startswith("NOUS_API_TOKEN="):
+            if linea.startswith(f"{nombre}="):
                 return linea.split("=", 1)[1].strip()
     except OSError:
         pass
     return ""
+
+
+def _url_db_prueba() -> str:
+    """URL de nous_test para el servidor e2e: la prueba no debe
+    escribir en la memoria real. Deriva de NOUS_DATABASE_URL
+    cambiando solo el nombre de la base."""
+    explicita = _leer_var("NOUS_TEST_DATABASE_URL")
+    if explicita:
+        return explicita
+    base = _leer_var("NOUS_DATABASE_URL")
+    return base.rsplit("/", 1)[0] + "/nous_test" if base else ""
 
 
 def _esperar_puerto(puerto: int, intentos: int = 200) -> bool:
@@ -145,11 +156,15 @@ def main() -> None:
         encoding="utf-8", errors="replace"
     )
 
-    token = _leer_token_env()
+    token = _leer_var("NOUS_API_TOKEN")
     if not token:
         raise SystemExit("Define NOUS_API_TOKEN (formato ns_...) en .env")
 
     env = {**os.environ, "NOUS_MCP_TRANSPORT": "http", "NOUS_API_PORT": str(args.puerto)}
+    db_prueba = _url_db_prueba()
+    if db_prueba:
+        # El servidor e2e escribe en nous_test, no en la memoria real.
+        env["NOUS_DATABASE_URL"] = db_prueba
     servidor = subprocess.Popen(
         [sys.executable, "-m", "src.main"],
         env=env,

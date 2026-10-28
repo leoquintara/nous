@@ -150,12 +150,22 @@ async def _benchmark_sistema(
 
 
 def _arrancar_nous(puerto: int) -> subprocess.Popen[bytes]:
-    """Levanta el servidor HTTP de Nous como subproceso."""
+    """Levanta el servidor HTTP de Nous como subproceso.
+
+    Apunta a nous_test: el benchmark mide el camino real sin
+    convertir sus escrituras en ruido de la memoria del usuario.
+    """
     env = {
         **os.environ,
         "NOUS_MCP_TRANSPORT": "http",
         "NOUS_API_PORT": str(puerto),
     }
+    db_prueba = _leer_var("NOUS_TEST_DATABASE_URL")
+    if not db_prueba:
+        base = _leer_var("NOUS_DATABASE_URL")
+        db_prueba = base.rsplit("/", 1)[0] + "/nous_test" if base else ""
+    if db_prueba:
+        env["NOUS_DATABASE_URL"] = db_prueba
     return subprocess.Popen(
         [sys.executable, "-m", "src.main"],
         env=env,
