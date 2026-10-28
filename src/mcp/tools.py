@@ -125,6 +125,11 @@ from src.core.modelos import (
     Trayectoria,
 )
 from src.core.reranker import ReordenadorLocal
+from src.core.routing import (
+    IntencionConsulta,
+    clasificar_intencion,
+    direccion_temporal,
+)
 from src.core.temporal import detectar_trayectorias, proyectar
 from src.mcp.server import mcp_server
 from src.storage.chunks import indexar_chunks_evento
@@ -1170,6 +1175,16 @@ async def _consultar(
                 for v in vencidas
             ]
         competidores: list[str] = []
+        # Router de intención: «quién es X» → ficha de entidad al
+        # frente; «primero/último/reciente» → pata ordenada por
+        # timestamp_unix fusionada con el RAG normal (la temporal
+        # sostiene la respuesta cuando el RAG es flojo).
+        intencion, nombre_entidad = clasificar_intencion(consulta)
+        orden = (
+            direccion_temporal(consulta)
+            if intencion == IntencionConsulta.TEMPORAL
+            else None
+        )
         resultados = await _obtener_busqueda().buscar(
             session,
             consulta,
@@ -1177,6 +1192,7 @@ async def _consultar(
             rama=rama,
             ctx=ctx,
             competidores=competidores,
+            orden_temporal=orden,
         )
         estado_actual: float | None = None
         episodios_por_gist: dict[str, list[dict[str, Any]]] = {}
@@ -1390,6 +1406,18 @@ async def _consultar(
                 ),
             }
         )
+    # Intención entidad: la ficha encabeza la respuesta — card,
+    # grafo, backlinks, compromisos y span temporal en un bloque;
+    # los resultados difusos quedan detrás como contexto.
+    if intencion == IntencionConsulta.ENTIDAD and nombre_entidad:
+        ficha = await _entidad(nombre_entidad, top_n, workspace)
+        if ficha.get("encontrado"):
+            serializados = [
+                s
+                for s in serializados
+                if s.get("evento", {}).get("id") != ficha["card"]["id"]
+            ]
+            serializados.insert(0, {"entidad": ficha})
     return recordatorios + serializados
 
 

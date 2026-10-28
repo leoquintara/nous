@@ -135,6 +135,7 @@ class BusquedaHibrida4D:
         rama: str | None = None,
         ctx: Contexto | None = None,
         competidores: list[str] | None = None,
+        orden_temporal: str | None = None,
     ) -> list[ResultadoBusqueda]:
         """Ejecuta la búsqueda híbrida completa con contexto 4D.
 
@@ -191,6 +192,18 @@ class BusquedaHibrida4D:
         hits_chunks_titulo = await repo.buscar_chunks_por_titulo(
             query, rama=rama
         )
+        # Pata temporal: «primero/último/más reciente» pide posición
+        # en la línea de universo. Los eventos del extremo pedido
+        # entran como una lista RRF más — si el RAG normal es flojo
+        # la pata temporal sostiene la respuesta; si ambos son
+        # fuertes la fusión los reconcilia.
+        hits_temporal: list[tuple[EventoModel, float]] = []
+        if orden_temporal in ("asc", "desc"):
+            hits_temporal = list(
+                await repo.buscar_linea_temporal(
+                    query, orden_temporal, rama=rama
+                )
+            )
 
         modelos = _indice_modelos(
             hits_texto,
@@ -201,6 +214,7 @@ class BusquedaHibrida4D:
             hits_chunks_texto_or,
             hits_titulo,
             hits_chunks_titulo,
+            hits_temporal,
         )
         fusionados = _fusionar(
             hits_texto,
@@ -212,6 +226,7 @@ class BusquedaHibrida4D:
             hits_titulo,
             hits_chunks_titulo,
             top_n,
+            hits_temporal,
         )
         if not fusionados:
             return []
@@ -410,6 +425,7 @@ def _fusionar(
     hits_titulo: Sequence[tuple[EventoModel, float]],
     hits_chunks_titulo: Sequence[tuple[EventoModel, float]],
     top_n: int,
+    hits_temporal: Sequence[tuple[EventoModel, float]] = (),
 ) -> list[ResultadoBusqueda]:
     """Convierte los hits en ResultadoBusqueda y los fusiona con RRF."""
     listas = [
@@ -421,6 +437,7 @@ def _fusionar(
             hits_chunks_texto_or,
             hits_titulo,
             hits_chunks_titulo,
+            hits_temporal,
         )
     ]
     listas += [

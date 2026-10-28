@@ -233,3 +233,45 @@ async def test_requiere_troceo_solo_para_contenido_largo() -> None:
     """El umbral de troceo solo aplica a contenido que lo excede."""
     assert not requiere_troceo("breve")
     assert requiere_troceo("x" * 1300)
+
+
+async def test_pata_temporal_ordena_por_timestamp(
+    session: AsyncSession,
+) -> None:
+    """«El primero» ordena por timestamp_unix, no por relevancia."""
+    embeddings = GeneradorEmbeddings()
+    repo = EventoRepository(session)
+    viejo = await repo.crear(
+        EventoModel(
+            timestamp_unix=1_600_000_000,
+            dimension="conductual",
+            fuente="test",
+            contenido="Primera mencion registrada de la entidad zephyr.",
+            embedding=await embeddings.generar("zephyr primera"),
+        )
+    )
+    await repo.crear(
+        EventoModel(
+            timestamp_unix=1_750_000_000,
+            dimension="conductual",
+            fuente="test",
+            contenido="Actividad reciente de la entidad zephyr.",
+            embedding=await embeddings.generar("zephyr reciente"),
+        )
+    )
+
+    asc = await repo.buscar_linea_temporal("zephyr", "asc")
+    desc = await repo.buscar_linea_temporal("zephyr", "desc")
+
+    assert asc[0][0].id == viejo.id
+    assert desc[0][0].id != viejo.id
+
+    busqueda = BusquedaHibrida4D(embeddings)
+    resultados = await busqueda.buscar(
+        session,
+        "primer registro de zephyr",
+        top_n=5,
+        orden_temporal="asc",
+    )
+    assert resultados
+    assert resultados[0].evento_id == str(viejo.id)

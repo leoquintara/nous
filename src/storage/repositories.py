@@ -812,6 +812,57 @@ class EventoRepository:
             for fila in resultado.mappings().all()
         ]
 
+    async def buscar_linea_temporal(
+        self,
+        query: str,
+        direccion: str,
+        limite: int = 20,
+        rama: str | None = None,
+    ) -> Sequence[tuple[EventoModel, float]]:
+        """Eventos evocables que mencionan la consulta, ordenados por tiempo.
+
+        La pata de las preguntas «primero/último/más reciente»: el
+        mismo léxico OR que la búsqueda, pero el orden lo da
+        ``timestamp_unix`` — cuándo se registró, no qué tan bien
+        matchea. El score devuelto es la posición normalizada en la
+        ventana (1.0 el extremo pedido) para fusionarse por RRF.
+
+        Args:
+            query: Texto de la consulta (lexemas OR).
+            direccion: ``"asc"`` (primeras apariciones) o ``"desc"``
+                (más recientes).
+            limite: Máximo de eventos.
+            rama: Línea de universo (None = todas).
+
+        Returns:
+            Tuplas (evento, 1.0 − posición/limite) en orden temporal.
+        """
+        filtros = self._filtros_evocables()
+        if rama is not None:
+            filtros.append(EventoModel.rama == rama)
+        orden = (
+            EventoModel.timestamp_unix.asc()
+            if direccion == "asc"
+            else EventoModel.timestamp_unix.desc()
+        )
+        stmt = (
+            select(EventoModel)
+            .where(
+                EventoModel.contenido_tsv.op("@@")(
+                    _tsquery(query, "|")
+                ),
+                *filtros,
+            )
+            .order_by(orden)
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        eventos = resultado.scalars().all()
+        total = max(len(eventos), 1)
+        return [
+            (e, 1.0 - (i / total)) for i, e in enumerate(eventos)
+        ]
+
     async def buscar_chunks_por_vector(
         self, vector: list[float], limite: int = 20, rama: str | None = None
     ) -> Sequence[tuple[EventoModel, float]]:
