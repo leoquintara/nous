@@ -341,6 +341,10 @@ class EventoRepository:
             # hasta que el humano la apruebe — misma regla que la
             # cuarentena, distinto motivo.
             EventoModel.staged.is_(False),
+            # Reemplazado = versión vieja en la worldline: la historia
+            # se conserva (4D, auditable) pero no compite en el recall
+            # contra su sucesora — misma regla que `archivado`.
+            EventoModel.reemplazado_por.is_(None),
             *self._vis(),
         ]
         if rama is not None:
@@ -380,6 +384,7 @@ class EventoRepository:
             EventoModel.archivado.is_(False),
             EventoModel.cuarentena.is_(False),
             EventoModel.staged.is_(False),
+            EventoModel.reemplazado_por.is_(None),
             *self._vis(),
         ]
         if rama is not None:
