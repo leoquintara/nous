@@ -127,6 +127,13 @@ class HttpSystemOneProvider(DecisionProvider):
         self, state: str, questions: dict[str, dict[str, Any]]
     ) -> DecisionResult:
         """POSTea {state, questions} al endpoint /v1/systemone."""
+        if not self.is_local:
+            # Capa media entre bloquear y permitir: si el operador
+            # optó por un proveedor externo, ningún secreto con forma
+            # reconocible cruza la frontera dentro del state.
+            from src.core.decision.scrub import redactar_secretos
+
+            state = redactar_secretos(state)
         payload = {"state": state, "questions": questions, "model": self._model}
         async with httpx.AsyncClient(
             timeout=_TIMEOUT, headers=self._headers

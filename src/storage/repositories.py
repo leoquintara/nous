@@ -29,10 +29,12 @@ from src.storage.models import (
     IntencionProspectivaModel,
     LlamadaModel,
     ObjetivoModel,
+    PrediccionModel,
     ProyeccionModel,
     RelacionModel,
     ReporteConsolidacionModel,
     ScriptDetectadoModel,
+    SesionModel,
 )
 
 
@@ -251,6 +253,9 @@ class EventoRepository:
                     EventoModel.expira_en > ahora,
                 ),
                 ~cierre.exists(),
+                # Un compromiso staged aún no existe como promesa —
+                # no abre loop hasta aprobarse.
+                EventoModel.staged.is_(False),
                 *self._vis(),
             )
             .order_by(EventoModel.timestamp_unix)
@@ -332,6 +337,10 @@ class EventoRepository:
             # confiable todavía — el evento existe pero no contamina
             # el recall hasta aprobarse (sistema inmune).
             EventoModel.cuarentena.is_(False),
+            # Staged (write-approval): la propuesta no es evocable
+            # hasta que el humano la apruebe — misma regla que la
+            # cuarentena, distinto motivo.
+            EventoModel.staged.is_(False),
             *self._vis(),
         ]
         if rama is not None:
@@ -370,6 +379,7 @@ class EventoRepository:
             ),
             EventoModel.archivado.is_(False),
             EventoModel.cuarentena.is_(False),
+            EventoModel.staged.is_(False),
             *self._vis(),
         ]
         if rama is not None:
@@ -472,6 +482,7 @@ class EventoRepository:
                 EventoModel.proxima_revision <= ahora,
                 EventoModel.archivado.is_(False),
                 EventoModel.cuarentena.is_(False),
+                EventoModel.staged.is_(False),
                 *self._vis(),
             )
             .order_by(EventoModel.proxima_revision)
@@ -561,6 +572,95 @@ class EventoRepository:
             CursorResult[EventoModel], await self._session.execute(stmt)
         )
         return resultado.rowcount
+
+    # ── Neuro-5: write-approval, censores y presupuesto curado ──
+
+    async def listar_staged(self, limite: int = 50) -> Sequence[EventoModel]:
+        """Propuestas de escritura pendientes de aprobación humana."""
+        stmt = (
+            select(EventoModel)
+            .where(EventoModel.staged.is_(True), *self._vis())
+            .order_by(EventoModel.timestamp_unix)
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
+
+    async def aprobar_staged(self, evento_ids: list[uuid.UUID]) -> int:
+        """Convierte propuestas staged en memorias reales."""
+        if not evento_ids:
+            return 0
+        stmt = (
+            update(EventoModel)
+            .where(
+                EventoModel.id.in_(evento_ids),
+                EventoModel.staged.is_(True),
+                *self._vis(),
+            )
+            .values(staged=False)
+        )
+        resultado = cast(
+            CursorResult[EventoModel], await self._session.execute(stmt)
+        )
+        return resultado.rowcount
+
+    async def rechazar_staged(self, evento_ids: list[uuid.UUID]) -> int:
+        """Descarta propuestas staged — la escritura nunca existió."""
+        if not evento_ids:
+            return 0
+        stmt = delete(EventoModel).where(
+            EventoModel.id.in_(evento_ids),
+            EventoModel.staged.is_(True),
+            *self._vis(),
+        )
+        resultado = cast(
+            CursorResult[EventoModel], await self._session.execute(stmt)
+        )
+        return resultado.rowcount
+
+    async def listar_censores(self) -> Sequence[EventoModel]:
+        """Censores activos del workspace — los guardrails vigentes.
+
+        Activos = no archivados, no staged, no reemplazados ni
+        expirados. Se devuelven con embedding para la verificación
+        semántica en memoria (los censores son pocos — decenas).
+        """
+        ahora = int(time.time())
+        stmt = (
+            select(EventoModel)
+            .where(
+                EventoModel.tipo == "censor",
+                EventoModel.archivado.is_(False),
+                EventoModel.staged.is_(False),
+                EventoModel.reemplazado_por.is_(None),
+                or_(
+                    EventoModel.expira_en.is_(None),
+                    EventoModel.expira_en > ahora,
+                ),
+                *self._vis(),
+            )
+            .order_by(EventoModel.timestamp_unix)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
+
+    async def listar_curados(self, limite: int = 64) -> Sequence[EventoModel]:
+        """Memorias del tier curado — el núcleo del bootstrap."""
+        stmt = (
+            select(EventoModel)
+            .where(EventoModel.curado.is_(True), *self._vis())
+            .order_by(EventoModel.amplitud.desc(), EventoModel.refuerzos.desc())
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
+
+    async def chars_curados(self) -> int:
+        """Caracteres ocupados por el tier curado — su presupuesto."""
+        stmt = select(
+            func.coalesce(func.sum(func.char_length(EventoModel.contenido)), 0)
+        ).where(EventoModel.curado.is_(True), *self._vis())
+        return int((await self._session.execute(stmt)).scalar_one())
 
     async def debilitar_lote(
         self,
@@ -910,7 +1010,13 @@ class EventoRepository:
         """
         stmt = (
             select(EventoModel)
-            .where(EventoModel.archivado.is_(False), *self._vis())
+            .where(
+                EventoModel.archivado.is_(False),
+                # Lo staged no consolida — todavía no es memoria,
+                # es propuesta pendiente de aprobación.
+                EventoModel.staged.is_(False),
+                *self._vis(),
+            )
             .order_by(EventoModel.timestamp_unix.desc())
             .limit(limite)
         )
@@ -1089,8 +1195,10 @@ class EventoRepository:
             select(EventoModel)
             .where(
                 EventoModel.tipo_memoria == "episodica",
+                EventoModel.tipo != "censor",
                 EventoModel.embedding.is_not(None),
                 EventoModel.archivado.is_(False),
+                EventoModel.staged.is_(False),
                 EventoModel.reemplazado_por.is_(None),
                 EventoModel.fuente != "sueno",
                 *self._vis(),
@@ -2385,3 +2493,133 @@ class BorradorRepository:
             CursorResult[BorradorModel], await self._session.execute(stmt)
         )
         return resultado.rowcount > 0
+
+
+class PrediccionRepository:
+    """Afirmaciones con confianza declarada — la materia del Brier."""
+
+    def __init__(
+        self, session: AsyncSession, ctx: Contexto | None = None
+    ) -> None:
+        """Inicializa con sesión y contexto de visibilidad."""
+        self._session = session
+        self._ctx = ctx
+
+    def _vis(self) -> list[ColumnElement[bool]]:
+        """Predicciones son de workspace — no llevan scope propio."""
+        if self._ctx is None:
+            return []
+        return [PrediccionModel.workspace_id == self._ctx.workspace_id]
+
+    async def crear(self, prediccion: PrediccionModel) -> PrediccionModel:
+        """Persiste la afirmación con su confianza declarada."""
+        self._session.add(prediccion)
+        await self._session.flush()
+        return prediccion
+
+    async def obtener(
+        self, prediccion_id: uuid.UUID
+    ) -> PrediccionModel | None:
+        """Retorna la predicción por id si es visible."""
+        stmt = select(PrediccionModel).where(
+            PrediccionModel.id == prediccion_id, *self._vis()
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def resolver(
+        self, prediccion_id: uuid.UUID, acierto: bool, resuelto_en: int
+    ) -> bool:
+        """Fija el resultado — el loop de calibración se cierra."""
+        stmt = (
+            update(PrediccionModel)
+            .where(
+                PrediccionModel.id == prediccion_id,
+                PrediccionModel.acierto.is_(None),
+                *self._vis(),
+            )
+            .values(acierto=acierto, resuelto_en=resuelto_en)
+        )
+        resultado = cast(
+            CursorResult[PrediccionModel],
+            await self._session.execute(stmt),
+        )
+        return resultado.rowcount > 0
+
+    async def listar(
+        self, pendientes: bool | None = None, limite: int = 100
+    ) -> Sequence[PrediccionModel]:
+        """Lista predicciones; ``pendientes`` filtra por resolución."""
+        filtros: list[Any] = [*self._vis()]
+        if pendientes is True:
+            filtros.append(PrediccionModel.acierto.is_(None))
+        elif pendientes is False:
+            filtros.append(PrediccionModel.acierto.is_not(None))
+        stmt = (
+            select(PrediccionModel)
+            .where(*filtros)
+            .order_by(PrediccionModel.creado_en.desc())
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
+
+
+class SesionRepository:
+    """Límites de sesión — bootstrap que abre, handoff que cierra."""
+
+    def __init__(
+        self, session: AsyncSession, ctx: Contexto | None = None
+    ) -> None:
+        """Inicializa con sesión y contexto de visibilidad."""
+        self._session = session
+        self._ctx = ctx
+
+    def _vis(self) -> list[ColumnElement[bool]]:
+        """Sesiones son de workspace — no llevan scope propio."""
+        if self._ctx is None:
+            return []
+        return [SesionModel.workspace_id == self._ctx.workspace_id]
+
+    async def crear(self, sesion: SesionModel) -> SesionModel:
+        """Persiste la sesión abierta."""
+        self._session.add(sesion)
+        await self._session.flush()
+        return sesion
+
+    async def obtener(self, sesion_id: uuid.UUID) -> SesionModel | None:
+        """Retorna la sesión por id si es visible."""
+        stmt = select(SesionModel).where(
+            SesionModel.id == sesion_id, *self._vis()
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def ultima_abierta(self) -> SesionModel | None:
+        """La sesión aún sin cerrar más reciente del workspace."""
+        stmt = (
+            select(SesionModel)
+            .where(SesionModel.fin.is_(None), *self._vis())
+            .order_by(SesionModel.inicio.desc())
+            .limit(1)
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def ultima_cerrada(self) -> SesionModel | None:
+        """La sesión cerrada más reciente — fuente del handoff."""
+        stmt = (
+            select(SesionModel)
+            .where(SesionModel.fin.is_not(None), *self._vis())
+            .order_by(SesionModel.fin.desc())
+            .limit(1)
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def listar(self, limite: int = 50) -> Sequence[SesionModel]:
+        """Sesiones del workspace, más recientes primero."""
+        stmt = (
+            select(SesionModel)
+            .where(*self._vis())
+            .order_by(SesionModel.inicio.desc())
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()

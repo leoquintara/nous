@@ -32,3 +32,12 @@ class CupoExcedidoError(NousError):
 
 class PermisoDenegadoError(NousError):
     """El rol del llamante no permite la operación (viewer escribiendo, etc.)."""
+
+
+class CupoCuradoError(NousError):
+    """El tier curado llegó a su presupuesto — consolidar antes de seguir.
+
+    Overflow-pressure: el núcleo no puede crecer sin costo; curar algo
+    nuevo exige hacer espacio (descurar o consolidar) — la escasez es
+    la higiene de la memoria.
+    """

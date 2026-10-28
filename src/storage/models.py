@@ -261,6 +261,11 @@ class EventoModel(Base):
     debilitados: Mapped[int] = mapped_column(
         Integer, server_default="0"
     )
+    # Neuro-5 — write-approval: indexado pero fuera del recall hasta
+    # que el humano apruebe (la memoria propone, el humano dispone).
+    staged: Mapped[bool] = mapped_column(
+        Boolean, server_default="false"
+    )
     contenido_tsv: Mapped[str | None] = mapped_column(
         TSVECTOR,
         Computed("to_tsvector('spanish', contenido)", persisted=True),
@@ -278,7 +283,8 @@ class EventoModel(Base):
             name="ck_eventos_dimension",
         ),
         CheckConstraint(
-            "tipo IN ('evento','hecho','creencia','compromiso','preferencia')",
+            "tipo IN ('evento','hecho','creencia','compromiso',"
+            "'preferencia','censor')",
             name="ck_eventos_tipo",
         ),
         CheckConstraint(
@@ -299,6 +305,7 @@ class EventoModel(Base):
         Index("ix_eventos_tipo_memoria", "tipo_memoria"),
         Index("ix_eventos_archivado", "archivado"),
         Index("ix_eventos_curado", "curado"),
+        Index("ix_eventos_staged", "staged"),
         Index(
             "ix_eventos_weight_arch", "workspace_id", "archivado", "weight"
         ),
@@ -862,4 +869,90 @@ class ReporteConsolidacionModel(Base):
 
     __table_args__ = (
         Index("ix_reportes_workspace", "workspace_id", "ejecutado_en"),
+    )
+
+
+class PrediccionModel(Base):
+    """Afirmación con confianza declarada — materia prima del Brier.
+
+    La calibración solo se mide si el sistema confiesa qué tan seguro
+    estaba ANTES de saber el resultado. ``acierto`` queda NULL hasta
+    que la vida (o el usuario) resuelve la predicción.
+    """
+
+    __tablename__ = "predicciones"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        server_default=text(
+            "'00000000-0000-0000-0000-000000000002'::uuid"
+        ),
+        nullable=False,
+    )
+    autor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("usuarios.id", ondelete="SET NULL"),
+    )
+    afirmacion: Mapped[str] = mapped_column(Text, nullable=False)
+    confianza: Mapped[float] = mapped_column(Float, nullable=False)
+    evento_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("eventos.id", ondelete="SET NULL"),
+    )
+    acierto: Mapped[bool | None] = mapped_column(Boolean)
+    creado_en: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    resuelto_en: Mapped[int | None] = mapped_column(BigInteger)
+
+    __table_args__ = (
+        CheckConstraint(
+            "confianza >= 0.0 AND confianza <= 1.0",
+            name="ck_predicciones_confianza",
+        ),
+        Index("ix_predicciones_workspace", "workspace_id", "acierto"),
+    )
+
+
+class SesionModel(Base):
+    """Límite de sesión first-class — dónde la memoria rinde.
+
+    El bootstrap abre la sesión (snapshot congelado); el handoff la
+    cierra (documento curado de continuidad). ``eventos`` cuenta las
+    huellas escritas dentro del rango — la sesión se mide por lo que
+    dejó, no por su duración.
+    """
+
+    __tablename__ = "sesiones"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        server_default=text(
+            "'00000000-0000-0000-0000-000000000002'::uuid"
+        ),
+        nullable=False,
+    )
+    autor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("usuarios.id", ondelete="SET NULL"),
+    )
+    agente: Mapped[str] = mapped_column(String(80), server_default="")
+    inicio: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    fin: Mapped[int | None] = mapped_column(BigInteger)
+    resumen: Mapped[str | None] = mapped_column(Text)
+    handoff: Mapped[str | None] = mapped_column(Text)
+    eventos: Mapped[int] = mapped_column(Integer, server_default="0")
+
+    __table_args__ = (
+        Index("ix_sesiones_workspace", "workspace_id", "inicio"),
     )

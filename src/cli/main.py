@@ -231,6 +231,75 @@ def _parser() -> argparse.ArgumentParser:
     al.add_argument("key", help="License key (JWT o serial de la landing).")
     al.add_argument("--json", action="store_true", help="Salida JSON.")
 
+    # Neuro-5 — ciclo de sesión completo.
+    sub.add_parser(
+        "sesiones", help="Historial de sesiones (boundaries de la memoria)."
+    )
+    ho = sub.add_parser(
+        "handoff", help="Handoff de la última sesión cerrada."
+    )
+    ho.add_argument(
+        "sesion_id", nargs="?", default=None,
+        help="UUID de la sesión (default: la última cerrada).",
+    )
+    sub.add_parser(
+        "censores", help="Lista los guardrails vigentes."
+    )
+    cn = sub.add_parser(
+        "censor", help="Registra un guardrail (regla aprendida)."
+    )
+    cn.add_argument("regla", help="La regla en texto.")
+    cn.add_argument(
+        "--bloquear", action="store_true",
+        help="Severidad bloquear — veta la acción (default: advertir).",
+    )
+    cn.add_argument(
+        "--dominio", default=None, help="Ámbito de la regla (p. ej. git)."
+    )
+    ver = sub.add_parser(
+        "verificar", help="Verifica una acción contra los censores."
+    )
+    ver.add_argument("accion", help="La acción propuesta en texto.")
+    sub.add_parser(
+        "calibracion",
+        help="Brier score y curva de confiabilidad de las predicciones.",
+    )
+    pre = sub.add_parser(
+        "predecir", help="Registra una predicción con confianza."
+    )
+    pre.add_argument("afirmacion", help="Lo que se predice.")
+    pre.add_argument(
+        "--confianza", type=float, default=0.7,
+        help="Probabilidad declarada 0.0-1.0 (default 0.7).",
+    )
+    res2 = sub.add_parser(
+        "resolver", help="Resuelve una predicción (acierto/fallo)."
+    )
+    res2.add_argument("prediccion_id", help="UUID de la predicción.")
+    res2.add_argument(
+        "--fallo", action="store_true",
+        help="La afirmación falló (default: acertó).",
+    )
+    sub.add_parser(
+        "predicciones", help="Lista predicciones abiertas y resueltas."
+    )
+    sub.add_parser(
+        "pendientes", help="Escrituras staged pendientes de aprobación."
+    )
+    ap2 = sub.add_parser(
+        "aprobar", help="Aprueba una escritura staged (o --todo)."
+    )
+    ap2.add_argument(
+        "evento_id", nargs="?", default=None, help="UUID de la propuesta."
+    )
+    ap2.add_argument(
+        "--todo", action="store_true", help="Aprueba todas las staged."
+    )
+    rec = sub.add_parser(
+        "rechazar", help="Rechaza una escritura staged (la descarta)."
+    )
+    rec.add_argument("evento_id", help="UUID de la propuesta.")
+
     from src.cli.identidad import registrar_subparsers
 
     registrar_subparsers(sub)
@@ -599,9 +668,27 @@ async def _consolidar_cli() -> dict[str, object]:
                     for m in modelos
                 ]
             )
+            # Overflow-pressure (Neuro-5): el tier curado tiene
+            # presupuesto — el sueño promueve solo lo que cabe.
+            promovidos = list(plan.promover)
+            if promovidos:
+                presupuesto = get_settings().curado_max_chars
+                usado = await repo.chars_curados()
+                por_id = {str(m.id): m for m in modelos}
+                caben = []
+                for eid in promovidos:
+                    modelo = por_id.get(eid)
+                    largo = len(modelo.contenido) if modelo else 0
+                    if usado + largo <= presupuesto:
+                        caben.append(eid)
+                        usado += largo
+                promovidos_fuera = len(promovidos) - len(caben)
+                promovidos = caben
+            else:
+                promovidos_fuera = 0
             await repo.aplicar_consolidacion(
                 plan.fortalecer,
-                plan.promover,
+                promovidos,
                 plan.archivar,
                 plan.ejecutado_en,
             )
@@ -665,14 +752,15 @@ async def _consolidar_cli() -> dict[str, object]:
                     ejecutado_en=plan.ejecutado_en,
                     fortalecidos=len(plan.fortalecer),
                     archivados=len(plan.archivar),
-                    promovidos=len(plan.promover),
+                    promovidos=len(promovidos),
                     detalle={
                         "fortalecidos": plan.fortalecer,
-                        "promovidos": plan.promover,
+                        "promovidos": promovidos,
                         "archivados": plan.archivar,
                         "gists": gist_ids,
                         "rem": rem_ids,
                         "salvados": plan.salvados,
+                        "curado_fuera_presupuesto": promovidos_fuera,
                     },
                 )
             )
@@ -683,7 +771,8 @@ async def _consolidar_cli() -> dict[str, object]:
         return {
             "evaluados": len(modelos),
             "fortalecidos": len(plan.fortalecer),
-            "promovidos": len(plan.promover),
+            "promovidos": len(promovidos),
+            "curado_fuera_presupuesto": promovidos_fuera,
             "archivados": len(plan.archivar),
             "semanticos": len(gist_ids),
             "rem": len(rem_ids),
@@ -1262,6 +1351,182 @@ def _despachar(args: argparse.Namespace) -> int:
             + "\n"
         )
         return 1
+    if comando == "sesiones":
+        from src.mcp.tools import _listar_sesiones
+
+        filas = asyncio.run(_listar_sesiones())
+        if not filas:
+            sys.stdout.write(ui.suave("Sin sesiones registradas.\n"))
+        for f in filas:
+            estado = "cerrada" if f["cerrada"] else "abierta"
+            sys.stdout.write(
+                f"{ui.acento(estado)} {ui.suave(str(f['id']))} "
+                f"{f.get('agente') or 'agente?'} — "
+                f"{f['eventos']} eventos\n"
+            )
+        return 0
+    if comando == "handoff":
+        from src.mcp.tools import _obtener_handoff
+
+        try:
+            datos = asyncio.run(_obtener_handoff(args.sesion_id))
+        except ValueError as e:
+            sys.stderr.write(ui.error(str(e)) + "\n")
+            return 1
+        sys.stdout.write(str(datos["handoff"]) + "\n")
+        return 0
+    if comando == "censores":
+        from src.mcp.tools import _listar_censores
+
+        filas = asyncio.run(_listar_censores())
+        if not filas:
+            sys.stdout.write(ui.suave("Sin guardrails vigentes.\n"))
+        for f in filas:
+            sys.stdout.write(
+                f"{ui.acento(str(f['severidad']).upper())} "
+                f"{f['contenido']}\n"
+            )
+        return 0
+    if comando == "censor":
+        from src.mcp.tools import _crear_censor
+
+        severidad = "bloquear" if args.bloquear else "advertir"
+        creado = asyncio.run(
+            _crear_censor(args.regla, severidad, args.dominio)
+        )
+        sys.stdout.write(
+            ui.ok(f"Censor registrado ({severidad}): {creado['id']}")
+            + "\n"
+        )
+        return 0
+    if comando == "verificar":
+        from src.mcp.tools import _verificar_accion
+
+        veredicto = asyncio.run(_verificar_accion(args.accion))
+        if veredicto["permitido"]:
+            sys.stdout.write(
+                ui.ok(f"Permitido — {veredicto['motivo']}") + "\n"
+            )
+        else:
+            sys.stdout.write(
+                ui.error(f"Bloqueado — {veredicto['motivo']}") + "\n"
+            )
+        for c in cast("list[dict[str, Any]]", veredicto["censores"]):
+            sys.stdout.write(
+                f"  {ui.suave(str(c['severidad']))} {c['contenido']}\n"
+            )
+        return 0 if veredicto["permitido"] else 1
+    if comando == "calibracion":
+        from src.mcp.tools import _reporte_calibracion
+
+        rep = asyncio.run(_reporte_calibracion())
+        if rep["brier"] is None:
+            sys.stdout.write(
+                ui.suave("Sin predicciones resueltas aún.\n")
+            )
+            return 0
+        sys.stdout.write(
+            f"Brier: {ui.negrita(str(rep['brier']))} "
+            f"({rep['resueltas']} resueltas, "
+            f"{rep['pendientes']} pendientes)\n"
+            f"acierto empírico: {rep['acierto_empirico']} "
+            f"· confianza media: {rep['confianza_media']} "
+            f"· sesgo: {rep['sesgo_sobreconfianza']}\n"
+        )
+        for b in cast("list[dict[str, float]]", rep["curva"]):
+            sys.stdout.write(
+                f"  {b['desde']:.1f}–{b['hasta']:.1f}: n={b['n']} "
+                f"declarada {b['confianza_media']:.2f} "
+                f"→ real {b['acierto_empirico']:.2f}\n"
+            )
+        return 0
+    if comando == "predecir":
+        from src.mcp.tools import _registrar_prediccion
+
+        datos = asyncio.run(
+            _registrar_prediccion(args.afirmacion, args.confianza)
+        )
+        sys.stdout.write(
+            ui.ok(f"Predicción registrada: {datos['id']}") + "\n"
+        )
+        return 0
+    if comando == "resolver":
+        from src.mcp.tools import _resolver_prediccion
+
+        try:
+            asyncio.run(
+                _resolver_prediccion(
+                    args.prediccion_id, not args.fallo
+                )
+            )
+        except ValueError as e:
+            sys.stderr.write(ui.error(str(e)) + "\n")
+            return 1
+        sys.stdout.write(ui.ok("Predicción resuelta.") + "\n")
+        return 0
+    if comando == "predicciones":
+        from src.mcp.tools import _listar_predicciones
+
+        filas = asyncio.run(_listar_predicciones())
+        if not filas:
+            sys.stdout.write(ui.suave("Sin predicciones.\n"))
+        for f in filas:
+            estado = (
+                "pendiente"
+                if f["acierto"] is None
+                else ("acertó" if f["acierto"] else "falló")
+            )
+            sys.stdout.write(
+                f"{ui.acento(estado)} {f['confianza']:.0%} "
+                f"{f['afirmacion']}\n"
+            )
+        return 0
+    if comando == "pendientes":
+        from src.mcp.tools import _pendientes_aprobacion
+
+        filas = asyncio.run(_pendientes_aprobacion())
+        if not filas:
+            sys.stdout.write(
+                ui.suave("Sin escrituras pendientes de aprobación.\n")
+            )
+        for f in cast("list[dict[str, Any]]", filas):
+            sys.stdout.write(
+                f"{ui.suave(str(f['id']))} [{f['tipo']}] "
+                f"{str(f['contenido'])[:120]}\n"
+            )
+        return 0
+    if comando == "aprobar":
+        from src.mcp.tools import _aprobar_evento, _aprobar_pendientes
+
+        if args.todo:
+            aprob = asyncio.run(_aprobar_pendientes())
+            sys.stdout.write(
+                ui.ok(f"{aprob['aprobados']} propuestas aprobadas.")
+                + "\n"
+            )
+            return 0
+        if not args.evento_id:
+            sys.stderr.write(
+                ui.error("indica un UUID o usa --todo") + "\n"
+            )
+            return 2
+        try:
+            asyncio.run(_aprobar_evento(args.evento_id))
+        except ValueError as e:
+            sys.stderr.write(ui.error(str(e)) + "\n")
+            return 1
+        sys.stdout.write(ui.ok("Propuesta aprobada.") + "\n")
+        return 0
+    if comando == "rechazar":
+        from src.mcp.tools import _rechazar_evento
+
+        try:
+            asyncio.run(_rechazar_evento(args.evento_id))
+        except ValueError as e:
+            sys.stderr.write(ui.error(str(e)) + "\n")
+            return 1
+        sys.stdout.write(ui.ok("Propuesta descartada.") + "\n")
+        return 0
     return 2
 
 

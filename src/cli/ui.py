@@ -10,13 +10,15 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
+from typing import Any
 
 _HABILITADO: bool | None = None
 
 
 def _habilitar_vt_windows() -> None:
     """Activa el procesamiento de secuencias ANSI en la consola."""
-    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]  # solo se llama bajo sys.platform == "win32"
+    windll = getattr(ctypes, "windll", None)  # solo existe en Windows
+    kernel32: Any = windll.kernel32 if windll is not None else None
     for identificador in (-11, -12):  # STD_OUTPUT_HANDLE / STD_ERROR_HANDLE
         manija = kernel32.GetStdHandle(identificador)
         modo = ctypes.c_uint32()

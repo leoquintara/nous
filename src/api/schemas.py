@@ -51,7 +51,8 @@ class EventoRequest(BaseModel):
     tags: list[str] | None = Field(default=None, max_length=12)
     rama: str = Field(default="main", min_length=1, max_length=64)
     tipo: Literal[
-        "evento", "hecho", "creencia", "compromiso", "preferencia"
+        "evento", "hecho", "creencia", "compromiso", "preferencia",
+        "censor",
     ] = "evento"
     ttl: str | int | None = Field(default=None)
     reemplaza_id: str | None = Field(default=None)
@@ -493,4 +494,53 @@ class ConfianzaFuenteRequest(BaseModel):
     """Cuerpo para aprobar/cuarentenar una fuente (Neuro-3)."""
 
     confiable: bool = True
+    workspace: str | None = Field(default=None, max_length=64)
+
+
+class SesionIniciarRequest(BaseModel):
+    """Cuerpo para abrir una sesión — bootstrap + boundary (Neuro-5)."""
+
+    agente: str | None = Field(default=None, max_length=80)
+    presupuesto: int = Field(default=4000, ge=0, le=100_000)
+    workspace: str | None = Field(default=None, max_length=64)
+
+
+class SesionCerrarRequest(BaseModel):
+    """Cuerpo para cerrar una sesión — genera el handoff."""
+
+    sesion_id: str | None = Field(default=None, max_length=40)
+    resumen: str | None = Field(default=None, max_length=4_000)
+    workspace: str | None = Field(default=None, max_length=64)
+
+
+class CensorRequest(BaseModel):
+    """Cuerpo para registrar un guardrail (regla aprendida)."""
+
+    regla: str = Field(min_length=1, max_length=2_000)
+    severidad: Literal["bloquear", "advertir"] = "advertir"
+    dominio: str | None = Field(default=None, max_length=80)
+    scope: Literal["personal", "workspace"] = "personal"
+    workspace: str | None = Field(default=None, max_length=64)
+
+
+class VerificarRequest(BaseModel):
+    """Cuerpo para verificar una acción contra los censores."""
+
+    accion: str = Field(min_length=1, max_length=2_000)
+    workspace: str | None = Field(default=None, max_length=64)
+
+
+class PrediccionRequest(BaseModel):
+    """Cuerpo para declarar una predicción con confianza (Brier)."""
+
+    afirmacion: str = Field(min_length=1, max_length=2_000)
+    confianza: float = Field(ge=0.0, le=1.0)
+    evento_id: str | None = Field(default=None, max_length=40)
+    workspace: str | None = Field(default=None, max_length=64)
+
+
+class ResolverPrediccionRequest(BaseModel):
+    """Cuerpo para resolver una predicción — cierra el loop."""
+
+    acierto: bool
     workspace: str | None = Field(default=None, max_length=64)

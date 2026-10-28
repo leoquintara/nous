@@ -32,8 +32,14 @@ UMBRAL_PROMOCION_AMPLITUD = 0.85
 UMBRAL_PROMOCION_REFUERZOS = 4
 UMBRAL_ARCHIVO_RETENCION = 0.15
 DIAS_MINIMOS_PARA_ARCHIVAR = 14
+# Grace floor (Neuro-5): una memoria NUNCA evocada no es elegible a
+# archivo hasta GRACE_NUNCA_EVOCADO_DIAS — cero usos es ausencia de
+# evidencia, no prueba de desechable. Sin este piso, una huella
+# recién codificada con media-vida corta podría archivarse sin que
+# nadie hubiera tenido oportunidad de usarla.
+GRACE_NUNCA_EVOCADO_DIAS = 30
 # Tipos que nunca se archivan — afectan conducta futura, no son hechos.
-TIPOS_ACCIONABLES = frozenset({"compromiso", "preferencia"})
+TIPOS_ACCIONABLES = frozenset({"compromiso", "preferencia", "censor"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +133,11 @@ def decidir_consolidacion(
         archivable = dias >= DIAS_MINIMOS_PARA_ARCHIVAR and (
             ret < UMBRAL_ARCHIVO_RETENCION
         )
+        # Grace floor: lo nunca evocado no muere solo por edad —
+        # necesita su periodo de gracia completo antes de ser
+        # elegible a archivo.
+        if archivable and ev.refuerzos == 0 and ev.ultimo_acceso is None:
+            archivable = dias >= GRACE_NUNCA_EVOCADO_DIAS
         if (
             ev.amplitud >= UMBRAL_PROMOCION_AMPLITUD
             or ev.refuerzos >= UMBRAL_PROMOCION_REFUERZOS

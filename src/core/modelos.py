@@ -47,6 +47,7 @@ class Evento:
     olvido_dirigido: bool = False
     cuarentena: bool = False
     debilitados: int = 0
+    staged: bool = False
 
     @classmethod
     def desde_modelo(cls, modelo: EventoModel) -> Evento:
@@ -69,6 +70,7 @@ class Evento:
             olvido_dirigido=bool(getattr(modelo, "olvido_dirigido", False)),
             cuarentena=bool(getattr(modelo, "cuarentena", False)),
             debilitados=int(getattr(modelo, "debilitados", 0) or 0),
+            staged=bool(getattr(modelo, "staged", False)),
         )
 
 

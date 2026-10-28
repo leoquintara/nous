@@ -26,11 +26,23 @@ from src.core.contexto import analizar_contexto, fusionar_tags, parsear_ttl
 from src.core.embeddings import GeneradorEmbeddings
 from src.core.episodios import GAP_MAX_DEFECTO_SEGUNDOS, segmentar
 from src.core.exceptions import (
+    CupoCuradoError,
     CupoExcedidoError,
     ErrorValidacion,
     PermisoDenegadoError,
 )
 from src.core.identidad import Contexto, contexto_actual, resolver_workspace
+from src.core.memoria.bootstrap import (
+    SeccionBootstrap,
+    empaquetar_bootstrap,
+    formatear_snapshot,
+)
+from src.core.memoria.calibracion import (
+    PrediccionResuelta,
+)
+from src.core.memoria.calibracion import (
+    reporte_calibracion as _reporte_calibracion_core,
+)
 from src.core.memoria.consolidacion import (
     EventoConsolidable,
     decidir_consolidacion,
@@ -39,6 +51,7 @@ from src.core.memoria.consolidacion import (
 from src.core.memoria.contexto import ContextoActual, boost_contextual
 from src.core.memoria.decay import media_vida_dias, proxima_revision
 from src.core.memoria.diversidad import diversificar, es_casi_recuerdo
+from src.core.memoria.handoff import generar_handoff
 from src.core.memoria.interferencia import (
     INTERFERENCIA_FACTOR,
     detectar_conflicto,
@@ -95,6 +108,12 @@ from src.core.memoria.trabajo import (
     esta_expirado,
     hay_cupo,
 )
+from src.core.memoria.verificacion import (
+    UMBRAL_ACTIVACION,
+    CensorCoincidente,
+    parsear_censor,
+    veredicto_censores,
+)
 from src.core.modelos import (
     Dimension,
     Evento,
@@ -110,9 +129,11 @@ from src.storage.models import (
     EventoModel,
     IntencionProspectivaModel,
     ObjetivoModel,
+    PrediccionModel,
     ProyeccionModel,
     ReporteConsolidacionModel,
     ScriptDetectadoModel,
+    SesionModel,
 )
 from src.storage.repositories import (
     BorradorRepository,
@@ -121,10 +142,12 @@ from src.storage.repositories import (
     FuenteRepository,
     IntencionProspectivaRepository,
     ObjetivoRepository,
+    PrediccionRepository,
     ProyeccionRepository,
     RelacionRepository,
     ReporteConsolidacionRepository,
     ScriptRepository,
+    SesionRepository,
 )
 
 logger = logging.getLogger(__name__)
@@ -427,6 +450,8 @@ def _modelo_a_dict(modelo: EventoModel) -> dict[str, Any]:
         "curado": modelo.curado,
         "olvido_dirigido": modelo.olvido_dirigido,
         "cuarentena": modelo.cuarentena,
+        "staged": modelo.staged,
+        "debilitados": modelo.debilitados,
         "scope": modelo.scope,
         "workspace_id": str(modelo.workspace_id),
         "autor_id": str(modelo.autor_id) if modelo.autor_id else None,
@@ -451,6 +476,7 @@ def _evento_a_dict(evento: Evento) -> dict[str, Any]:
         "tipo": evento.tipo,
         "fuente": evento.fuente,
         "debilitados": evento.debilitados,
+        "staged": evento.staged,
     }
 
 
@@ -487,7 +513,14 @@ def _resultado_a_dict(
     }
 
 
-TIPOS_EVENTO = ("evento", "hecho", "creencia", "compromiso", "preferencia")
+TIPOS_EVENTO = (
+    "evento",
+    "hecho",
+    "creencia",
+    "compromiso",
+    "preferencia",
+    "censor",
+)
 
 
 async def _recordar(
@@ -587,6 +620,10 @@ async def _recordar(
             tipo_memoria=tipo_memoria,
             estado_emocional=estado_emocional,
             inaugura_epoca=epoca_nueva,
+            # Neuro-5 — write-approval: con el flag, la escritura es
+            # propuesta (staged) — indexada pero fuera del recall
+            # hasta que el humano apruebe.
+            staged=get_settings().escritura_aprobacion,
         )
         await repo.crear(evento)
         await FuenteRepository(session, ctx).crear(fuente, tipo="agente")
@@ -652,6 +689,12 @@ async def _recordar(
             "indexado": False,
         }
     )
+    if evento.staged:
+        respuesta["staged"] = True
+        respuesta["mensaje"] = (
+            "propuesta registrada — pendiente de aprobación "
+            "(aprobar_evento / aprobar_pendientes)"
+        )
     if expira_en:
         respuesta["expira_en"] = expira_en
     if con_quien:
@@ -1631,18 +1674,29 @@ async def _cumplir_objetivo(
 
 
 async def _contexto_inicial(
-    top_n: int = 8, workspace: str | None = None
+    top_n: int = 8,
+    presupuesto: int | None = None,
+    workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Pack de arranque de sesión: memoria núcleo + loops + hechos
-    calientes — cero LLM, todo consultas locales (estilo context_pack).
+    """Pack de arranque de sesión: guardrails + núcleo + loops + hechos
+    calientes — cero LLM, todo consultas locales.
+
+    Con ``presupuesto`` (caracteres) el pack se empaqueta por
+    prioridad — censores → loops → curado → núcleo → calientes — y
+    además devuelve ``snapshot``: el bloque frozen-snapshot pensado
+    para inyectarse UNA VEZ en el system prompt al abrir sesión.
 
     Args:
         top_n: Eventos núcleo y hechos calientes a incluir (máx. 16).
+        presupuesto: Máximo de caracteres del snapshot (None = sin
+            límite — el pack completo como siempre).
 
     Returns:
-        ``nucleo`` (eventos recientes de mayor amplitud), ``loops``
-        (compromisos abiertos con su contraparte), ``calientes``
-        (eventos de la última semana con más refuerzos) y ``stats``.
+        ``censores`` (guardrails activos), ``nucleo`` (eventos
+        recientes de mayor amplitud), ``curado`` (tier inmune),
+        ``loops`` (compromisos abiertos), ``calientes`` (reforzados
+        de la semana), ``stats`` y, con presupuesto, ``snapshot`` +
+        ``presupuesto_usado`` + ``omitidos``.
     """
     n = min(max(top_n, 1), 16)
     ahora = int(time.time())
@@ -1652,6 +1706,8 @@ async def _contexto_inicial(
         repo = EventoRepository(session, ctx)
         recientes = await repo.listar_por_rango(semana, ahora, 500)
         loops = await repo.listar_compromisos_abiertos("main", ahora)
+        curados = await repo.listar_curados()
+        censores = await repo.listar_censores()
         vis = repo._vis()
         total = int(
             (
@@ -1669,22 +1725,67 @@ async def _contexto_inicial(
     calientes = sorted(vigentes, key=lambda e: (-e.refuerzos, -e.timestamp_unix))[
         :n
     ]
-    return {
+    loops_dicts = [
+        {
+            **_modelo_a_dict(e),
+            "dias_abierto": (ahora - e.timestamp_unix) // 86_400,
+        }
+        for e in loops
+    ]
+    respuesta: dict[str, Any] = {
+        "censores": [_modelo_a_dict(e) for e in censores],
         "nucleo": [_modelo_a_dict(e) for e in nucleo],
-        "loops": [
-            {
-                **_modelo_a_dict(e),
-                "dias_abierto": (ahora - e.timestamp_unix) // 86_400,
-            }
-            for e in loops
-        ],
+        "curado": [_modelo_a_dict(e) for e in curados],
+        "loops": loops_dicts,
         "calientes": [_modelo_a_dict(e) for e in calientes],
         "stats": {
             "eventos_totales": total,
             "eventos_semana": len(recientes),
             "compromisos_abiertos": len(loops),
+            "censores_activos": len(censores),
         },
     }
+    if presupuesto is not None:
+        secciones = [
+            SeccionBootstrap(
+                "censores",
+                "Guardrails",
+                tuple(
+                    f"[{parsear_censor(e.contexto)[0].upper()}] "
+                    f"{e.contenido}"
+                    for e in censores
+                ),
+            ),
+            SeccionBootstrap(
+                "loops",
+                "Compromisos abiertos",
+                tuple(
+                    f"{loop['contenido']} ({loop['dias_abierto']}d)"
+                    for loop in loops_dicts
+                ),
+            ),
+            SeccionBootstrap(
+                "curado",
+                "Núcleo curado",
+                tuple(e.contenido for e in curados),
+            ),
+            SeccionBootstrap(
+                "nucleo",
+                "Memoria reciente",
+                tuple(e.contenido for e in nucleo),
+            ),
+            SeccionBootstrap(
+                "calientes",
+                "Hechos calientes",
+                tuple(e.contenido for e in calientes),
+            ),
+        ]
+        plan = empaquetar_bootstrap(secciones, presupuesto)
+        respuesta["snapshot"] = formatear_snapshot(plan)
+        respuesta["presupuesto_usado"] = plan.usado
+        respuesta["presupuesto_total"] = presupuesto
+        respuesta["omitidos"] = plan.omitidos
+    return respuesta
 
 
 async def _proyectar(
@@ -1899,25 +2000,34 @@ async def cerrar_compromiso(
 @mcp_server.tool()
 async def contexto_inicial(
     top_n: int = 8,
+    presupuesto: int | None = None,
     workspace: str | None = None,
 ) -> dict[str, Any]:
     """Pack de arranque de sesión: qué traigo a esta conversación.
 
     USAR CUANDO: inicies una sesión con el usuario o tras un cambio de
-    contexto — devuelve memoria núcleo + compromisos abiertos + hechos
-    calientes en UNA llamada, sin LLM ni latencia de búsqueda. No
-    reemplaza a consultar_memoria para preguntas concretas.
+    contexto — devuelve guardrails + memoria núcleo + compromisos
+    abiertos + hechos calientes en UNA llamada, sin LLM ni latencia
+    de búsqueda. No reemplaza a consultar_memoria para preguntas
+    concretas.
+
+    Con ``presupuesto`` (caracteres) además devuelve ``snapshot``: un
+    bloque frozen-snapshot para inyectar UNA VEZ en el system prompt
+    al abrir la sesión — lo que no cupo queda reportado en
+    ``omitidos`` y se alcanza con consultar_memoria si hace falta.
 
     Args:
         top_n: Eventos núcleo y hechos calientes a incluir (máx. 16).
+        presupuesto: Máximo de caracteres del snapshot (p. ej. 4000
+            ≈1000 tokens). Omitir = pack completo sin snapshot.
         workspace: Slug o UUID del workspace a consultar.
 
     Returns:
-        Dict con "nucleo" (recientes de mayor amplitud), "loops"
-        (compromisos abiertos con contraparte y días de espera),
-        "calientes" (más reforzados de la semana) y "stats" globales.
+        Dict con "censores", "nucleo", "curado", "loops", "calientes",
+        "stats" y, con presupuesto, "snapshot"/"presupuesto_usado"/
+        "omitidos".
     """
-    return await _contexto_inicial(top_n, workspace)
+    return await _contexto_inicial(top_n, presupuesto, workspace)
 
 
 @mcp_server.tool()
@@ -2670,9 +2780,28 @@ async def _consolidar(workspace: str | None = None) -> dict[str, Any]:
         repo = EventoRepository(session, ctx)
         eventos = await repo.listar_para_consolidacion()
         plan = decidir_consolidacion([_a_consolidable(e) for e in eventos])
+        # Overflow-pressure en la promoción: el tier curado tiene
+        # presupuesto — el sueño promueve solo lo que cabe y reporta
+        # lo que quedó fuera (la escasez es la higiene del núcleo).
+        promovidos = list(plan.promover)
+        if promovidos:
+            presupuesto = get_settings().curado_max_chars
+            usado = await repo.chars_curados()
+            por_id = {str(e.id): e for e in eventos}
+            caben: list[str] = []
+            for eid in promovidos:
+                modelo = por_id.get(eid)
+                largo = len(modelo.contenido) if modelo else 0
+                if usado + largo <= presupuesto:
+                    caben.append(eid)
+                    usado += largo
+            promovidos_fuera = len(promovidos) - len(caben)
+            promovidos = caben
+        else:
+            promovidos_fuera = 0
         await repo.aplicar_consolidacion(
             plan.fortalecer,
-            plan.promover,
+            promovidos,
             plan.archivar,
             plan.ejecutado_en,
         )
@@ -2736,14 +2865,15 @@ async def _consolidar(workspace: str | None = None) -> dict[str, Any]:
             ejecutado_en=plan.ejecutado_en,
             fortalecidos=len(plan.fortalecer),
             archivados=len(plan.archivar),
-            promovidos=len(plan.promover),
+            promovidos=len(promovidos),
             detalle={
                 "fortalecidos": plan.fortalecer,
-                "promovidos": plan.promover,
+                "promovidos": promovidos,
                 "archivados": plan.archivar,
                 "gists": gist_ids,
                 "rem": rem_ids,
                 "salvados": plan.salvados,
+                "curado_fuera_presupuesto": promovidos_fuera,
             },
         )
         await ReporteConsolidacionRepository(session, ctx).crear(reporte)
@@ -2757,7 +2887,8 @@ async def _consolidar(workspace: str | None = None) -> dict[str, Any]:
         "ejecutado_en": plan.ejecutado_en,
         "evaluados": len(eventos),
         "fortalecidos": len(plan.fortalecer),
-        "promovidos": len(plan.promover),
+        "promovidos": len(promovidos),
+        "curado_fuera_presupuesto": promovidos_fuera,
         "archivados": len(plan.archivar),
         "semanticos": len(gist_ids),
         "rem": len(rem_ids),
@@ -2887,7 +3018,22 @@ async def _marcar_curado(
             f"evento_id no es un UUID válido: {evento_id!r}"
         ) from e
     async with get_session(obtener_engine()) as session:
-        ok = await EventoRepository(session, ctx).marcar_curado(eid, curado)
+        repo = EventoRepository(session, ctx)
+        if curado:
+            # Overflow-pressure: el tier curado tiene presupuesto —
+            # curar lo que no cabe obliga a consolidar primero.
+            existente = await repo.obtener(eid)
+            if existente is not None and not existente.curado:
+                presupuesto = get_settings().curado_max_chars
+                usado = await repo.chars_curados()
+                if usado + len(existente.contenido) > presupuesto:
+                    raise CupoCuradoError(
+                        f"tier curado lleno ({usado}/"
+                        f"{presupuesto} chars) — haz espacio "
+                        "descurando o consolidando antes de "
+                        "curar otra memoria"
+                    )
+        ok = await repo.marcar_curado(eid, curado)
         await session.commit()
     if not ok:
         raise ErrorValidacion(
@@ -3675,3 +3821,816 @@ async def listar_cuarentena(
         [{id, contenido, timestamp_unix, fuente, dimension}].
     """
     return await _listar_cuarentena(limite, workspace)
+
+
+# ── Neuro-5: ciclo de sesión completo ──────────────────────────────
+# bootstrap presupuestado → censores que vetan → predicciones que se
+# calibran → sesiones que abren con snapshot y cierran con handoff.
+
+
+async def _iniciar_sesion(
+    agente: str | None = None,
+    presupuesto: int = 4000,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Abre una sesión: crea el límite y devuelve el bootstrap.
+
+    El arranque de sesión ES el boundary donde la memoria rinde:
+    aquí disparan las intenciones temporales vencidas y se captura
+    el frozen-snapshot — un bloque que el cliente inyecta UNA VEZ en
+    el system prompt y no muta durante la sesión.
+    """
+    ctx = await _ctx_escritura(workspace)
+    ahora = int(time.time())
+    async with get_session(obtener_engine()) as session:
+        vencidas = await _disparar_intenciones_temporales(session, ctx)
+        sesion = await SesionRepository(session, ctx).crear(
+            SesionModel(
+                agente=(agente or "")[:80],
+                inicio=ahora,
+                workspace_id=ctx.workspace_id,
+                autor_id=ctx.usuario_id,
+            )
+        )
+        await session.commit()
+    pack = await _contexto_inicial(
+        top_n=8, presupuesto=presupuesto, workspace=workspace
+    )
+    pack["sesion_id"] = str(sesion.id)
+    pack["inicio"] = ahora
+    if vencidas:
+        pack["recordatorios"] = [
+            {"id": v["id"], "intencion": v["intencion"]}
+            for v in vencidas
+        ]
+    return pack
+
+
+@mcp_server.tool()
+async def iniciar_sesion(
+    agente: str | None = None,
+    presupuesto: int = 4000,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Abre una sesión de trabajo — bootstrap + snapshot en UNA llamada.
+
+    USAR CUANDO: arranques un turno de trabajo con el usuario. Crea
+    el límite de sesión (para el handoff de cierre), dispara las
+    intenciones temporales vencidas y devuelve el pack de arranque
+    con ``snapshot`` — el bloque frozen-snapshot para inyectar una
+    vez en el system prompt. Es ``contexto_inicial`` + persistencia
+    de boundary.
+
+    Args:
+        agente: Nombre del agente que abre la sesión (p. ej. "devin").
+        presupuesto: Caracteres del snapshot (default 4000 ≈ 1000
+            tokens; 0 o negativo = pack completo sin medidor).
+        workspace: Slug o UUID del workspace.
+
+    Returns:
+        {sesion_id, inicio, censores, nucleo, curado, loops,
+        calientes, stats, snapshot, presupuesto_usado, omitidos,
+        recordatorios?}.
+    """
+    return await _iniciar_sesion(agente, presupuesto, workspace)
+
+
+async def _cerrar_sesion(
+    sesion_id: str | None = None,
+    resumen: str | None = None,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Cierra la sesión abierta y genera su handoff de continuidad.
+
+    El handoff no es un dump — es el documento curado que la próxima
+    sesión lee: guardrails heredados, loops aún abiertos, lo que esta
+    sesión escribió y el núcleo curado vigente.
+    """
+    ctx = await _ctx_escritura(workspace)
+    ahora = int(time.time())
+    async with get_session(obtener_engine()) as session:
+        repo_s = SesionRepository(session, ctx)
+        if sesion_id:
+            try:
+                sid = uuid.UUID(str(sesion_id))
+            except (ValueError, AttributeError) as e:
+                raise ErrorValidacion(
+                    f"sesion_id no es un UUID válido: {sesion_id!r}"
+                ) from e
+            sesion = await repo_s.obtener(sid)
+        else:
+            sesion = await repo_s.ultima_abierta()
+        if sesion is None or sesion.fin is not None:
+            raise ErrorValidacion(
+                "no hay sesión abierta para cerrar"
+                + (f" ({sesion_id})" if sesion_id else "")
+            )
+        repo_e = EventoRepository(session, ctx)
+        escritos = await repo_e.listar_por_rango(
+            sesion.inicio, ahora, limite=40
+        )
+        loops = await repo_e.listar_compromisos_abiertos("main", ahora)
+        curados = await repo_e.listar_curados(limite=16)
+        censores = await repo_e.listar_censores()
+        handoff = generar_handoff(
+            agente=sesion.agente,
+            inicio=sesion.inicio,
+            fin=ahora,
+            resumen=resumen,
+            escritos=[
+                {"contenido": e.contenido, "tipo": e.tipo}
+                for e in escritos
+            ],
+            loops=[
+                {
+                    "contenido": e.contenido,
+                    "dias_abierto": (ahora - e.timestamp_unix) // 86_400,
+                }
+                for e in loops
+            ],
+            nucleo=[{"contenido": e.contenido} for e in curados],
+            censores=[
+                {
+                    "contenido": e.contenido,
+                    "severidad": parsear_censor(e.contexto)[0],
+                }
+                for e in censores
+            ],
+        )
+        sesion.fin = ahora
+        sesion.resumen = resumen
+        sesion.handoff = handoff
+        sesion.eventos = len(escritos)
+        await session.commit()
+    return {
+        "id": str(sesion.id),
+        "fin": ahora,
+        "eventos": len(escritos),
+        "handoff": handoff,
+    }
+
+
+@mcp_server.tool()
+async def cerrar_sesion(
+    sesion_id: str | None = None,
+    resumen: str | None = None,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Cierra la sesión abierta — genera el handoff de continuidad.
+
+    USAR CUANDO: termine un turno de trabajo — el boundary donde la
+    memoria "rinde": lo que quedó abierto, escrito y curado se destila
+    en un documento que la próxima sesión lee en dos minutos. Sin
+    cierre no hay continuidad — la worldline guarda todo, pero el
+    handoff cuenta solo lo que importa.
+
+    Args:
+        sesion_id: UUID de la sesión (default: la abierta más reciente).
+        resumen: Resumen libre de qué se hizo (va al handoff).
+        workspace: Slug o UUID del workspace.
+
+    Returns:
+        {id, fin, eventos, handoff}.
+    """
+    return await _cerrar_sesion(sesion_id, resumen, workspace)
+
+
+async def _obtener_handoff(
+    sesion_id: str | None = None,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Devuelve el handoff de una sesión cerrada."""
+    ctx = await _ctx(workspace)
+    async with get_session(obtener_engine()) as session:
+        repo_s = SesionRepository(session, ctx)
+        if sesion_id:
+            try:
+                sid = uuid.UUID(str(sesion_id))
+            except (ValueError, AttributeError) as e:
+                raise ErrorValidacion(
+                    f"sesion_id no es un UUID válido: {sesion_id!r}"
+                ) from e
+            sesion = await repo_s.obtener(sid)
+        else:
+            sesion = await repo_s.ultima_cerrada()
+        if sesion is None or not sesion.handoff:
+            raise ErrorValidacion("no hay handoff disponible")
+    return {
+        "id": str(sesion.id),
+        "agente": sesion.agente,
+        "inicio": sesion.inicio,
+        "fin": sesion.fin,
+        "eventos": sesion.eventos,
+        "handoff": sesion.handoff,
+    }
+
+
+@mcp_server.tool()
+async def obtener_handoff(
+    sesion_id: str | None = None,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """El documento de continuidad de una sesión cerrada.
+
+    USAR CUANDO: quieras retomar el trabajo donde una sesión previa lo
+    dejó — o pegárselo a otra agente/máquina como contexto de arranque.
+    Sin id devuelve el handoff de la última sesión cerrada.
+
+    Returns:
+        {id, agente, inicio, fin, eventos, handoff}.
+    """
+    return await _obtener_handoff(sesion_id, workspace)
+
+
+async def _listar_sesiones(
+    limite: int = 20,
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Historial de sesiones del workspace."""
+    ctx = await _ctx(workspace)
+    async with get_session(obtener_engine()) as session:
+        sesiones = await SesionRepository(session, ctx).listar(limite)
+    return [
+        {
+            "id": str(s.id),
+            "agente": s.agente,
+            "inicio": s.inicio,
+            "fin": s.fin,
+            "eventos": s.eventos,
+            "cerrada": s.fin is not None,
+            "tiene_handoff": bool(s.handoff),
+        }
+        for s in sesiones
+    ]
+
+
+@mcp_server.tool()
+async def listar_sesiones(
+    limite: int = 20,
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Historial de sesiones — los boundaries de la memoria.
+
+    Returns:
+        [{id, agente, inicio, fin, eventos, cerrada, tiene_handoff}].
+    """
+    return await _listar_sesiones(limite, workspace)
+
+
+async def _crear_censor(
+    regla: str,
+    severidad: str = "advertir",
+    dominio: str | None = None,
+    scope: Literal["personal", "workspace"] = "personal",
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Registra un censor — una corrección madura a regla de conducta."""
+    if severidad not in ("bloquear", "advertir"):
+        raise ErrorValidacion(
+            "severidad debe ser 'bloquear' o 'advertir'"
+        )
+    respuesta = await _recordar(
+        contenido=regla,
+        dimension="conductual",
+        fuente="usuario",
+        amplitud=0.9,
+        frecuencia=None,
+        timestamp_unix=None,
+        tipo="censor",
+        tags=["censor"],
+        scope=scope,
+        workspace=workspace,
+        contexto_extra={
+            "severidad": severidad,
+            **({"dominio": dominio} if dominio else {}),
+        },
+    )
+    respuesta["severidad"] = severidad
+    return respuesta
+
+
+@mcp_server.tool()
+async def crear_censor(
+    regla: str,
+    severidad: str = "advertir",
+    dominio: str | None = None,
+    scope: Literal["personal", "workspace"] = "personal",
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Convierte una corrección en regla — el guardrail de la memoria.
+
+    USAR CUANDO: el usuario enseñe "nunca hagas X" o "siempre verifica
+    Y antes de Z" — la corrección madura a censor y pesa ANTES de
+    actuar: ``verificar_accion`` la consulta; el bootstrap la carga
+    de primera sección. ``bloquear`` veta la acción; ``advertir``
+    deja pasar con cautela. Los censores son inmunes al olvido —
+    una regla no se olvida sola.
+
+    NO ES: una preferencia blanda (usa tipo='preferencia') ni un
+    compromiso pendiente (usa tipo='compromiso').
+
+    Args:
+        regla: La regla en texto ("nunca pushear a main sin tests").
+        severidad: "advertir" (default) o "bloquear" (veta).
+        dominio: Ámbito opcional de la regla (p. ej. "git", "pagos").
+        scope: "personal" (default) o "workspace" (regla del equipo).
+        workspace: Slug o UUID del workspace.
+
+    Returns:
+        {id, severidad, staged?} — el evento censor creado.
+    """
+    return await _crear_censor(regla, severidad, dominio, scope, workspace)
+
+
+async def _listar_censores(
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Guardrails vigentes del workspace."""
+    ctx = await _ctx(workspace)
+    async with get_session(obtener_engine()) as session:
+        censores = await EventoRepository(session, ctx).listar_censores()
+    resultado = []
+    for c in censores:
+        severidad, dominio = parsear_censor(c.contexto)
+        resultado.append(
+            {
+                **_modelo_a_dict(c),
+                "severidad": severidad,
+                "dominio": dominio,
+            }
+        )
+    return resultado
+
+
+@mcp_server.tool()
+async def listar_censores(
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Los guardrails activos — reglas aprendidas que vetan o advierten.
+
+    USAR CUANDO: auditar qué reglas rigen la conducta antes de
+    verificar una acción o de crear una nueva. Se revocan con
+    ``olvidar_evento`` o se corrigen con ``reemplaza_id``.
+
+    Returns:
+        [{id, contenido, severidad, dominio, timestamp_unix, ...}].
+    """
+    return await _listar_censores(workspace)
+
+
+def _coseno(a: list[float], b: list[float]) -> float:
+    """Similitud coseno entre dos vectores — verificación en memoria."""
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(x * x for x in b) ** 0.5
+    if na == 0 or nb == 0:
+        return 0.0
+    return float(dot / (na * nb))
+
+
+async def _verificar_accion(
+    accion: str,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Consulta los censores contra una acción propuesta — pre-acción."""
+    ctx = await _ctx(workspace)
+    async with get_session(obtener_engine()) as session:
+        censores = await EventoRepository(session, ctx).listar_censores()
+    if not censores:
+        return {
+            "permitido": True,
+            "censores": [],
+            "motivo": "sin censores vigentes — vía libre",
+        }
+    try:
+        vector = await _obtener_embeddings().generar(accion)
+    except Exception:
+        vector = None
+    coincidencias: list[CensorCoincidente] = []
+    for c in censores:
+        if vector is not None and c.embedding:
+            sim = _coseno(vector, list(c.embedding))
+        else:
+            # Sin embedding disponible cae a cobertura léxica: ¿qué
+            # fracción de los términos de la acción aparece en la
+            # regla? — parafrasea mejor que la contención literal.
+            terminos = {
+                t for t in accion.lower().split() if len(t) > 2
+            }
+            if terminos:
+                contenido = c.contenido.lower()
+                cubiertos = sum(1 for t in terminos if t in contenido)
+                sim = cubiertos / len(terminos)
+            else:
+                sim = 0.0
+        if sim < UMBRAL_ACTIVACION:
+            continue
+        severidad, dominio = parsear_censor(c.contexto)
+        coincidencias.append(
+            CensorCoincidente(
+                id=str(c.id),
+                contenido=c.contenido,
+                severidad=severidad,
+                dominio=dominio,
+                similitud=round(sim, 4),
+            )
+        )
+    coincidencias.sort(key=lambda c: c.similitud, reverse=True)
+    veredicto = veredicto_censores(coincidencias[:8])
+    return {
+        "permitido": veredicto.permitido,
+        "censores": [
+            {
+                "id": c.id,
+                "contenido": c.contenido,
+                "severidad": c.severidad,
+                "dominio": c.dominio,
+                "similitud": c.similitud,
+            }
+            for c in veredicto.censores
+        ],
+        "motivo": veredicto.motivo,
+    }
+
+
+@mcp_server.tool()
+async def verificar_accion(
+    accion: str,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Verifica una acción ANTES de ejecutarla contra los guardrails.
+
+    USAR CUANDO: estés a punto de hacer algo potencialmente prohibido
+    — pushear, borrar, pagar, escribir en prod. Los censores del
+    workspace se comparan semánticamente con la acción: un ``bloquear``
+    veta (obedece — la regla existe porque alguien la enseñó); una
+    ``advertir`` deja pasar informando el riesgo.
+
+    NO ES: confirmación del usuario — es memoria de reglas: el
+    veredicto sale de lo aprendido, no de una política externa.
+
+    Args:
+        accion: La acción propuesta en texto ("pushear a main").
+        workspace: Slug o UUID del workspace.
+
+    Returns:
+        {permitido, censores: [{id, contenido, severidad, dominio,
+        similitud}], motivo}.
+    """
+    return await _verificar_accion(accion, workspace)
+
+
+async def _registrar_prediccion(
+    afirmacion: str,
+    confianza: float,
+    evento_id: str | None = None,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Declara una confianza ANTES del resultado — materia del Brier."""
+    if not 0.0 <= confianza <= 1.0:
+        raise ErrorValidacion("confianza debe estar entre 0.0 y 1.0")
+    ctx = await _ctx_escritura(workspace)
+    ahora = int(time.time())
+    eid: uuid.UUID | None = None
+    if evento_id:
+        try:
+            eid = uuid.UUID(str(evento_id))
+        except (ValueError, AttributeError) as e:
+            raise ErrorValidacion(
+                f"evento_id no es un UUID válido: {evento_id!r}"
+            ) from e
+    async with get_session(obtener_engine()) as session:
+        prediccion = await PrediccionRepository(session, ctx).crear(
+            PrediccionModel(
+                afirmacion=afirmacion,
+                confianza=confianza,
+                evento_id=eid,
+                creado_en=ahora,
+                workspace_id=ctx.workspace_id,
+                autor_id=ctx.usuario_id,
+            )
+        )
+        await session.commit()
+    return {
+        "id": str(prediccion.id),
+        "afirmacion": afirmacion,
+        "confianza": confianza,
+        "creado_en": ahora,
+    }
+
+
+@mcp_server.tool()
+async def registrar_prediccion(
+    afirmacion: str,
+    confianza: float,
+    evento_id: str | None = None,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Registra una predicción con su confianza — honestidad medible.
+
+    USAR CUANDO: afirmes algo con probabilidad ("el deploy sale bien",
+    "este bug era X") — la confianza declarada ANTES del resultado es
+    lo único que hace medible la calibración. Al cumplirse o fallar,
+    ``resolver_prediccion`` cierra el loop y el Brier score dice si el
+    90% dicho valía 90%.
+
+    Args:
+        afirmacion: Lo que se predice, en texto.
+        confianza: Probabilidad declarada (0.0–1.0).
+        evento_id: UUID del evento relacionado, si lo hay.
+        workspace: Slug o UUID del workspace.
+
+    Returns:
+        {id, afirmacion, confianza, creado_en}.
+    """
+    return await _registrar_prediccion(
+        afirmacion, confianza, evento_id, workspace
+    )
+
+
+async def _resolver_prediccion(
+    prediccion_id: str,
+    acierto: bool,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Cierra el loop: la vida dijo si la predicción acertó."""
+    ctx = await _ctx_escritura(workspace)
+    try:
+        pid = uuid.UUID(str(prediccion_id))
+    except (ValueError, AttributeError) as e:
+        raise ErrorValidacion(
+            f"prediccion_id no es un UUID válido: {prediccion_id!r}"
+        ) from e
+    ahora = int(time.time())
+    async with get_session(obtener_engine()) as session:
+        ok = await PrediccionRepository(session, ctx).resolver(
+            pid, acierto, ahora
+        )
+        await session.commit()
+    if not ok:
+        raise ErrorValidacion(
+            "la predicción no existe o ya está resuelta: "
+            f"{prediccion_id}"
+        )
+    return {"id": str(pid), "acierto": acierto, "resuelto_en": ahora}
+
+
+@mcp_server.tool()
+async def resolver_prediccion(
+    prediccion_id: str,
+    acierto: bool,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Resuelve una predicción — acertó o falló, el Brier lo cuenta.
+
+    USAR CUANDO: se sepa el resultado de algo predicho antes. Sin
+    resolución no hay calibración: una confianza que nunca se cobra
+    es solo una opinión.
+
+    Args:
+        prediccion_id: UUID de la predicción (de registrar_prediccion).
+        acierto: True si la afirmación resultó cierta.
+        workspace: Slug o UUID del workspace.
+
+    Returns:
+        {id, acierto, resuelto_en}.
+    """
+    return await _resolver_prediccion(prediccion_id, acierto, workspace)
+
+
+async def _listar_predicciones(
+    pendientes: bool | None = None,
+    limite: int = 50,
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Historial de predicciones — abiertas y resueltas."""
+    ctx = await _ctx(workspace)
+    async with get_session(obtener_engine()) as session:
+        filas = await PrediccionRepository(session, ctx).listar(
+            pendientes=pendientes, limite=limite
+        )
+    return [
+        {
+            "id": str(p.id),
+            "afirmacion": p.afirmacion,
+            "confianza": p.confianza,
+            "acierto": p.acierto,
+            "creado_en": p.creado_en,
+            "resuelto_en": p.resuelto_en,
+        }
+        for p in filas
+    ]
+
+
+@mcp_server.tool()
+async def listar_predicciones(
+    pendientes: bool | None = None,
+    limite: int = 50,
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Predicciones del workspace — abiertas y resueltas.
+
+    Args:
+        pendientes: True = solo abiertas, False = solo resueltas,
+            None = todas.
+        limite: Máximo a devolver (default 50).
+        workspace: Slug o UUID del workspace.
+
+    Returns:
+        [{id, afirmacion, confianza, acierto, creado_en, resuelto_en}].
+    """
+    return await _listar_predicciones(pendientes, limite, workspace)
+
+
+async def _reporte_calibracion(
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Brier + curva de confiabilidad — la honestidad medida."""
+    ctx = await _ctx(workspace)
+    async with get_session(obtener_engine()) as session:
+        repo = PrediccionRepository(session, ctx)
+        resueltas = await repo.listar(pendientes=False, limite=10_000)
+        pendientes = await repo.listar(pendientes=True, limite=10_000)
+    reporte = _reporte_calibracion_core(
+        [
+            PrediccionResuelta(confianza=p.confianza, acierto=bool(p.acierto))
+            for p in resueltas
+        ],
+        n_pendientes=len(pendientes),
+    )
+    return {
+        "resueltas": reporte.n_resueltas,
+        "pendientes": len(pendientes),
+        "brier": reporte.brier,
+        "acierto_empirico": reporte.acierto_empirico,
+        "confianza_media": reporte.confianza_media,
+        "sesgo_sobreconfianza": reporte.sesgo,
+        "curva": [
+            {
+                "desde": b.desde,
+                "hasta": b.hasta,
+                "n": b.n,
+                "confianza_media": b.confianza_media,
+                "acierto_empirico": b.acierto_empirico,
+            }
+            for b in reporte.curva
+        ],
+    }
+
+
+@mcp_server.tool()
+async def reporte_calibracion(
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """El Brier score de la memoria — qué tan real es "90% seguro".
+
+    Mide la distancia entre la confianza declarada y el acierto
+    empírico: brier 0.0 = oráculo; la curva por deciles muestra DÓNDE
+    falla la calibración (p. ej. sobreconfianza en el rango 0.7–0.9);
+    ``sesgo_sobreconfianza`` positivo = el sistema se confía de más.
+
+    USAR CUANDO: auditar la honestidad del sistema o ajustar cuánta
+    fe poner en sus probabilidades. Sin predicciones resueltas el
+    reporte confiesa ``brier: null`` — sin datos no hay métrica.
+
+    Returns:
+        {resueltas, pendientes, brier, acierto_empirico,
+        confianza_media, sesgo_sobreconfianza, curva}.
+    """
+    return await _reporte_calibracion(workspace)
+
+
+async def _pendientes_aprobacion(
+    limite: int = 50,
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Propuestas de escritura esperando aprobación humana."""
+    ctx = await _ctx(workspace)
+    async with get_session(obtener_engine()) as session:
+        staged = await EventoRepository(session, ctx).listar_staged(limite)
+    return [_modelo_a_dict(e) for e in staged]
+
+
+@mcp_server.tool()
+async def pendientes_aprobacion(
+    limite: int = 50,
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Escrituras staged — la memoria propone, el humano dispone.
+
+    Solo hay pendientes si ``NOUS_ESCRITURA_APROBACION=true``: con la
+    política activa, recordar_evento deja la huella indexada pero
+    fuera del recall hasta que alguien la apruebe.
+
+    Returns:
+        [{id, contenido, tipo, fuente, timestamp_unix, ...}].
+    """
+    return await _pendientes_aprobacion(limite, workspace)
+
+
+async def _aprobar_evento(
+    evento_id: str,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Convierte una propuesta staged en memoria real."""
+    ctx = await _ctx_escritura(workspace)
+    try:
+        eid = uuid.UUID(str(evento_id))
+    except (ValueError, AttributeError) as e:
+        raise ErrorValidacion(
+            f"evento_id no es un UUID válido: {evento_id!r}"
+        ) from e
+    async with get_session(obtener_engine()) as session:
+        aprobados = await EventoRepository(session, ctx).aprobar_staged([eid])
+        await session.commit()
+    if not aprobados:
+        raise ErrorValidacion(
+            f"no hay propuesta staged con ese id: {evento_id}"
+        )
+    return {"id": str(eid), "aprobado": True}
+
+
+@mcp_server.tool()
+async def aprobar_evento(
+    evento_id: str,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Aprueba una escritura staged — entra al recall como memoria.
+
+    Args:
+        evento_id: UUID de la propuesta (de pendientes_aprobacion).
+        workspace: Slug o UUID del workspace.
+
+    Returns:
+        {id, aprobado}.
+    """
+    return await _aprobar_evento(evento_id, workspace)
+
+
+async def _rechazar_evento(
+    evento_id: str,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Descarta una propuesta staged — la escritura nunca existió."""
+    ctx = await _ctx_escritura(workspace)
+    try:
+        eid = uuid.UUID(str(evento_id))
+    except (ValueError, AttributeError) as e:
+        raise ErrorValidacion(
+            f"evento_id no es un UUID válido: {evento_id!r}"
+        ) from e
+    async with get_session(obtener_engine()) as session:
+        rechazados = await EventoRepository(
+            session, ctx
+        ).rechazar_staged([eid])
+        await session.commit()
+    if not rechazados:
+        raise ErrorValidacion(
+            f"no hay propuesta staged con ese id: {evento_id}"
+        )
+    return {"id": str(eid), "rechazado": True}
+
+
+@mcp_server.tool()
+async def rechazar_evento(
+    evento_id: str,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Rechaza una escritura staged — se descarta sin dejar huella.
+
+    NO ES olvidar_evento: la propuesta nunca fue memoria — borrarla
+    es decidir que la escritura no ocurrió, no olvidar lo aprendido.
+
+    Returns:
+        {id, rechazado}.
+    """
+    return await _rechazar_evento(evento_id, workspace)
+
+
+async def _aprobar_pendientes(
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Aprueba de una vez todas las propuestas staged visibles."""
+    ctx = await _ctx_escritura(workspace)
+    async with get_session(obtener_engine()) as session:
+        repo = EventoRepository(session, ctx)
+        staged = await repo.listar_staged(limite=500)
+        aprobados = await repo.aprobar_staged([e.id for e in staged])
+        await session.commit()
+    return {"aprobados": aprobados}
+
+
+@mcp_server.tool()
+async def aprobar_pendientes(
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Aprueba todas las escrituras staged de una vez.
+
+    USAR CUANDO: revisaste la cola (``pendientes_aprobacion``) y todo
+    está bien — la aprobación en lote es la vía rápida, la individual
+    es la revisada.
+
+    Returns:
+        {aprobados}.
+    """
+    return await _aprobar_pendientes(workspace)

@@ -21,6 +21,7 @@ from src.api.schemas import (
     BorradorRequest,
     CanjearRequest,
     CanjearResponse,
+    CensorRequest,
     CerrarLoopRequest,
     CerrarObjetivoRequest,
     ConfianzaFuenteRequest,
@@ -56,11 +57,16 @@ from src.api.schemas import (
     OlvidoDirigidoRequest,
     PingsStats,
     PredecirRequest,
+    PrediccionRequest,
     ProveedorIARequest,
     RamificarRequest,
     RelacionResponse,
+    ResolverPrediccionRequest,
+    SesionCerrarRequest,
+    SesionIniciarRequest,
     TagResponse,
     UsuarioResumen,
+    VerificarRequest,
     WorkspaceRequest,
     WorkspaceResumen,
 )
@@ -300,14 +306,17 @@ async def cerrar_objetivo(
 
 @router.get("/contexto-inicial", dependencies=[Depends(verificar_token)])
 async def contexto_inicial(
-    top_n: int = 8, workspace: str | None = None
+    top_n: int = 8,
+    presupuesto: int | None = None,
+    workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Pack de arranque de sesión: núcleo + loops + hechos calientes.
-
-    Una sola llamada devuelve la memoria relevante para abrir una
-    conversación — cero LLM, todo consultas locales.
+    """Pack de arranque de sesión: guardrails + núcleo + loops +
+    hechos calientes; con ``presupuesto`` además el snapshot
+    inyectable.
     """
-    return await tools_impl._contexto_inicial(top_n, workspace)
+    return await tools_impl._contexto_inicial(
+        top_n, presupuesto, workspace
+    )
 
 
 @router.get("/tags", dependencies=[Depends(verificar_token)])
@@ -1474,3 +1483,153 @@ async def listar_cuarentena_rest(
 ) -> list[dict[str, Any]]:
     """Eventos retenidos en cuarentena por fuente no confiable."""
     return await tools_impl._listar_cuarentena(limite, workspace)
+
+
+# ── Neuro-5: ciclo de sesión completo ────────────────────────────
+
+
+@router.post("/sesiones", dependencies=[Depends(requerir_escritura)])
+async def iniciar_sesion_rest(
+    peticion: SesionIniciarRequest,
+) -> dict[str, Any]:
+    """Abre una sesión: boundary + bootstrap presupuestado + snapshot."""
+    return await tools_impl._iniciar_sesion(
+        peticion.agente, peticion.presupuesto, peticion.workspace
+    )
+
+
+@router.post("/sesiones/cerrar", dependencies=[Depends(requerir_escritura)])
+async def cerrar_sesion_rest(
+    peticion: SesionCerrarRequest,
+) -> dict[str, Any]:
+    """Cierra la sesión abierta y genera su handoff de continuidad."""
+    return await tools_impl._cerrar_sesion(
+        peticion.sesion_id, peticion.resumen, peticion.workspace
+    )
+
+
+@router.get("/sesiones", dependencies=[Depends(verificar_token)])
+async def listar_sesiones_rest(
+    limite: int = 20, workspace: str | None = None
+) -> list[dict[str, Any]]:
+    """Historial de sesiones del workspace."""
+    return await tools_impl._listar_sesiones(limite, workspace)
+
+
+@router.get("/sesiones/handoff", dependencies=[Depends(verificar_token)])
+async def obtener_handoff_rest(
+    sesion_id: str | None = None, workspace: str | None = None
+) -> dict[str, Any]:
+    """Handoff de la última sesión cerrada (o la indicada)."""
+    return await tools_impl._obtener_handoff(sesion_id, workspace)
+
+
+@router.post("/censores", dependencies=[Depends(requerir_escritura)])
+async def crear_censor_rest(peticion: CensorRequest) -> dict[str, Any]:
+    """Registra un guardrail — corrección madura a regla de conducta."""
+    return await tools_impl._crear_censor(
+        peticion.regla,
+        peticion.severidad,
+        peticion.dominio,
+        peticion.scope,
+        peticion.workspace,
+    )
+
+
+@router.get("/censores", dependencies=[Depends(verificar_token)])
+async def listar_censores_rest(
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Guardrails vigentes del workspace."""
+    return await tools_impl._listar_censores(workspace)
+
+
+@router.post("/verificar", dependencies=[Depends(verificar_token)])
+async def verificar_accion_rest(
+    peticion: VerificarRequest,
+) -> dict[str, Any]:
+    """Verifica una acción contra los censores — pre-acción."""
+    return await tools_impl._verificar_accion(
+        peticion.accion, peticion.workspace
+    )
+
+
+@router.post("/predicciones", dependencies=[Depends(requerir_escritura)])
+async def registrar_prediccion_rest(
+    peticion: PrediccionRequest,
+) -> dict[str, Any]:
+    """Declara una predicción con confianza — materia del Brier."""
+    return await tools_impl._registrar_prediccion(
+        peticion.afirmacion,
+        peticion.confianza,
+        peticion.evento_id,
+        peticion.workspace,
+    )
+
+
+@router.post(
+    "/predicciones/{prediccion_id}/resolver",
+    dependencies=[Depends(requerir_escritura)],
+)
+async def resolver_prediccion_rest(
+    prediccion_id: str, peticion: ResolverPrediccionRequest
+) -> dict[str, Any]:
+    """Resuelve una predicción — acertó o falló, el Brier lo cuenta."""
+    return await tools_impl._resolver_prediccion(
+        prediccion_id, peticion.acierto, peticion.workspace
+    )
+
+
+@router.get("/predicciones", dependencies=[Depends(verificar_token)])
+async def listar_predicciones_rest(
+    pendientes: bool | None = None,
+    limite: int = 50,
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Predicciones abiertas y resueltas del workspace."""
+    return await tools_impl._listar_predicciones(
+        pendientes, limite, workspace
+    )
+
+
+@router.get("/calibracion", dependencies=[Depends(verificar_token)])
+async def reporte_calibracion_rest(
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Brier + curva de confiabilidad — la honestidad medida."""
+    return await tools_impl._reporte_calibracion(workspace)
+
+
+@router.get("/pendientes", dependencies=[Depends(verificar_token)])
+async def pendientes_aprobacion_rest(
+    limite: int = 50, workspace: str | None = None
+) -> list[dict[str, Any]]:
+    """Escrituras staged esperando aprobación (write-approval)."""
+    return await tools_impl._pendientes_aprobacion(limite, workspace)
+
+
+@router.post(
+    "/pendientes/{evento_id}/aprobar",
+    dependencies=[Depends(requerir_escritura)],
+)
+async def aprobar_evento_rest(evento_id: str) -> dict[str, Any]:
+    """Aprueba una propuesta staged — entra al recall."""
+    return await tools_impl._aprobar_evento(evento_id)
+
+
+@router.delete(
+    "/pendientes/{evento_id}", dependencies=[Depends(requerir_escritura)]
+)
+async def rechazar_evento_rest(evento_id: str) -> dict[str, Any]:
+    """Rechaza una propuesta staged — la escritura nunca existió."""
+    return await tools_impl._rechazar_evento(evento_id)
+
+
+@router.post(
+    "/pendientes/aprobar-todo", dependencies=[Depends(requerir_escritura)]
+)
+async def aprobar_pendientes_rest(
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Aprueba todas las propuestas staged visibles."""
+    return await tools_impl._aprobar_pendientes(workspace)

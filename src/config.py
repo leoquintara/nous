@@ -89,6 +89,14 @@ class Settings(BaseSettings):
     jev_api_key: str | None = None
     jev_endpoint: str = "https://api.typesafe.ai"
     privacy_permitir_externos: bool = False
+    # Neuro-5 — overflow-pressure del tier curado: el bloque núcleo
+    # que el bootstrap inyecta tiene presupuesto; curar lo que no
+    # cabe obliga a consolidar primero (la escasez es la higiene).
+    curado_max_chars: int = 8192
+    # Neuro-5 — write-approval: con el flag, recordar_evento deja la
+    # huella en ``staged`` (invisible al recall) hasta aprobar_evento.
+    # La memoria propone, el humano dispone.
+    escritura_aprobacion: bool = False
 
     @field_validator("api_token")
     @classmethod

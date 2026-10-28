@@ -52,10 +52,15 @@ nous/
 │   │   │   ├── trabajo.py      #   Buffer de trabajo (Baddeley): TTL + ensayo
 │   │   │   ├── semanticizacion.py# Sueño: episodios afines → gist semántico
 │   │   │   ├── diversidad.py   #   Fan effect en resultados + tip-of-the-tongue
-│   │   │   └── rem.py          #   Sueño REM: pares soñables (rel. 'rem')
+│   │   │   ├── rem.py          #   Sueño REM: pares soñables (rel. 'rem')
+│   │   │   ├── bootstrap.py    #   Neuro-5: pack de arranque presupuestado + snapshot
+│   │   │   ├── verificacion.py #   Neuro-5: veredicto de censores pre-acción
+│   │   │   ├── calibracion.py  #   Neuro-5: Brier + curva de confiabilidad
+│   │   │   └── handoff.py      #   Neuro-5: documento de continuidad de sesión
 │   │   └── decision/           # Proveedores System One (ADR-002, autocontenido)
 │   │       ├── provider.py     #   Protocolo /v1/systemone (choice/score/noul)
-│   │       ├── adapters.py     #   Laya/Ollama/HTTP/Jev con guardia de privacidad
+│   │       ├── adapters.py     #   Laya/Ollama/HTTP/Jev con guardia de privacidad + scrub
+│   │       ├── scrub.py        #   Neuro-5: redacción de secretos salientes
 │   │       ├── factory.py      #   auto → probe de socket, nunca stall 30s
 │   │       └── engine.py       #   Orquestación (Nivel 2 = tool Pro)
 │   │
@@ -329,8 +334,27 @@ async def test_fusion_rrf_con_dos_listas_ordena_por_score():
 - **Archivar ≠ borrar**: la consolidación marca `archivado=true`
   (reversible, restaurable); el DELETE real solo vive en `nous prune`.
   Compromisos y preferencias nunca se archivan — son accionables.
+- **Censores** (`tipo='censor'`): accionables también — el sueño no
+  los toca; una regla no se olvida sola. Se consultan con
+  `verificar_accion` ANTES de actuar y viajan primeros en el bootstrap.
 - El tier **curado** (`curado=true`) es inmune a decay y al archivo —
-  es el equivalente del MEMORY.md curado de OpenClaw.
+  es el equivalente del MEMORY.md curado de OpenClaw. Además tiene
+  **presupuesto** (`NOUS_CURADO_MAX_CHARS`, default 8192): curar lo
+  que no cabe rechaza la operación — la escasez obliga a consolidar.
+- **Staged** (`staged=true`): propuesta pre-aprobación — invisible
+  para TODO el recall (léxico, vector, bootstrap, sueño, SRS) hasta
+  `aprobar_evento`. Con `NOUS_ESCRITURA_APROBACION=true` toda
+  escritura llega así. Distinto de cuarentena (aislamiento por
+  fuente no confiable) y de archivo (olvido reversible).
+- **Grace floor**: una memoria nunca evocada (`refuerzos=0` y sin
+  `ultimo_acceso`) no es elegible a archivo hasta 30 días — cero
+  usos es ausencia de evidencia, no prueba de desechable.
+- **Sesiones**: boundaries first-class — `iniciar_sesion` congela el
+  snapshot del bootstrap; `cerrar_sesion` destila el handoff
+  (documento de continuidad, no backup bruto).
+- **Scrub saliente**: todo payload a proveedor externo pasa por
+  `redactar_secretos` — el scrub es la red de seguridad tras el
+  guard de bloqueo.
 - Toda corrida de consolidación persiste un `reportes_consolidacion`
   con ids y razones — el olvido siempre es auditable, nunca silencioso.
 - Los providers de decisión degranan siempre: fallo de red/modelo →

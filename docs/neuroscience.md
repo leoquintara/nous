@@ -449,6 +449,139 @@ contenido sea idéntico.
 1999; Johnson et al., 1993) — la atribución de procedencia decae
 antes que el contenido y se evalúa aparte.
 
+## Ronda 5 — el ciclo de sesión completo
+
+La quinta ronda deja de mirar dentro de la memoria y mira su borde:
+qué entra al arrancar (bootstrap), qué frena antes de actuar
+(censores), qué queda al cerrar (handoff) y quién aprueba lo que se
+escribe (staged). El hilo conductor es la honestidad operativa:
+cada mecanismo declara su costo y su límite.
+
+### 33. Bootstrap presupuestado — `presupuesto` en `contexto_inicial`
+
+**Código:** `src/core/memoria/bootstrap.py` (`empaquetar_bootstrap`,
+`formatear_snapshot`), migración `0014`
+
+`contexto_inicial` siempre trajo el mismo volumen (`top_n` por
+conteo): el número correcto no es "cuántos eventos" sino "cuántos
+caracteres caben". El pack se empaqueta por prioridad — censores,
+loops, curado, núcleo, calientes — hasta agotar el presupuesto de
+caracteres (~1 token ≈ 4 chars), nunca cortando una memoria a la
+mitad. Lo que no cupo queda auditable en `omitidos`.
+
+*Fundamento:* la memoria de trabajo es un buffer de capacidad
+finita (Miller, 1956; Baddeley, 2000) — el arranque informado no
+puede exceder el canal; la prioridad decide qué ocupa el espacio.
+
+### 34. Snapshot frozen — `snapshot` en `iniciar_sesion`
+
+**Código:** `formatear_snapshot` (bootstrap.py), `SesionModel`
+
+El pack de arranque se renderiza una vez al abrir la sesión y no
+muta durante ella — un bloque estable pensado para inyectarse en el
+system prompt, que además preserva el prefix-cache del modelo en
+hosts que lo soportan.
+
+*Fundamento:* el contexto de codificación fija el marco de la
+sesión (encoding specificity, Tulving & Thomson, 1973) — reinstanciar
+el mismo marco en cada turno es más barato y más estable que
+re-muestrear la memoria en caliente.
+
+### 35. Censores — `tipo='censor'` + `verificar_accion`
+
+**Código:** `src/core/memoria/verificacion.py` (`veredicto_censores`,
+`parsear_censor`), `EventoRepository.listar_censores`
+
+Una corrección que madura a prohibición: "nunca hagas X" deja de
+ser una memoria más y se convierte en regla consultable ANTES de
+actuar. Severidad `bloquear` veta la acción; `advertir` la deja
+pasar informando el riesgo. Los censores viven en
+`TIPOS_ACCIONABLES` — el sueño no los archiva jamás: una regla no
+se olvida sola.
+
+*Fundamento:* control inhibitorio prefrontal (Miyake et al., 2000)
+— la memoria no solo recuerda qué pasó, suprime respuestas que ya
+costaron. La corrección reiterada se vuelve tono inhibitorio, no
+solo hecho.
+
+### 36. Calibración Brier — `predicciones` + `reporte_calibracion`
+
+**Código:** `src/core/memoria/calibracion.py` (`brier_score`,
+`reporte_calibracion`), `PrediccionModel`
+
+La confianza sin resultado es un número decorativo. Cada
+`registrar_prediccion` fija la probabilidad ANTES del resultado;
+`resolver_prediccion` cierra el loop y el Brier score
+`(confianza − resultado)²` mide la distancia entre lo declarado y
+lo ocurrido. La curva de confiabilidad por deciles y el sesgo
+(confianza media − acierto empírico) exponen la sobreconfianza con
+números, no con intuición.
+
+*Fundamento:* metamemoria calibrada — el feeling-of-knowing solo es
+confiable si predice el recuerdo real (Koriat & Goldsmith, 1996);
+Brier (1950) es la métrica estándar de calibración probabilística.
+
+### 37. Handoff — `sesiones.handoff` + `cerrar_sesion`
+
+**Código:** `src/core/memoria/handoff.py` (`generar_handoff`),
+`SesionModel`, `EventoRepository.listar_por_rango`
+
+Exportar la worldline (JSONL) es backup bruto; el handoff es un
+documento curado que la siguiente sesión lee en dos minutos:
+guardrails activos, loops abiertos, lo que esta sesión escribió y
+el núcleo curado. Se genera al cerrar el boundary — la sesión rinde
+cuando se destila.
+
+*Fundamento:* segmentación por eventos (Zacks et al., 2007) — el
+cierre de episodio es cuando la experiencia se comprime en esquema;
+el resumen en el boundary retiene más que el flujo continuo.
+
+### 38. Grace floor — `GRACE_NUNCA_EVOCADO_DIAS`
+
+**Código:** `src/core/memoria/consolidacion.py`
+
+Una memoria nunca evocada (`refuerzos=0`, sin `ultimo_acceso`) no
+es elegible a archivo hasta 30 días, aunque su retención ya cruzó
+el umbral. Cero usos es ausencia de evidencia, no prueba de
+desechable — nadie tuvo oportunidad de usarla todavía. Pasada la
+gracia, el cero-uso sí pesa como evidencia.
+
+*Fundamento:* savings de Ebbinghaus (1885) — lo no ensayado no está
+necesariamente olvidado; la elegibilidad al olvido exige
+oportunidad de recuperación, no solo edad.
+
+### 39. Scrub saliente — `redactar_secretos`
+
+**Código:** `src/core/decision/scrub.py`, aplicado en
+`adapters.py` antes del POST externo
+
+El guard de privacidad decide SI un proveedor externo recibe datos;
+el scrub decide QUÉ texto sale una vez permitido: credenciales con
+forma reconocible (`api_key=`, `Bearer`, `sk-*`, `ghp_*`, `ns_*`,
+hex largo) se enmascaran antes de cruzar la frontera. Es red de
+seguridad, no muralla — el bloqueo sigue siendo la barrera.
+
+*Fundamento:* análogo al monitoreo de fuente en la expresión
+(Johnson et al., 1993) — antes de emitir, el sistema verifica qué
+contenido es exportable; la fuga es un fallo de monitoreo, no de
+almacenamiento.
+
+### 40. Staged — aprobación pre-escritura (`staged`)
+
+**Código:** `eventos.staged` + `aprobar_staged`/`rechazar_staged`,
+`pendientes_aprobacion`, `NOUS_ESCRITURA_APROBACION`
+
+Cuando `NOUS_ESCRITURA_APROBACION=true`, las escrituras llegan como
+propuestas: existen, se listan, pero son invisibles para todo el
+recall (léxico, vector, bootstrap, consolidación, SRS) hasta que un
+humano las aprueba. `rechazar` las descarta — la escritura nunca
+existió. Es el complemento temporal de la cuarentena: aquella
+aísla por fuente no confiable; esta posterga por criterio humano.
+
+*Fundamento:* juicio diferido / doble proceso (Kahneman, 2011) —
+el Sistema 1 propone rápido; el Sistema 2 aprueba lento. La
+memoria que se escribe sin revisión es una alucinación firmada.
+
 ## Referencias
 
 - Nader, Schafe & LeDoux (2000). *Fear memories require protein
@@ -495,6 +628,15 @@ antes que el contenido y se evalúa aparte.
   Handlungen.*
 - Anderson, Bjork & Bjork (1994). *Remembering can cause forgetting.*
   (RIF)
+- Miller (1956). *The magical number seven, plus or minus two.*
+  (capacidad del buffer)
+- Tulving & Thomson (1973). *Encoding specificity and retrieval
+  processes in episodic memory.* (snapshot frozen)
+- Miyake, Friedman, Emerson, Witzki, Howerter & Wager (2000). *The
+  unity and diversity of executive functions.* (control inhibitorio)
+- Brier (1950). *Verification of forecasts expressed in terms of
+  probability.* (Brier score)
+- Kahneman (2011). *Thinking, Fast and Slow.* (doble proceso, staged)
 - Underwood (1957). *Interference and forgetting.* (interferencia
   proactiva)
 - Brown & Kulik (1977). *Flashbulb memories.*
