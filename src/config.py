@@ -48,6 +48,15 @@ class Settings(BaseSettings):
     # un forward pass: bajarlo (ej. 6) recorta el p95 del recall en
     # hardware modesto a costa de reordenar menos profundidad.
     reranker_candidatos: int = 10
+    # Threads intra-op de la sesión ONNX de embeddings. Los forwards
+    # de una secuencia apenas se benefician (10.8ms→7.9ms entre 2 y
+    # 8 threads en una CPU de 12 cores); mantenerlo bajo evita la
+    # oversubscription con el reranker y el worker de fondo.
+    onnx_threads: int = 4
+    # Threads intra-op del cross-encoder del reranker — el lote de
+    # candidatos sí escala con threads (~29% más rápido de 4 a 8 en
+    # CPU de 12 cores; >8 empeora por oversubscription).
+    reranker_threads: int = 8
     cache_embeddings_max: int = 256
     dedup_umbral: float = 0.95
     dedup_ventana_segundos: int = 3600

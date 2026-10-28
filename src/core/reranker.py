@@ -144,7 +144,9 @@ class ReordenadorLocal:
                 self._nombre_modelo, "onnx/model.onnx"
             )
             opciones = onnxruntime.SessionOptions()
-            opciones.intra_op_num_threads = 4
+            opciones.intra_op_num_threads = (
+                get_settings().reranker_threads
+            )
             self._sesion_onnx = onnxruntime.InferenceSession(
                 ruta, opciones, providers=["CPUExecutionProvider"]
             )
