@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from src.core.embeddings import GeneradorEmbeddings
+from src.storage.chunks import indexar_chunks_lote
 from src.storage.database import get_session
 from src.storage.models import EventoModel
 
@@ -361,5 +362,10 @@ async def _persistir(
                         workspace_id=ws_destino,
                     )
                 )
+            await indexar_chunks_lote(
+                session,
+                [(uuid.UUID(f["id"]), f["contenido"]) for f in lote],
+                generador,
+            )
             await session.commit()
     return len(filas)

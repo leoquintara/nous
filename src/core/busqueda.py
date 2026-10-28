@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import get_settings
 from src.core.embeddings import GeneradorEmbeddings
 from src.core.identidad import Contexto
+from src.core.memoria.diversidad import diversificar
 from src.core.memoria.retrieval import competidores_rif
 from src.core.modelos import Contexto4D, Evento, ResultadoBusqueda
 from src.core.reranker import ReordenadorLocal
@@ -30,6 +31,7 @@ PESO_COSENO = 0.3
 PESO_RECENCIA = 0.1
 BOOST_AMPLITUD = 0.25
 BOOST_PRIMING = 0.15
+BOOST_CURADO = 0.2
 UMBRAL_COSENO_MIN = 0.25
 SOBREMUESTREO = 4
 
@@ -159,9 +161,28 @@ class BusquedaHibrida4D:
         repo = EventoRepository(session, ctx)
         hits_texto = await repo.buscar_por_texto(query, rama=rama)
         hits_vector = await repo.buscar_por_vector(vector_query, rama=rama)
+        # Patas a nivel fragmento: una sección puntual de un documento
+        # largo compite con su propia señal, no con la media diluida
+        # del documento entero (paridad con los content_chunks de
+        # gbrain). El padre de cada chunk se filtra igual que un
+        # evento: sin archivados, cuarentena, staged ni reemplazados.
+        hits_chunks_texto = await repo.buscar_chunks_por_texto(
+            query, rama=rama
+        )
+        hits_chunks_vector = await repo.buscar_chunks_por_vector(
+            vector_query, rama=rama
+        )
 
-        modelos = _indice_modelos(hits_texto, hits_vector)
-        fusionados = _fusionar(hits_texto, hits_vector, top_n)
+        modelos = _indice_modelos(
+            hits_texto, hits_vector, hits_chunks_texto, hits_chunks_vector
+        )
+        fusionados = _fusionar(
+            hits_texto,
+            hits_vector,
+            hits_chunks_texto,
+            hits_chunks_vector,
+            top_n,
+        )
         if not fusionados:
             return []
 
@@ -175,6 +196,10 @@ class BusquedaHibrida4D:
             self._activaciones(ahora),
         )
         resultados = _deduplicar(resultados)
+        # Fan effect: dos páginas casi idénticas no deberían ocupar
+        # dos slots del top — el casi-duplicado conserva su puesto en
+        # la cola pero con score penalizado (memoria/diversidad).
+        resultados = _diversificar(resultados)
         if self._reordenador is not None:
             finales = await self._rerank_con_contexto(
                 repo, query, resultados, top_n
@@ -185,7 +210,12 @@ class BusquedaHibrida4D:
         if competidores is not None:
             elegidos = {r.evento_id for r in finales}
             vistos: set[str] = set(elegidos)
-            for hits in (hits_texto, hits_vector):
+            for hits in (
+                hits_texto,
+                hits_vector,
+                hits_chunks_texto,
+                hits_chunks_vector,
+            ):
                 for eid in competidores_rif(
                     [str(m.id) for m, _ in hits],
                     list(elegidos),
@@ -314,16 +344,21 @@ class BusquedaHibrida4D:
 
 
 def _indice_modelos(
-    hits_texto: Sequence[tuple[EventoModel, float]],
-    hits_vector: Sequence[tuple[EventoModel, float]],
+    *listas_hits: Sequence[tuple[EventoModel, float]],
 ) -> dict[str, EventoModel]:
     """Indexa los modelos ORM recuperados por id para el re-score."""
-    return {str(m.id): m for m, _ in (*hits_texto, *hits_vector)}
+    return {
+        str(m.id): m
+        for hits in listas_hits
+        for m, _ in hits
+    }
 
 
 def _fusionar(
     hits_texto: Sequence[tuple[EventoModel, float]],
     hits_vector: Sequence[tuple[EventoModel, float]],
+    hits_chunks_texto: Sequence[tuple[EventoModel, float]],
+    hits_chunks_vector: Sequence[tuple[EventoModel, float]],
     top_n: int,
 ) -> list[ResultadoBusqueda]:
     """Convierte los hits en ResultadoBusqueda y los fusiona con RRF."""
@@ -336,7 +371,25 @@ def _fusionar(
         for m, score in hits_vector
         if score >= UMBRAL_COSENO_MIN
     ]
-    listas = [lista for lista in (lista_bm25, lista_vector) if lista]
+    lista_chunks_bm25 = [
+        ResultadoBusqueda(evento_id=str(m.id), score_bm25=score)
+        for m, score in hits_chunks_texto
+    ]
+    lista_chunks_vector = [
+        ResultadoBusqueda(evento_id=str(m.id), score_vectorial=score)
+        for m, score in hits_chunks_vector
+        if score >= UMBRAL_COSENO_MIN
+    ]
+    listas = [
+        lista
+        for lista in (
+            lista_bm25,
+            lista_vector,
+            lista_chunks_bm25,
+            lista_chunks_vector,
+        )
+        if lista
+    ]
     if not listas:
         return []
     return fusion_rrf(*listas, top_n=top_n * SOBREMUESTREO)
@@ -366,6 +419,10 @@ def _re_scored(
             + PESO_RECENCIA * recencia
         )
         score_final = blend * (1.0 + BOOST_AMPLITUD * modelo.amplitud)
+        # Lo curado es verdad avalada (nunca decae, nunca se archiva):
+        # el mismo voto de confianza pesa también en el recall.
+        if modelo.curado:
+            score_final *= 1.0 + BOOST_CURADO
         if activaciones:
             score_final *= 1.0 + BOOST_PRIMING * activaciones.get(
                 r.evento_id, 0.0
@@ -393,6 +450,27 @@ def _deduplicar(
             vistos.add(clave)
             unicos.append(r)
     return unicos
+
+
+def _diversificar(
+    resultados: list[ResultadoBusqueda],
+) -> list[ResultadoBusqueda]:
+    """Penaliza near-duplicados por contenido (fan effect, diversidad)."""
+    pares = diversificar(
+        [
+            (
+                r.evento_id,
+                r.evento.contenido if r.evento else "",
+                r.score_final,
+            )
+            for r in resultados
+        ]
+    )
+    indice = {r.evento_id: r for r in resultados}
+    return [
+        replace(indice[id_], score_final=score)
+        for id_, _, score in pares
+    ]
 
 
 def _decaimiento(edad_segundos: int, vida_media_dias: float) -> float:

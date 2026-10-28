@@ -127,6 +127,7 @@ from src.core.modelos import (
 from src.core.reranker import ReordenadorLocal
 from src.core.temporal import detectar_trayectorias, proyectar
 from src.mcp.server import mcp_server
+from src.storage.chunks import indexar_chunks_evento
 from src.storage.database import crear_engine, get_session, obtener_engine
 from src.storage.models import (
     BorradorModel,
@@ -794,6 +795,14 @@ async def _indexar_luego(engine: AsyncEngine, item: _ItemIndexacion) -> None:
                         proactivos, INTERFERENCIA_FACTOR
                     )
             if sobrevive:
+                # Retrieval a nivel fragmento: los documentos largos
+                # también se indexan por secciones (evento_chunks).
+                await indexar_chunks_evento(
+                    session,
+                    item.evento_id,
+                    item.contenido,
+                    _obtener_embeddings(),
+                )
                 # ADR-003: tipo de memoria (provider o heurístico).
                 tipo_mem = await clasificar_tipo_memoria(
                     item.contenido, _obtener_provider_decision()

@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from src.core.clasificador import ClasificadorDimensiones
 from src.core.embeddings import GeneradorEmbeddings
 from src.core.modelos import Dimension
+from src.storage.chunks import indexar_chunks_lote
 from src.storage.database import crear_engine, get_session
 from src.storage.models import EventoModel, RelacionModel
 
@@ -445,6 +446,11 @@ async def persistir(
                         autor_id=OWNER_ID,
                     )
                 )
+            await indexar_chunks_lote(
+                session,
+                [(e.id, e.contenido) for e in lote],
+                generador,
+            )
             await session.commit()
         insertados += len(lote)
     if reemplazos:

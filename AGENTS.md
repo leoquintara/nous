@@ -34,6 +34,7 @@ nous/
 │   │   ├── embeddings.py       # Embeddings locales (MiniLM-L12, 384 dims)
 │   │   ├── reranker.py         # Reranker local (cross-encoder MiniLM-L12)
 │   │   ├── busqueda.py         # Búsqueda híbrida (BM25 + vectorial + RRF + recencia)
+│   │   ├── chunking.py         # Troceo markdown puro → evento_chunks (retrieval fino)
 │   │   ├── temporal.py         # Línea de universo y trayectorias
 │   │   ├── prediccion.py       # Fachada de proyección futura (re-export de temporal)
 │   │   ├── modelos.py          # Dataclasses y enums del dominio
@@ -69,6 +70,7 @@ nous/
 │   │   ├── database.py         # Conexión async a PostgreSQL
 │   │   ├── models.py           # Modelos SQLAlchemy 2.0
 │   │   ├── repositories.py     # Repositorios (patrón Repository)
+│   │   ├── chunks.py           # Indexación de fragmentos (troceo + embeddings)
 │   │   └── migrations/         # Migraciones Alembic
 │   │
 │   ├── api/                    # API REST (para interfaz web)

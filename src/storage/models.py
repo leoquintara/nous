@@ -325,6 +325,51 @@ class EventoModel(Base):
     )
 
 
+class EventoChunkModel(Base):
+    """Fragmento indexable de un evento para retrieval fino.
+
+    El evento sigue siendo la unidad de memoria; el chunk existe solo
+    para que una sección puntual de un documento largo compita con su
+    propia topicalidad en vez del promedio diluido del documento
+    entero. La visibilidad, el archivo y el borrado se heredan del
+    evento padre (los filtros se aplican por join).
+    """
+
+    __tablename__ = "evento_chunks"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    evento_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("eventos.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    indice: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    contenido: Mapped[str] = mapped_column(Text, nullable=False)
+    contenido_tsv: Mapped[str | None] = mapped_column(
+        TSVECTOR,
+        Computed("to_tsvector('spanish', contenido)", persisted=True),
+    )
+    embedding: Mapped[list[float] | None] = mapped_column(
+        Vector(EMBEDDING_DIM)
+    )
+
+    __table_args__ = (
+        UniqueConstraint("evento_id", "indice", name="uq_chunks_evento_indice"),
+        Index("ix_chunks_evento", "evento_id"),
+        Index("ix_chunks_tsv", "contenido_tsv", postgresql_using="gin"),
+        Index(
+            "ix_chunks_embedding",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )
+
+
 class RelacionModel(Base):
     """Vínculo entre dos eventos de la línea de universo.
 

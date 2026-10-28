@@ -24,6 +24,7 @@ from src.storage.models import (
     BenchmarkRunModel,
     BorradorModel,
     ConfiguracionModel,
+    EventoChunkModel,
     EventoModel,
     FuenteModel,
     IntencionProspectivaModel,
@@ -315,38 +316,18 @@ class EventoRepository:
         """
         tsquery = func.plainto_tsquery("spanish", query)
         rank = func.ts_rank(EventoModel.contenido_tsv, tsquery).label("score")
-        ahora = int(time.time())
+        filtros = self._filtros_evocables()
         # Los tags explícitos también hacen match (no caben en el
-        # tsvector generado: array_to_string no es immutable). Los
-        # eventos expirados (TTL cumplido) no son evocables.
-        filtros = [
+        # tsvector generado: array_to_string no es immutable).
+        filtros.insert(
+            0,
             or_(
                 EventoModel.contenido_tsv.op("@@")(tsquery),
                 func.array_to_string(EventoModel.tags, " ").ilike(
                     f"%{query}%"
                 ),
             ),
-            or_(
-                EventoModel.expira_en.is_(None),
-                EventoModel.expira_en > ahora,
-            ),
-            # Lo archivado por consolidación ya no es evocable —
-            # sigue en la worldline (reversible), fuera del recall.
-            EventoModel.archivado.is_(False),
-            # La cuarentena tampoco es evocable: la fuente no es
-            # confiable todavía — el evento existe pero no contamina
-            # el recall hasta aprobarse (sistema inmune).
-            EventoModel.cuarentena.is_(False),
-            # Staged (write-approval): la propuesta no es evocable
-            # hasta que el humano la apruebe — misma regla que la
-            # cuarentena, distinto motivo.
-            EventoModel.staged.is_(False),
-            # Reemplazado = versión vieja en la worldline: la historia
-            # se conserva (4D, auditable) pero no compite en el recall
-            # contra su sucesora — misma regla que `archivado`.
-            EventoModel.reemplazado_por.is_(None),
-            *self._vis(),
-        ]
+        )
         if rama is not None:
             filtros.append(EventoModel.rama == rama)
         stmt = (
@@ -374,18 +355,9 @@ class EventoRepository:
             descendente.
         """
         distancia = EventoModel.embedding.cosine_distance(vector).label("distancia")
-        ahora = int(time.time())
         filtros = [
             EventoModel.embedding.is_not(None),
-            or_(
-                EventoModel.expira_en.is_(None),
-                EventoModel.expira_en > ahora,
-            ),
-            EventoModel.archivado.is_(False),
-            EventoModel.cuarentena.is_(False),
-            EventoModel.staged.is_(False),
-            EventoModel.reemplazado_por.is_(None),
-            *self._vis(),
+            *self._filtros_evocables(),
         ]
         if rama is not None:
             filtros.append(EventoModel.rama == rama)
@@ -394,6 +366,144 @@ class EventoRepository:
             .where(*filtros)
             .order_by(distancia)
             .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return [
+            (fila["EventoModel"], 1.0 - float(fila["distancia"]))
+            for fila in resultado.mappings().all()
+        ]
+
+    def _filtros_evocables(self) -> list[ColumnElement[bool]]:
+        """Predicados compartidos de "evento evocable" para el recall.
+
+        Un evento no es evocable si está expirado, archivado por
+        consolidación (sigue en la worldline, fuera del recall), en
+        cuarentena (fuente aún no confiable), staged (pendiente de
+        aprobación humana), reemplazado por una versión más nueva
+        (historia conservada, no compite contra su sucesora) o es un
+        registro de enlace pendiente (``wanted-link``: laguna
+        declarada, consultable por tag y en ``/lagunas``, no parte
+        del recall general).
+        """
+        ahora = int(time.time())
+        return [
+            or_(
+                EventoModel.expira_en.is_(None),
+                EventoModel.expira_en > ahora,
+            ),
+            EventoModel.archivado.is_(False),
+            EventoModel.cuarentena.is_(False),
+            EventoModel.staged.is_(False),
+            EventoModel.reemplazado_por.is_(None),
+            func.array_position(EventoModel.tags, "wanted-link").is_(
+                None
+            ),
+            *self._vis(),
+        ]
+
+    async def reemplazar_chunks(
+        self,
+        evento_id: uuid.UUID,
+        piezas: list[str],
+        vectores: list[list[float]],
+    ) -> int:
+        """Reindexa los fragmentos de un evento (borra y reinserta).
+
+        Args:
+            evento_id: Evento dueño de los fragmentos.
+            piezas: Textos de ``src.core.chunking.trocear`` en orden.
+            vectores: Embedding por fragmento (mismo orden).
+
+        Returns:
+            Número de fragmentos insertados.
+        """
+        await self._session.execute(
+            delete(EventoChunkModel).where(
+                EventoChunkModel.evento_id == evento_id
+            )
+        )
+        for indice, (pieza, vector) in enumerate(
+            zip(piezas, vectores, strict=True)
+        ):
+            self._session.add(
+                EventoChunkModel(
+                    evento_id=evento_id,
+                    indice=indice,
+                    contenido=pieza,
+                    embedding=vector,
+                )
+            )
+        return len(piezas)
+
+    async def buscar_chunks_por_texto(
+        self, query: str, limite: int = 20, rama: str | None = None
+    ) -> Sequence[tuple[EventoModel, float]]:
+        """Búsqueda full-text sobre chunks; devuelve el evento padre.
+
+        El score del evento es el del mejor fragmento — la unidad de
+        respuesta sigue siendo el evento completo.
+        """
+        tsquery = func.plainto_tsquery("spanish", query)
+        rank = func.ts_rank(EventoChunkModel.contenido_tsv, tsquery)
+        mejores = (
+            select(
+                EventoChunkModel.evento_id,
+                func.max(rank).label("score"),
+            )
+            .join(
+                EventoModel,
+                EventoModel.id == EventoChunkModel.evento_id,
+            )
+            .where(
+                EventoChunkModel.contenido_tsv.op("@@")(tsquery),
+                *self._filtros_evocables(),
+                *([] if rama is None else [EventoModel.rama == rama]),
+            )
+            .group_by(EventoChunkModel.evento_id)
+            .order_by(func.max(rank).desc())
+            .limit(limite)
+            .subquery()
+        )
+        stmt = select(EventoModel, mejores.c.score).join(
+            mejores, mejores.c.evento_id == EventoModel.id
+        )
+        resultado = await self._session.execute(stmt)
+        return [
+            (fila["EventoModel"], float(fila["score"]))
+            for fila in resultado.mappings().all()
+        ]
+
+    async def buscar_chunks_por_vector(
+        self, vector: list[float], limite: int = 20, rama: str | None = None
+    ) -> Sequence[tuple[EventoModel, float]]:
+        """Búsqueda coseno sobre chunks; devuelve el evento padre.
+
+        La distancia del evento es la de su mejor fragmento — una
+        sección puntual compite con su señal propia, no con la media
+        del documento entero.
+        """
+        distancia = EventoChunkModel.embedding.cosine_distance(vector)
+        mejores = (
+            select(
+                EventoChunkModel.evento_id,
+                func.min(distancia).label("distancia"),
+            )
+            .join(
+                EventoModel,
+                EventoModel.id == EventoChunkModel.evento_id,
+            )
+            .where(
+                EventoChunkModel.embedding.is_not(None),
+                *self._filtros_evocables(),
+                *([] if rama is None else [EventoModel.rama == rama]),
+            )
+            .group_by(EventoChunkModel.evento_id)
+            .order_by(func.min(distancia))
+            .limit(limite)
+            .subquery()
+        )
+        stmt = select(EventoModel, mejores.c.distancia).join(
+            mejores, mejores.c.evento_id == EventoModel.id
         )
         resultado = await self._session.execute(stmt)
         return [
