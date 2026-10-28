@@ -412,6 +412,72 @@ class EventoRepository:
         )
         await self._session.execute(stmt)
 
+    async def menciones_de(
+        self,
+        nombre: str,
+        excluir: list[uuid.UUID],
+        limite: int = 8,
+    ) -> Sequence[EventoModel]:
+        """Eventos evocables que mencionan al nombre en el cuerpo.
+
+        Los backlinks del grafo difuso: documentos que hablan de la
+        entidad aunque no le dediquen el título — el equivalente de
+        ``referenced_by`` en la ficha de gbrain.
+
+        Args:
+            nombre: Texto a buscar en el contenido (LIKE insensible).
+            excluir: Eventos a omitir (la card y sus variantes).
+            limite: Máximo de menciones, más recientes primero.
+
+        Returns:
+            Eventos por timestamp descendente.
+        """
+        patron = f"%{nombre.replace('%', '').replace('_', '')}%"
+        stmt = (
+            select(EventoModel)
+            .where(
+                EventoModel.contenido.ilike(patron),
+                *([EventoModel.id.notin_(excluir)] if excluir else []),
+                *self._filtros_evocables(),
+            )
+            .order_by(EventoModel.timestamp_unix.desc())
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
+
+    async def span_menciones(
+        self, nombre: str
+    ) -> tuple[int | None, int | None, int]:
+        """Ventana temporal de la entidad en la línea de universo.
+
+        Responde «¿cuándo apareció X por primera vez?» — la pregunta
+        que la búsqueda por relevancia no contesta porque ordena por
+        score, no por tiempo.
+
+        Args:
+            nombre: Texto a buscar en el contenido.
+
+        Returns:
+            (primer timestamp_unix, último, total de menciones) sobre
+            eventos evocables; ``None`` en los extremos si no hay.
+        """
+        patron = f"%{nombre.replace('%', '').replace('_', '')}%"
+        stmt = select(
+            func.min(EventoModel.timestamp_unix),
+            func.max(EventoModel.timestamp_unix),
+            func.count(EventoModel.id),
+        ).where(
+            EventoModel.contenido.ilike(patron),
+            *self._filtros_evocables(),
+        )
+        fila = (await self._session.execute(stmt)).one()
+        return (
+            cast(int | None, fila[0]),
+            cast(int | None, fila[1]),
+            fila[2],
+        )
+
     async def listar_tags(self, limite: int = 200) -> Sequence[tuple[str, int]]:
         """Agrega los tags de todos los eventos con su conteo.
 
@@ -1833,6 +1899,56 @@ class RelacionRepository:
         )
         resultado = await self._session.execute(stmt)
         return resultado.scalars().all()
+
+    async def vinculos_de(
+        self, evento_id: uuid.UUID, limite: int = 16
+    ) -> Sequence[tuple[RelacionModel, uuid.UUID, str]]:
+        """Vínculos que tocan a un evento, con el título del otro extremo.
+
+        Las aristas de la ficha de entidad: para «oscar» devuelve a
+        qué documentos lo atan relaciones explícitas, coactivas o de
+        supersede — el grafo local de la card.
+
+        Args:
+            evento_id: Evento ancla.
+            limite: Máximo de aristas, por peso descendente.
+
+        Returns:
+            Tuplas (relación, id del otro evento, su primera línea).
+        """
+        otro_id = case(
+            (RelacionModel.origen_id == evento_id, RelacionModel.destino_id),
+            else_=RelacionModel.origen_id,
+        )
+        titulo = func.split_part(EventoModel.contenido, func.chr(10), 1)
+        stmt = (
+            select(
+                RelacionModel,
+                otro_id.label("otro_id"),
+                titulo.label("otro_titulo"),
+            )
+            .join(EventoModel, EventoModel.id == otro_id)
+            .where(
+                or_(
+                    RelacionModel.origen_id == evento_id,
+                    RelacionModel.destino_id == evento_id,
+                ),
+                EventoModel.archivado.is_(False),
+                EventoModel.reemplazado_por.is_(None),
+                *self._vis(),
+            )
+            .order_by(RelacionModel.peso.desc())
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return [
+            (
+                fila["RelacionModel"],
+                cast(uuid.UUID, fila["otro_id"]),
+                cast(str, fila["otro_titulo"]),
+            )
+            for fila in resultado.mappings().all()
+        ]
 
     async def listar(self, limite: int = 2000) -> Sequence[RelacionModel]:
         """Lista los vínculos registrados, más recientes primero.

@@ -1556,6 +1556,84 @@ async def _linea(
     return [_modelo_a_dict(e) for e in eventos]
 
 
+def _titulo_de(modelo: EventoModel) -> str:
+    """Primera línea del contenido sin el '#' de encabezado."""
+    return (modelo.contenido or "").split("\n", 1)[0].lstrip("# ").strip()
+
+
+async def _entidad(
+    nombre: str,
+    limite_menciones: int,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Compone la ficha de una entidad: página, vínculos y span temporal.
+
+    La búsqueda por relevancia recupera documentos; la ficha responde
+    «quién es X»: la página que lleva su nombre (lookup IDF de título),
+    sus aristas en el grafo, sus backlinks (documentos que la
+    mencionan), los compromisos abiertos donde aparece y su ventana
+    temporal en la línea de universo — cuándo se escribió de ella por
+    primera y última vez.
+    """
+    ctx = await _ctx(workspace)
+    async with get_session(obtener_engine()) as session:
+        repo = EventoRepository(session, ctx)
+        candidatos = await repo.buscar_por_titulo(nombre, limite=6)
+        primero, ultimo, total = await repo.span_menciones(nombre)
+        span = {
+            "primera_unix": primero,
+            "ultima_unix": ultimo,
+            "menciones_total": total,
+        }
+        if not candidatos:
+            return {"encontrado": False, "nombre": nombre, "span": span}
+        # Empate de IDF: con un nombre de un solo lexema todos los
+        # títulos puntúan igual — la card es el título MÁS CORTO que
+        # lleva el nombre («# Oscar Lopez» es una ficha; la primera
+        # línea de un fact es su texto completo, ~150 chars).
+        card, score_card = min(
+            candidatos, key=lambda c: len(_titulo_de(c[0]))
+        )
+        excluir = [e.id for e, _ in candidatos]
+        vinculos = await RelacionRepository(session, ctx).vinculos_de(
+            card.id
+        )
+        menciones = await repo.menciones_de(
+            nombre, excluir, max(1, min(limite_menciones, 24))
+        )
+        compromisos = [
+            c
+            for c in await repo.listar_compromisos_abiertos("main")
+            if nombre.lower() in (c.contenido or "").lower()
+        ]
+    return {
+        "encontrado": True,
+        "nombre": nombre,
+        "card": _modelo_a_dict(card),
+        "score_card": round(score_card, 4),
+        "variantes": [
+            {
+                "id": str(e.id),
+                "titulo": _titulo_de(e),
+                "score": round(s, 4),
+            }
+            for e, s in candidatos[1:]
+        ],
+        "vinculos": [
+            {
+                "evento_id": str(otro_id),
+                "titulo": titulo,
+                "tipo": r.tipo,
+                "peso": r.peso,
+            }
+            for r, otro_id, titulo in vinculos
+        ],
+        "menciones": [_modelo_a_dict(m) for m in menciones],
+        "compromisos_abiertos": [_modelo_a_dict(c) for c in compromisos],
+        "span": span,
+    }
+
+
 async def _open_loops(rama: str = "main", workspace: str | None = None) -> list[dict[str, Any]]:
     """Lista los compromisos abiertos — quién espera respuesta tuya."""
     ctx = await _ctx(workspace)
@@ -2561,6 +2639,35 @@ async def listar_relaciones(
         primero.
     """
     return await _relaciones(limite, workspace)
+
+
+@mcp_server.tool()
+async def entidad(
+    nombre: str,
+    limite_menciones: int = 8,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Ficha de una entidad — persona, proyecto o concepto nombrado.
+
+    USAR CUANDO: la pregunta es «quién/qué es X», «cuándo apareció X»,
+    o necesitas todo lo que la memoria sabe de un mismo nombre: su
+    página propia, a qué documentos la ata el grafo, quién la
+    menciona, qué compromisos abiertos la involucran y su ventana
+    temporal (primera y última aparición). consultar_memoria recupera
+    documentos por relevancia; entidad devuelve la card completa.
+
+    Args:
+        nombre: Nombre de la entidad ("oscar", "Carlos", "kinam").
+        limite_menciones: Máximo de backlinks (1-24). Default 8.
+        workspace: Slug o UUID del workspace a consultar.
+
+    Returns:
+        {"encontrado", "card", "variantes", "vinculos", "menciones",
+        "compromisos_abiertos", "span"}. Si no hay página con ese
+        nombre, {"encontrado": false, "span"} — el span aún reporta
+        menciones sueltas en el cuerpo de otros documentos.
+    """
+    return await _entidad(nombre, limite_menciones, workspace)
 
 
 @mcp_server.tool()

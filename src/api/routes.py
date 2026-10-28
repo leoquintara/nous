@@ -411,6 +411,29 @@ async def listar_relaciones(
     ]
 
 
+@router.get("/entidad", dependencies=[Depends(verificar_token)])
+async def ficha_entidad(
+    nombre: str,
+    limite_menciones: int = 8,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Ficha de una entidad nombrada (entidad).
+
+    Resuelve el nombre a su página (lookup IDF de título) y compone
+    la card: página, aristas del grafo, backlinks que la mencionan,
+    compromisos abiertos y su ventana temporal en la worldline.
+
+    Args:
+        nombre: Nombre de la entidad ("oscar", "kinam").
+        limite_menciones: Máximo de backlinks (1-24).
+
+    Returns:
+        {"encontrado", "card", "variantes", "vinculos", "menciones",
+        "compromisos_abiertos", "span"}.
+    """
+    return await tools_impl._entidad(nombre, limite_menciones, workspace)
+
+
 @router.delete("/eventos/{evento_id}", dependencies=[Depends(requerir_escritura)])
 async def olvidar_evento(evento_id: str) -> dict[str, Any]:
     """Borra un evento de la memoria (olvidar_evento).
