@@ -18,11 +18,13 @@ es el punto: una sola memoria, muchos orígenes.
 
 from __future__ import annotations
 
+import codecs
 import json
 import logging
 import re
 import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +38,7 @@ _FORMATOS = ("auto", "jsonl", "json", "obsidian", "gbrain", "memlord")
 _PATRON_WIKILINK = re.compile(r"\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]")
 _PATRON_FRONTMATTER = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _PATRON_FM_TAGS = re.compile(r"^tags:\s*(.+)$", re.MULTILINE)
+_PATRON_FECHA = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 
 
 def formato_soportado() -> tuple[str, ...]:
@@ -98,11 +101,48 @@ def _fila_base(
             "timestamp_unix": ts or int(time.time()),
             "dimension": dimension,
             "fuente": fuente[:50],
-            "contenido": contenido,
+            # Nulos sueltos rompen text en PostgreSQL y los \r\n crudos
+            # rompen la idempotencia (read_text normaliza \r\n→\n pero
+            # read_bytes no): el contenido canon lleva solo \n.
+            "contenido": contenido.replace("\x00", "")
+            .replace("\r\n", "\n")
+            .replace("\r", "\n"),
             "amplitud": amplitud,
             "tags": fusionar_tags(tags, contenido),
         }
     )
+
+
+def _decodificar(crudo: bytes) -> str:
+    """Decodifica la nota tolerando UTF-16 (con BOM o nulos típicos):
+    leer UTF-16 como UTF-8 no falla — solo inyecta ``\\x00`` que
+    PostgreSQL rechaza al insertar."""
+    if crudo.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)) or (
+        b"\x00" in crudo[:512]
+    ):
+        try:
+            return crudo.decode("utf-16")
+        except UnicodeDecodeError:
+            pass
+    return crudo.decode("utf-8")
+
+
+def _ts_nota(md: Path) -> int:
+    """Timestamp de la nota: fecha del nombre ``YYYY-MM-DD`` (mediodía
+    UTC) si lo tiene — los logs diarios merecen su día real, no el
+    mtime de la última edición — y si no, el mtime del archivo."""
+    m = _PATRON_FECHA.match(md.stem)
+    if m:
+        return int(
+            datetime(
+                int(m.group(1)),
+                int(m.group(2)),
+                int(m.group(3)),
+                12,
+                tzinfo=UTC,
+            ).timestamp()
+        )
+    return int(md.stat().st_mtime)
 
 
 def _leer_vault(
@@ -116,7 +156,7 @@ def _leer_vault(
     enlaces: list[tuple[int, str]] = []
     for md in sorted(vault.rglob("*.md")):
         try:
-            texto = md.read_text(encoding="utf-8")
+            texto = _decodificar(md.read_bytes())
         except (OSError, UnicodeDecodeError) as exc:
             logger.warning("Nota ilegible %s: %s", md, exc)
             errores += 1
@@ -131,7 +171,7 @@ def _leer_vault(
                     f"{md.stem}\n\n{cuerpo}",
                     fuente,
                     tags,
-                    ts=int(md.stat().st_mtime),
+                    ts=_ts_nota(md),
                 )
             )
             por_nombre[md.stem.lower()] = len(filas) - 1

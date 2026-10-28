@@ -82,6 +82,7 @@ async def importar(
     formato: str = "auto",
     fuente: str | None = None,
     rama: str | None = None,
+    workspace_id: uuid.UUID | None = None,
 ) -> dict[str, int]:
     """Importa eventos desde una fuente externa regenerando embeddings.
 
@@ -102,7 +103,9 @@ async def importar(
     from src.cli.importadores import leer_fuente
 
     filas, vinculos_idx, errores = leer_fuente(ruta, formato, fuente)
-    return await importar_filas(engine, filas, vinculos_idx, errores, rama)
+    return await importar_filas(
+        engine, filas, vinculos_idx, errores, rama, workspace_id
+    )
 
 
 async def importar_filas(
@@ -111,6 +114,7 @@ async def importar_filas(
     vinculos_idx: list[tuple[int, int]],
     errores: int,
     rama: str | None = None,
+    workspace_id: uuid.UUID | None = None,
 ) -> dict[str, int]:
     """Persiste filas ya normalizadas (de cualquier origen) en eventos.
 
@@ -121,18 +125,22 @@ async def importar_filas(
     if rama:
         for f in filas:
             f["rama"] = rama
-    nuevos = await _filtrar_nuevos(engine, filas)
+    nuevos, mapa_ids = await _filtrar_nuevos(engine, filas, workspace_id)
     # Los índices de vínculo se refieren a `filas`; tras filtrar hay que
-    # reetiquetarlos a los ids persistidos.
-    idx_a_id = {i: f["id"] for i, f in enumerate(filas)}
-    nuevos_ids = {f["id"] for f in nuevos}
-    importados = await _persistir(engine, nuevos)
+    # reetiquetarlos al id realmente almacenado — puede diferir del
+    # uuid5 actual si la fila entró con contenido pre-normalización.
+    idx_a_id = {
+        i: mapa_ids.get(
+            (f["fuente"] or "import", f["contenido"]), f["id"]
+        )
+        for i, f in enumerate(filas)
+    }
+    importados = await _persistir(engine, nuevos, workspace_id)
     vinculos = await _persistir_vinculos(
         engine,
         [
             (uuid.UUID(idx_a_id[a]), uuid.UUID(idx_a_id[b]))
             for a, b in vinculos_idx
-            if idx_a_id.get(a) in nuevos_ids or idx_a_id.get(b) in nuevos_ids
             if a in idx_a_id and b in idx_a_id
         ],
     )
@@ -173,9 +181,10 @@ async def contar_nuevas(
     filas: list[FilaEvento],
     vinculos_idx: list[tuple[int, int]],
     errores: int,
+    workspace_id: uuid.UUID | None = None,
 ) -> dict[str, int]:
     """Cuenta lo que una importación haría sin escribir nada."""
-    nuevos = await _filtrar_nuevos(engine, filas)
+    nuevos, _ = await _filtrar_nuevos(engine, filas, workspace_id)
     return {
         "nuevas": len(nuevos),
         "omitidos": len(filas) - len(nuevos),
@@ -270,24 +279,63 @@ def _validar_fila(cruda: dict[str, Any]) -> FilaEvento:
 
 
 async def _filtrar_nuevos(
-    engine: AsyncEngine, filas: list[FilaEvento]
-) -> list[FilaEvento]:
-    """Descarta las filas cuyo id ya existe en la base de datos."""
+    engine: AsyncEngine,
+    filas: list[FilaEvento],
+    workspace_id: uuid.UUID | None = None,
+) -> tuple[list[FilaEvento], dict[tuple[str, str], str]]:
+    """Descarta las filas ya presentes y devuelve el mapa de ids reales.
+
+    Una fila ya existe si coincide su id, o su (fuente, contenido) en
+    el workspace destino — este segundo chequeo cubre filas insertadas
+    con contenido pre-normalización cuyo id difiere del uuid5 actual.
+    El dict devuelto mapea (fuente, contenido) → id almacenado para
+    reetiquetar vínculos contra la fila real."""
     if not filas:
-        return []
+        return [], {}
+    from src.core.identidad import WORKSPACE_PERSONAL_ID
+
+    ws = workspace_id or WORKSPACE_PERSONAL_ID
     ids = [uuid.UUID(f["id"]) for f in filas]
     async with get_session(engine) as session:
         resultado = await session.execute(
             select(EventoModel.id).where(EventoModel.id.in_(ids))
         )
         existentes = {str(fila[0]) for fila in resultado.all()}
-    return [f for f in filas if f["id"] not in existentes]
+        contenidos = await session.execute(
+            select(
+                EventoModel.id, EventoModel.fuente, EventoModel.contenido
+            ).where(
+                EventoModel.workspace_id == ws,
+                EventoModel.fuente.in_(
+                    {f["fuente"] or "import" for f in filas}
+                ),
+            )
+        )
+        mapa_ids = {
+            (str(fuente), contenido): str(eid)
+            for eid, fuente, contenido in contenidos
+        }
+        pares = set(mapa_ids)
+    nuevos = [
+        f
+        for f in filas
+        if f["id"] not in existentes
+        and ((f["fuente"] or "import"), f["contenido"]) not in pares
+    ]
+    return nuevos, mapa_ids
 
 
-async def _persistir(engine: AsyncEngine, filas: list[FilaEvento]) -> int:
+async def _persistir(
+    engine: AsyncEngine,
+    filas: list[FilaEvento],
+    workspace_id: uuid.UUID | None = None,
+) -> int:
     """Genera embeddings por lotes e inserta las filas nuevas."""
     if not filas:
         return 0
+    from src.core.identidad import WORKSPACE_PERSONAL_ID
+
+    ws_destino = workspace_id or WORKSPACE_PERSONAL_ID
     generador = GeneradorEmbeddings()
     for inicio in range(0, len(filas), LOTE_EMBEDDING):
         lote = filas[inicio : inicio + LOTE_EMBEDDING]
@@ -310,6 +358,7 @@ async def _persistir(engine: AsyncEngine, filas: list[FilaEvento]) -> int:
                         frecuencia=fila["frecuencia"],
                         tags=fila.get("tags") or [],
                         rama=fila.get("rama") or "main",
+                        workspace_id=ws_destino,
                     )
                 )
             await session.commit()

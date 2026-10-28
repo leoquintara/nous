@@ -120,6 +120,11 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help="Línea de universo donde registrar lo importado.",
     )
+    im.add_argument(
+        "--workspace",
+        default=None,
+        help="Slug o UUID del workspace destino (default: personal).",
+    )
 
     sk = sub.add_parser(
         "skills", help="Instala los skills/agentes de Nous en el proyecto."
@@ -573,10 +578,16 @@ async def _cmd_export(archivo: Path) -> int:
 
 
 async def _cmd_import(
-    origen: Path, formato: str, fuente: str | None, rama: str | None
+    origen: Path,
+    formato: str,
+    fuente: str | None,
+    rama: str | None,
+    workspace: str | None,
 ) -> int:
     """Implementa ``nous import`` para archivos y directorios."""
+    from src.cli.identidad import _workspace_por_slug
     from src.cli.transferencia import importar
+    from src.core.exceptions import ErrorValidacion
     from src.storage.database import crear_engine
 
     if not await asyncio.to_thread(origen.exists):
@@ -584,7 +595,17 @@ async def _cmd_import(
         return 1
     engine = crear_engine()
     try:
-        resumen = await importar(engine, origen, formato, fuente, rama)
+        ws_id = None
+        if workspace:
+            try:
+                ws = await _workspace_por_slug(engine, workspace)
+            except ErrorValidacion as e:
+                sys.stderr.write(ui.error(f"error: {e}") + "\n")
+                return 1
+            ws_id = ws.id
+        resumen = await importar(
+            engine, origen, formato, fuente, rama, ws_id
+        )
     finally:
         await engine.dispose()
     exito = resumen["errores"] == 0 or resumen["importados"] > 0
@@ -1198,7 +1219,13 @@ def _despachar(args: argparse.Namespace) -> int:
         return asyncio.run(_cmd_export(args.archivo))
     if comando == "import":
         return asyncio.run(
-            _cmd_import(args.origen, args.formato, args.fuente, args.rama)
+            _cmd_import(
+                args.origen,
+                args.formato,
+                args.fuente,
+                args.rama,
+                args.workspace,
+            )
         )
     if comando == "skills":
         from src.cli.skills import cmd_skills
