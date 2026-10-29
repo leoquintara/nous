@@ -89,11 +89,13 @@ jobs:
       run: |
         set -o pipefail
         poetry run pytest tests/integration -x -q 2>&1 | tee pytest-integration.log
-    # El log del job exige sesión para leerse; el step summary queda
-    # en el check-run y es legible por la API pública.
+    # El log del job exige sesión para leerse; las anotaciones de
+    # check-run sí son públicas — el fallo sale como ::error.
     - name: publicar fallo en summary
       if: failure()
       run: |
-        echo '```' >> "$GITHUB_STEP_SUMMARY"
-        tail -n 200 pytest-integration.log >> "$GITHUB_STEP_SUMMARY"
-        echo '```' >> "$GITHUB_STEP_SUMMARY"
+        MSG=$(tail -n 200 pytest-integration.log | head -c 3000)
+        MSG=${MSG//'%'/'%25'}
+        MSG=${MSG//$'\n'/'%0A'}
+        MSG=${MSG//$'\r'/'%0D'}
+        echo "::error file=tests/integration::${MSG}"
