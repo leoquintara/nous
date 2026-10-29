@@ -434,10 +434,10 @@ class TestWorkspaceOverrideE2E:
             )
             try:
                 r = await cliente.get(
-                    "/api/eventos", params={"workspace": "sc-ws-b"}
+                    "/api/events", params={"workspace": "sc-ws-b"}
                 )
                 assert r.status_code == 403
-                r2 = await cliente.get("/api/eventos")
+                r2 = await cliente.get("/api/events")
                 assert r2.status_code == 200
             finally:
                 await cliente.aclose()
@@ -603,9 +603,9 @@ class TestToolsMCPWorkspaces:
         finally:
             fijar_contexto(None)
         assert r["slug"] == "sc-ws-nuevo"
-        assert r["rol"] == "owner"
+        assert r["role"] == "owner"
         lista = await tools.listar_miembros(workspace="sc-ws-nuevo")
-        assert [(m["handle"], m["rol"]) for m in lista] == [
+        assert [(m["handle"], m["role"]) for m in lista] == [
             ("owner", "owner")
         ]
         await self._limpiar_ws(engine, "sc-ws-nuevo")
@@ -642,7 +642,7 @@ class TestToolsMCPWorkspaces:
             lista = await tools.listar_workspaces()
         finally:
             fijar_contexto(None)
-        roles = {w["slug"]: w["rol"] for w in lista}
+        roles = {w["slug"]: w["role"] for w in lista}
         assert roles["personal"] == "member"
         assert roles["sc-ws-b"] == "viewer"
 
@@ -672,7 +672,7 @@ class TestToolsMCPWorkspaces:
         finally:
             fijar_contexto(None)
         assert r["token"].startswith("ns_inv_")
-        assert r["expira_dias"] == 5
+        assert r["expires_days"] == 5
         async with get_session(engine) as s:
             await s.execute(delete(InvitacionModel))
             await s.commit()
@@ -694,10 +694,10 @@ class TestToolsMCPWorkspaces:
                 await tools.cambiar_rol_miembro("no-existe", "viewer")
 
             r = await tools.cambiar_rol_miembro("sc-b", "viewer")
-            assert r == {"handle": "sc-b", "rol": "viewer"}
+            assert r == {"handle": "sc-b", "role": "viewer"}
 
             r2 = await tools.quitar_miembro("sc-b")
-            assert r2 == {"handle": "sc-b", "expulsado": True}
+            assert r2 == {"handle": "sc-b", "removed": True}
 
             roster = await tools.listar_miembros()
             assert "sc-b" not in {m["handle"] for m in roster}

@@ -73,11 +73,11 @@ async def test_licencia_activar_key_opaca_persiste_y_tier(
 ) -> None:
     """POST /licencia/activar con key opaca → tier pro + archivo."""
     resp = await cliente.post(
-        "/api/licencia/activar", json={"key": "NSLIC-TEST-OPACA"}
+        "/api/license/activate", json={"key": "NSLIC-TEST-OPACA"}
     )
     assert resp.status_code == 200
     cuerpo = resp.json()
-    assert cuerpo["activada"] is True
+    assert cuerpo["activated"] is True
     assert cuerpo["tier"] == "pro"
 
 
@@ -92,7 +92,7 @@ async def test_licencia_activar_jwt_expirado_422(
         "ZmFrZQ"
     )
     resp = await cliente.post(
-        "/api/licencia/activar", json={"key": payload}
+        "/api/license/activate", json={"key": payload}
     )
     assert resp.status_code == 422
 
@@ -103,11 +103,11 @@ async def test_licencia_delete_elimina_archivo(
 ) -> None:
     """DELETE /licencia quita el archivo persistido (env var intacta)."""
     await cliente.post(
-        "/api/licencia/activar", json={"key": "NSLIC-TEST-BORRAR"}
+        "/api/license/activate", json={"key": "NSLIC-TEST-BORRAR"}
     )
-    resp = await cliente.delete("/api/licencia")
+    resp = await cliente.delete("/api/license")
     assert resp.status_code == 200
-    assert resp.json()["archivo_eliminado"] is True
+    assert resp.json()["file_removed"] is True
 
 
 @pytest.mark.asyncio
@@ -116,25 +116,25 @@ async def test_curar_evento_marca_y_descura(
 ) -> None:
     """POST /eventos/{id}/curar → curado:true; descure con false."""
     alta = await cliente.post(
-        "/api/eventos",
+        "/api/events",
         json={
-            "contenido": "memoria valiosa que quiero preservar",
-            "fuente": FUENTE_TEST,
+            "content": "memoria valiosa que quiero preservar",
+            "source": FUENTE_TEST,
         },
     )
     assert alta.status_code == 200
     eid = alta.json()["id"]
     resp = await cliente.post(
-        f"/api/eventos/{eid}/curar", json={"curado": True}
+        f"/api/events/{eid}/curate", json={"curated": True}
     )
     assert resp.status_code == 200
-    assert resp.json()["curado"] is True
+    assert resp.json()["curated"] is True
     # Descurar revierte el tier.
     resp = await cliente.post(
-        f"/api/eventos/{eid}/curar", json={"curado": False}
+        f"/api/events/{eid}/curate", json={"curated": False}
     )
     assert resp.status_code == 200
-    assert resp.json()["curado"] is False
+    assert resp.json()["curated"] is False
 
 
 @pytest.mark.asyncio
@@ -143,8 +143,8 @@ async def test_curar_evento_inexistente_422(
 ) -> None:
     """Curar un id inexistente en la visibilidad → 422, nunca 500."""
     resp = await cliente.post(
-        "/api/eventos/00000000-0000-0000-0000-000000000000/curar",
-        json={"curado": True},
+        "/api/events/00000000-0000-0000-0000-000000000000/curate",
+        json={"curated": True},
     )
     assert resp.status_code == 422
 
@@ -155,13 +155,13 @@ async def test_evento_campos_declarados_persisten(
 ) -> None:
     """estado_emocional/tipo_memoria declarados no los pisa el estimador."""
     resp = await cliente.post(
-        "/api/eventos",
+        "/api/events",
         json={
-            "contenido": "check-in de prueba",
-            "fuente": FUENTE_TEST,
-            "dimension": "somatica",
-            "estado_emocional": -0.5,
-            "tipo_memoria": "episodica",
+            "content": "check-in de prueba",
+            "source": FUENTE_TEST,
+            "dimension": "somatic",
+            "emotional_state": -0.5,
+            "tipo_memoria": "episodic",
         },
     )
     assert resp.status_code == 200
@@ -176,31 +176,31 @@ async def test_olvidar_gradual_marca_y_revierte(
 ) -> None:
     """POST /eventos/{id}/olvidar → olvido_dirigido, reversible."""
     alta = await cliente.post(
-        "/api/eventos",
+        "/api/events",
         json={
-            "contenido": "recuerdo que debería desvanecerse antes",
-            "fuente": FUENTE_TEST,
+            "content": "recuerdo que debería desvanecerse antes",
+            "source": FUENTE_TEST,
         },
     )
     assert alta.status_code == 200
     eid = alta.json()["id"]
     resp = await cliente.post(
-        f"/api/eventos/{eid}/olvidar", json={"olvidar": True}
+        f"/api/events/{eid}/forget", json={"forget": True}
     )
     assert resp.status_code == 200
-    assert resp.json()["olvido_dirigido"] is True
+    assert resp.json()["directed_forgetting"] is True
     # Reversible: desmarcar restaura el decay normal.
     resp = await cliente.post(
-        f"/api/eventos/{eid}/olvidar", json={"olvidar": False}
+        f"/api/events/{eid}/forget", json={"forget": False}
     )
     assert resp.status_code == 200
-    assert resp.json()["olvido_dirigido"] is False
+    assert resp.json()["directed_forgetting"] is False
 
 
 @pytest.mark.asyncio
 async def test_repasos_lista_forma_y_vacia(cliente: AsyncClient) -> None:
     """GET /repasos → lista (quizá vacía) con el shape del SRS."""
-    resp = await cliente.get("/api/repasos", params={"limite": 5})
+    resp = await cliente.get("/api/reviews", params={"limit": 5})
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
 
@@ -212,32 +212,32 @@ async def test_confianza_fuente_aisla_y_aprueba(
     """POST /fuentes/{n}/confianza → cuarentena y liberación."""
     nombre = f"{FUENTE_TEST}_no_confiable"
     alta = await cliente.post(
-        "/api/eventos",
+        "/api/events",
         json={
-            "contenido": "dato sospechoso indexado igual",
-            "fuente": nombre,
+            "content": "dato sospechoso indexado igual",
+            "source": nombre,
         },
     )
     assert alta.status_code == 200
     # Aislar: la fuente queda marcada y sus eventos nuevos entran
     # en cuarentena.
     resp = await cliente.post(
-        f"/api/fuentes/{nombre}/confianza", json={"confiable": False}
+        f"/api/sources/{nombre}/trust", json={"trusted": False}
     )
     assert resp.status_code == 200
-    assert resp.json()["confiable"] is False
+    assert resp.json()["trusted"] is False
     # Aprobar: libera la cuarentena acumulada.
     resp = await cliente.post(
-        f"/api/fuentes/{nombre}/confianza", json={"confiable": True}
+        f"/api/sources/{nombre}/trust", json={"trusted": True}
     )
     assert resp.status_code == 200
-    assert resp.json()["confiable"] is True
+    assert resp.json()["trusted"] is True
 
 
 @pytest.mark.asyncio
 async def test_cuarentena_lista_forma(cliente: AsyncClient) -> None:
     """GET /cuarentena → lista de eventos aislados por fuente."""
-    resp = await cliente.get("/api/cuarentena", params={"limite": 10})
+    resp = await cliente.get("/api/quarantine", params={"limit": 10})
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
 
@@ -248,16 +248,16 @@ async def test_aplazar_intencion_devuelve_timestamp(
 ) -> None:
     """POST /intenciones/{id}/aplazar → nueva marca temporal."""
     alta = await cliente.post(
-        "/api/intenciones",
+        "/api/intentions",
         json={
-            "intencion": "revisar el deploy de mañana",
-            "en": "2d",
+            "intention": "revisar el deploy de mañana",
+            "at": "2d",
         },
     )
     assert alta.status_code == 200
     iid = alta.json()["id"]
     resp = await cliente.post(
-        f"/api/intenciones/{iid}/aplazar", json={"segundos": 7200}
+        f"/api/intentions/{iid}/snooze", json={"seconds": 7200}
     )
     assert resp.status_code == 200
-    assert "aplazada_hasta" in resp.json()
+    assert "snoozed_until" in resp.json()

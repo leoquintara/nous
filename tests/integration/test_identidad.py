@@ -426,14 +426,14 @@ class TestRolesEndToEnd:
         )
         try:
             # Viewer: GET pasa, POST devuelve 403.
-            r_get = await cliente.get("/api/eventos")
+            r_get = await cliente.get("/api/events")
             assert r_get.status_code == 200
             r_post = await cliente.post(
-                "/api/eventos",
+                "/api/events",
                 json={
-                    "contenido": "intento de viewer",
-                    "dimension": "cognitiva",
-                    "fuente": "test_mt",
+                    "content": "intento de viewer",
+                    "dimension": "cognitive",
+                    "source": "test_mt",
                 },
             )
             assert r_post.status_code == 403
@@ -450,11 +450,11 @@ class TestRolesEndToEnd:
         )
         try:
             r_post = await cliente.post(
-                "/api/eventos",
+                "/api/events",
                 json={
-                    "contenido": "evento del member",
-                    "dimension": "cognitiva",
-                    "fuente": "test_mt",
+                    "content": "evento del member",
+                    "dimension": "cognitive",
+                    "source": "test_mt",
                 },
             )
             assert r_post.status_code == 200

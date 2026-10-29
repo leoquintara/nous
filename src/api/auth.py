@@ -45,6 +45,17 @@ logger = logging.getLogger("nous.auth")
 _bearer = HTTPBearer(auto_error=False)
 _advertencia_emitida = False
 
+# Sondas de vida, el login del dashboard y el canje de invitaciones
+# (el token ns_inv_ es la credencial) son públicos por diseño.
+RUTAS_PUBLICAS: frozenset[str] = frozenset(
+    {
+        "/health",
+        "/api/health",
+        "/api/login",
+        "/api/invitations/redeem",
+    }
+)
+
 
 def token_configurado() -> str | None:
     """Retorna el API token configurado o None en modo desarrollo."""
@@ -209,16 +220,9 @@ class BearerTokenMiddleware:
         if scope["type"] != "http":
             await self._app(scope, receive, send)
             return
-        # Sondas de vida, el login del dashboard, el canje de
-        # invitaciones (el token ns_inv_ es la credencial) y los
-        # preflight CORS son públicos por diseño.
+        # Los preflight CORS son públicos por diseño.
         path = scope.get("path", "")
-        if scope.get("method") == "OPTIONS" or path in (
-            "/health",
-            "/api/health",
-            "/api/login",
-            "/api/invitaciones/canjear",
-        ):
+        if scope.get("method") == "OPTIONS" or path in RUTAS_PUBLICAS:
             await self._app(scope, receive, send)
             return
         # El dashboard estático (HTML/JS/CSS) es UI pública: no
