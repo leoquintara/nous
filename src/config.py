@@ -55,6 +55,15 @@ class Settings(BaseSettings):
     # candidatos sí escala con threads (~29% más rápido de 4 a 8 en
     # CPU de 12 cores; >8 empeora por oversubscription).
     reranker_threads: int = 8
+    # Techo de tokens por par (query, candidato) en el cross-encoder.
+    # El modelo fue entrenado sobre pasajes MS MARCO (~150-300 tok):
+    # 512 pagaba ~1.9s por lote de 10 en páginas largas — costo
+    # cuadrático sin ganancia de fidelidad. 256 corta el p95 a ~1/4.
+    reranker_max_tokens: int = 224
+    # Caracteres del candidato que entran al par de reranking — la
+    # cabeza del documento (título + lead) es donde vive la señal
+    # de relevancia en páginas largas; el resto diluye y encarece.
+    reranker_max_caracteres: int = 1100
     cache_embeddings_max: int = 256
     dedup_umbral: float = 0.95
     dedup_ventana_segundos: int = 3600

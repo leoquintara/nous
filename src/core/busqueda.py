@@ -637,8 +637,22 @@ class BusquedaHibrida4D:
         """Reordena los mejores candidatos con el cross-encoder local."""
         assert self._reordenador is not None
         candidatos = resultados[: self._rerank_candidatos]
-        textos = [r.evento.contenido if r.evento else "" for r in candidatos]
-        logits = await self._reordenador.puntuar(query, textos)
+        cap = get_settings().reranker_max_caracteres
+        textos = [
+            r.evento.contenido[:cap] if r.evento else "" for r in candidatos
+        ]
+        # O custo do batch ONNX é ditado pela sequência mais longa
+        # (padding quadrado). Dois lotes por tamanho — os documentos
+        # curtos não pagam o padding dos longos.
+        curtos = [(i, t) for i, t in enumerate(textos) if len(t) <= 700]
+        longos = [(i, t) for i, t in enumerate(textos) if len(t) > 700]
+        logits = [0.0] * len(textos)
+        for lote in (curtos, longos):
+            if not lote:
+                continue
+            scores = await self._reordenador.puntuar(query, [t for _, t in lote])
+            for i, logit in zip((i for i, _ in lote), scores, strict=True):
+                logits[i] = logit
         score_max = candidatos[0].score_final
         reordenados = [
             replace(
