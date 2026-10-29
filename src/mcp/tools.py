@@ -146,6 +146,7 @@ from src.core.routing import (
     fecha_asof,
 )
 from src.core.temporal import detectar_trayectorias, proyectar
+from src.mcp.contract import ingles
 from src.mcp.server import mcp_server
 from src.storage.chunks import indexar_chunks_evento
 from src.storage.database import crear_engine, get_session, obtener_engine
@@ -277,7 +278,7 @@ async def _ctx_escritura(workspace: str | None = None) -> Contexto:
     """Contexto con permiso de escritura; rechaza viewers."""
     ctx = await _ctx(workspace)
     if not ctx.puede_escribir:
-        raise PermisoDenegadoError("rol de solo lectura: sin permiso de escritura")
+        raise PermisoDenegadoError("read-only role: no write permission")
     return ctx
 
 
@@ -591,20 +592,20 @@ async def _recordar(
     """
     ctx = await _ctx_escritura(workspace)
     if not 0.0 <= amplitud <= 1.0:
-        raise ErrorValidacion("amplitud debe estar entre 0.0 y 1.0")
+        raise ErrorValidacion("amplitude must be between 0.0 and 1.0")
     if frecuencia is not None and frecuencia <= 0.0:
-        raise ErrorValidacion("frecuencia debe ser positiva (Hz)")
+        raise ErrorValidacion("frequency must be positive (Hz)")
     if tipo not in TIPOS_EVENTO:
-        raise ErrorValidacion(f"tipo debe ser uno de {', '.join(TIPOS_EVENTO)}")
+        raise ErrorValidacion(f"kind must be one of {', '.join(TIPOS_EVENTO)}")
     if estado_emocional is not None and not -1.0 <= estado_emocional <= 1.0:
-        raise ErrorValidacion("estado_emocional debe estar entre -1.0 y 1.0")
+        raise ErrorValidacion("emotional_state must be between -1.0 and 1.0")
     ts = timestamp_unix if timestamp_unix is not None else int(time.time())
     try:
         expira_en = parsear_ttl(ttl, ts)
     except ValueError as e:
         raise ErrorValidacion(str(e)) from e
     if con_quien and tipo != "compromiso":
-        raise ErrorValidacion("con_quien solo aplica a tipo='compromiso'")
+        raise ErrorValidacion("with_whom only applies to kind='commitment'")
     respuesta: dict[str, Any] = {}
     if dimension is None:
         resultado = await _obtener_clasificador().clasificar(contenido)
@@ -671,10 +672,10 @@ async def _recordar(
             try:
                 viejo_id = uuid.UUID(str(reemplaza_id))
             except (ValueError, AttributeError) as e:
-                raise ErrorValidacion(f"reemplaza_id no es un UUID válido: {reemplaza_id!r}") from e
+                raise ErrorValidacion(f"supersedes_id is not a valid UUID: {reemplaza_id!r}") from e
             viejo = await repo.obtener(viejo_id)
             if viejo is None:
-                raise ErrorValidacion(f"el evento a reemplazar no existe: {reemplaza_id}")
+                raise ErrorValidacion(f"event to supersede not found: {reemplaza_id}")
             await repo.marcar_reemplazado(viejo_id, evento.id)
             if await relaciones.vincular(viejo_id, evento.id, "reemplaza"):
                 respuesta["reemplaza"] = str(viejo_id)
@@ -1686,7 +1687,7 @@ async def _linea(
 ) -> list[dict[str, Any]]:
     """Devuelve los eventos del rango temporal en orden cronológico."""
     if desde_unix > hasta_unix:
-        raise ErrorValidacion("desde_unix debe ser <= hasta_unix")
+        raise ErrorValidacion("from_unix must be <= to_unix")
     ctx = await _ctx(workspace)
     async with get_session(obtener_engine()) as session:
         eventos = await EventoRepository(session, ctx).listar_por_rango(
@@ -1797,15 +1798,15 @@ async def _cerrar_loop(
     try:
         cid = uuid.UUID(str(compromiso_id))
     except (ValueError, AttributeError) as e:
-        raise ErrorValidacion(f"compromiso_id no es un UUID válido: {compromiso_id!r}") from e
+        raise ErrorValidacion(f"commitment_id is not a valid UUID: {compromiso_id!r}") from e
     async with get_session(obtener_engine()) as session:
         repo = EventoRepository(session, ctx)
         compromiso = await repo.obtener(cid)
         if compromiso is None:
-            raise ErrorValidacion(f"compromiso no encontrado: {compromiso_id}")
+            raise ErrorValidacion(f"commitment not found: {compromiso_id}")
         if compromiso.tipo != "compromiso":
             raise ErrorValidacion(
-                f"el evento {compromiso_id} es tipo '{compromiso.tipo}', " "no 'compromiso'"
+                f"event {compromiso_id} is kind '{compromiso.tipo}', " "not 'commitment'"
             )
     cierre = await _recordar(
         resolucion,
@@ -1838,7 +1839,7 @@ async def _olvidar(evento_id: str) -> dict[str, Any]:
     try:
         eid = uuid.UUID(str(evento_id))
     except (ValueError, AttributeError) as e:
-        raise ErrorValidacion(f"evento_id no es un UUID válido: {evento_id!r}") from e
+        raise ErrorValidacion(f"event_id is not a valid UUID: {evento_id!r}") from e
     async with get_session(obtener_engine()) as session:
         # Borrado ajeno solo para owners: un member puede olvidar
         # sus propias memorias, no las del resto del workspace.
@@ -1850,7 +1851,7 @@ async def _olvidar(evento_id: str) -> dict[str, Any]:
             and objetivo_borrar.autor_id is not None
             and objetivo_borrar.autor_id != ctx.usuario_id
         ):
-            raise PermisoDenegadoError("solo el owner puede borrar memorias de otros miembros")
+            raise PermisoDenegadoError("only the owner can delete other members' memories")
         vinculos = await RelacionRepository(session).eliminar_de(eid)
         ok = await repo.eliminar(eid)
         await session.commit()
@@ -1899,14 +1900,14 @@ async def _crear_objetivo(
     """Persiste un objetivo que ancla una proyección futura."""
     titulo = titulo.strip()
     if not titulo:
-        raise ErrorValidacion("el titulo del objetivo no puede estar vacío")
+        raise ErrorValidacion("goal title cannot be empty")
     if dimension is not None and dimension not in (
         "cognitiva",
         "somatica",
         "conductual",
     ):
         raise ErrorValidacion(
-            f"dimension inválida: {dimension!r} " "(cognitiva|somatica|conductual)"
+            f"invalid dimension: {dimension!r} " "(cognitive|somatic|behavioral)"
         )
     ctx = await _ctx_escritura(workspace)
     async with get_session(obtener_engine()) as session:
@@ -1932,11 +1933,11 @@ async def _actualizar_objetivo(objetivo_id: str, cambios: dict[str, Any]) -> dic
     try:
         oid = uuid.UUID(str(objetivo_id))
     except (ValueError, AttributeError) as e:
-        raise ErrorValidacion(f"objetivo_id no es un UUID válido: {objetivo_id!r}") from e
+        raise ErrorValidacion(f"goal_id is not a valid UUID: {objetivo_id!r}") from e
     async with get_session(obtener_engine()) as session:
         objetivo = await ObjetivoRepository(session, ctx).actualizar(oid, cambios)
         if objetivo is None:
-            raise ErrorValidacion(f"objetivo no encontrado: {objetivo_id}")
+            raise ErrorValidacion(f"goal not found: {objetivo_id}")
         await session.commit()
     return _objetivo_a_dict(objetivo)
 
@@ -1951,7 +1952,7 @@ async def _cumplir_objetivo(
     persistida, nunca borrado.
     """
     if estado not in ("cumplido", "abandonado"):
-        raise ErrorValidacion(f"estado de cierre inválido: {estado!r} (cumplido|abandonado)")
+        raise ErrorValidacion(f"invalid closing status: {estado!r} (fulfilled|abandoned)")
     cambios: dict[str, Any] = {"estado": estado}
     if resolucion:
         cierre = await _recordar(
@@ -2110,6 +2111,7 @@ async def _proyectar(
 
 
 @mcp_server.tool()
+@ingles
 async def recordar_evento(
     contenido: str,
     dimension: Literal["cognitiva", "somatica", "conductual"] | None = None,
@@ -2130,87 +2132,7 @@ async def recordar_evento(
     estado_emocional: float | None = None,
     parametrica: bool = False,
 ) -> dict[str, Any]:
-    """Guarda un evento nuevo en la memoria persistente 4D del usuario.
-
-    USAR CUANDO: haya que registrar un pensamiento, decisión, emoción,
-    estado corporal o acción para consultarlo en el futuro.
-    NO usar para buscar memorias existentes: eso es consultar_memoria.
-    NO usar para listar un rango de fechas: obtener_linea_de_universo.
-
-    El contenido se vectoriza localmente en segundo plano (nada sale
-    de la máquina): la respuesta es inmediata ("indexado": false) y la
-    búsqueda semántica lo encuentra milisegundos después. La búsqueda
-    por texto lo ve al instante. Si no indicas dimension, se clasifica
-    automáticamente por semejanza semántica.
-    Separación de patrones: un evento casi idéntico registrado dentro
-    de la última hora no se duplica — al indexarse se fusiona con el
-    existente (refuerzo). Eventos recurrentes en momentos distintos sí
-    crean huellas separadas.
-
-    Args:
-        contenido: Texto del evento (p. ej. "decidí usar PostgreSQL").
-        dimension: "cognitiva" (ideas/decisiones/reflexiones),
-            "somatica" (emociones/energía/cuerpo) o "conductual"
-            (acciones/hábitos/commits). Omitir para clasificación automática.
-        fuente: Origen del evento (p. ej. "devin", "claude", "usuario").
-        amplitud: Intensidad/importancia entre 0.0 y 1.0. Default 0.5.
-        frecuencia: Frecuencia cerebral estimada en Hz si proviene de
-            un wearable/EEG (Delta <4, Theta 4-8, Alfa 8-13, Beta 13-30,
-            Gamma >30). Omitir si no hay dato biométrico; Nous no la
-            estima por sí solo.
-        timestamp_unix: Unix epoch en SEGUNDOS. Default: ahora.
-        relaciona_ids: UUIDs de eventos existentes a vincular
-            explícitamente con este (p. ej. cuando el usuario declara
-            que dos hechos van juntos). Los ids inválidos o inexistentes
-            se ignoran.
-        tags: Etiquetas que relacionan el contenido con otras memorias
-            (p. ej. ["trabajo", "franz"]). Los #hashtags escritos en el
-            propio contenido se extraen y fusionan automáticamente.
-        rama: Línea de universo donde registrar el evento
-            ("main" por defecto). Las ramas son líneas paralelas que
-            divergen de la principal, útiles para escenarios.
-        tipo: Clase epistémica del recuerdo — "evento" (default),
-            "hecho" (dato objetivo), "creencia" (opinión revisable),
-            "compromiso" (promesa pendiente → abre un loop que
-            compromisos_abiertos lista hasta que se cierre) o
-            "preferencia" (gusto del usuario).
-        ttl: Caducidad del recuerdo — "30d", "12h", "45m", "2w" o
-            epoch Unix. Omitido = no expira. Los expirados dejan de
-            ser evocables por búsqueda pero quedan en la línea.
-        reemplaza_id: UUID del evento que este sustituye (supersede):
-            "mi peso es 79" reemplaza a "mi peso es 80". El viejo queda
-            para arqueología en la línea; el nuevo encabeza la cadena.
-        con_quien: Solo con tipo="compromiso" — la contraparte que
-            espera respuesta (persona, equipo, sistema).
-        scope: "personal" (solo tú lo ves, default — nada se filtra al
-            equipo por accidente) o "workspace" (visible para todo el
-            equipo del workspace).
-        workspace: Slug o UUID del workspace destino (override del
-            default de la key). Requiere membresía en el destino.
-        tipo_memoria: ADR-003 — "episodica", "semantica" o
-            "procedimental" si el llamador ya lo sabe (p. ej. un
-            check-in declara "episodica"). Omitir para que el
-            clasificador lo estime en la indexación.
-        estado_emocional: Valencia afectiva declarada entre -1.0 y
-            1.0 (negativo → positivo). Si viene, el estimador léxico
-            no la sobrescribe. Útil para check-ins somáticos.
-        parametrica: True si el contenido se afirma desde el
-            conocimiento paramétrico del agente (sus pesos), no de
-            una observación o fuente — la confianza al evocarlo
-            queda techada a 0.70 hasta que la realidad lo corrobore
-            (3 refuerzos útiles o aprobación humana). USAR para
-            honestidad epistémica: "creo que…" ≠ "vi que…".
-
-    Returns:
-        Dict con "id", "timestamp_unix", "dimension" usada,
-        "indexado" (false mientras el embedding se genera en segundo
-        plano), "confianza_clasificacion" si se clasificó
-        automáticamente, "vinculos_creados" si se pidieron vínculos y
-        "contexto": {"completo": bool, ...} — si el evento menciona
-        entidades sin antecedentes en la memoria, completo=false y la
-        sugerencia indica qué preguntar al usuario para completar el
-        panorama. RESPONDE preguntando por esa pieza cuando aparezca.
-    """
+    """Deprecated alias — use ``remember`` instead."""
     return await _recordar(
         contenido,
         dimension,
@@ -2234,114 +2156,50 @@ async def recordar_evento(
 
 
 @mcp_server.tool()
+@ingles
 async def compromisos_abiertos(
     rama: str = "main",
     workspace: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Lista los compromisos abiertos — quién espera respuesta tuya.
-
-    USAR CUANDO: preguntes "qué tengo pendiente", "a quién le debo
-    respuesta" o quieras revisar promesas sin cerrar. Un compromiso
-    permanece abierto hasta que se cierra con cerrar_compromiso —
-    nunca se borra, solo cambia de estado.
-
-    Args:
-        rama: Línea de universo a consultar ("main" por defecto).
-        workspace: Slug o UUID del workspace a consultar (override
-            del default de la key).
-
-    Returns:
-        Compromisos con id, contenido, con_quien (contraparte),
-        timestamp_unix y dias_abierto — los más antiguos primero.
-    """
+    """Deprecated alias — use ``open_commitments`` instead."""
     return await _open_loops(rama, workspace)
 
 
 @mcp_server.tool()
+@ingles
 async def cerrar_compromiso(
     compromiso_id: str,
     resolucion: str,
     fuente: str = "agente",
 ) -> dict[str, Any]:
-    """Cierra un compromiso abierto registrando su resolución.
-
-    USAR CUANDO: el usuario cumplió o descartó una promesa que estaba
-    abierta. El cierre es una transición con auditoría — el compromiso
-    queda en la línea enlazado al evento de resolución (relación
-    "cierra"), nunca se borra.
-
-    Args:
-        compromiso_id: UUID del compromiso (de compromisos_abiertos).
-        resolucion: Texto de cómo se resolvió ("le respondí a Franz").
-        fuente: Origen del cierre (default "agente").
-
-    Returns:
-        Dict con compromiso_id, cierre_id (evento de resolución) y
-        estado="cerrado".
-    """
+    """Deprecated alias — use ``close_commitment`` instead."""
     return await _cerrar_loop(compromiso_id, resolucion, fuente)
 
 
 @mcp_server.tool()
+@ingles
 async def contexto_inicial(
     top_n: int = 8,
     presupuesto: int | None = None,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Pack de arranque de sesión: qué traigo a esta conversación.
-
-    USAR CUANDO: inicies una sesión con el usuario o tras un cambio de
-    contexto — devuelve guardrails + memoria núcleo + compromisos
-    abiertos + hechos calientes en UNA llamada, sin LLM ni latencia
-    de búsqueda. No reemplaza a consultar_memoria para preguntas
-    concretas.
-
-    Con ``presupuesto`` (caracteres) además devuelve ``snapshot``: un
-    bloque frozen-snapshot para inyectar UNA VEZ en el system prompt
-    al abrir la sesión — lo que no cupo queda reportado en
-    ``omitidos`` y se alcanza con consultar_memoria si hace falta.
-
-    Args:
-        top_n: Eventos núcleo y hechos calientes a incluir (máx. 16).
-        presupuesto: Máximo de caracteres del snapshot (p. ej. 4000
-            ≈1000 tokens). Omitir = pack completo sin snapshot.
-        workspace: Slug o UUID del workspace a consultar.
-
-    Returns:
-        Dict con "censores", "nucleo", "curado", "loops", "calientes",
-        "stats" y, con presupuesto, "snapshot"/"presupuesto_usado"/
-        "omitidos".
-    """
+    """Deprecated alias — use ``bootstrap_context`` instead."""
     return await _contexto_inicial(top_n, presupuesto, workspace)
 
 
 @mcp_server.tool()
+@ingles
 async def listar_objetivos(
     estado: str = "activo",
     rama: str = "main",
     workspace: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Lista los objetivos del usuario — las metas que anclan el futuro.
-
-    USAR CUANDO: preguntes "qué metas tengo", "para cuándo es X" o
-    quieras ver hacia qué convergen las proyecciones. Un objetivo
-    tiene fecha límite y dimensión opcional; su ciclo de vida es
-    auditable (activo → cumplido/abandonado).
-
-    Args:
-        estado: Filtro de ciclo de vida ("activo" default,
-            "cumplido", "abandonado", "*" para todos).
-        rama: Línea de universo a consultar ("main" por defecto).
-        workspace: Slug o UUID del workspace a consultar.
-
-    Returns:
-        Objetivos con id, titulo, dimension, fecha_objetivo, estado —
-        ordenados por fecha límite, el más próximo primero.
-    """
+    """Deprecated alias — use ``list_goals`` instead."""
     return await _objetivos(None if estado == "*" else estado, rama, workspace)
 
 
 @mcp_server.tool()
+@ingles
 async def crear_objetivo(
     titulo: str,
     fecha_objetivo: int,
@@ -2351,58 +2209,26 @@ async def crear_objetivo(
     scope: Literal["personal", "workspace"] = "personal",
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Fija una meta en la línea de universo — las proyecciones
-    fantasma convergen hacia ella.
-
-    USAR CUANDO: el usuario declare una meta con plazo ("quiero
-    lanzar nous en junio", "meditar 30 días"). El timestamp es Unix
-    epoch en SEGUNDOS. Sin dimensión = objetivo transversal.
-
-    Args:
-        titulo: Nombre corto de la meta.
-        fecha_objetivo: Fecha límite, Unix epoch en segundos.
-        dimension: cognitiva|somatica|conductual, o None transversal.
-        descripcion: Detalle opcional de la meta.
-        rama: Línea de universo donde vive ("main" por defecto).
-        scope: "personal" (solo tú la ves, default) o "workspace"
-            (meta del equipo, visible para todos).
-        workspace: Slug o UUID del workspace destino.
-
-    Returns:
-        El objetivo creado con su id.
-    """
+    """Deprecated alias — use ``create_goal`` instead."""
     return await _crear_objetivo(
         titulo, fecha_objetivo, dimension, descripcion, rama, scope, workspace
     )
 
 
 @mcp_server.tool()
+@ingles
 async def cerrar_objetivo(
     objetivo_id: str,
     estado: str,
     resolucion: str | None = None,
     fuente: str = "agente",
 ) -> dict[str, Any]:
-    """Cierra un objetivo como cumplido o abandonado — transición
-    auditable, nunca borrado.
-
-    USAR CUANDO: el usuario logró o descartó una meta. Si pasas
-    ``resolucion`` se registra como evento conductual enlazado al
-    objetivo — la línea conserva cómo se resolvió.
-
-    Args:
-        objetivo_id: UUID del objetivo (de listar_objetivos).
-        estado: "cumplido" o "abandonado".
-        resolucion: Texto opcional del cierre ("lancé la beta").
-        fuente: Origen del cierre (default "agente").
-
-    Returns:
-        El objetivo actualizado con su nuevo estado.
-    """
+    """Deprecated alias — use ``close_goal`` instead."""
     return await _cumplir_objetivo(objetivo_id, estado, resolucion, fuente)
 
 
 @mcp_server.tool()
+@ingles
 async def consultar_memoria(
     consulta: str,
     top_n: int = 10,
@@ -2410,36 +2236,7 @@ async def consultar_memoria(
     workspace: str | None = None,
     max_tokens: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Busca memorias del usuario por TEMA con búsqueda híbrida 4D.
-
-    USAR CUANDO: haya que recuperar lo que el usuario pensó, sintió o
-    hizo relacionado con un tema ("qué decidí sobre X", "cómo me sentía
-    la semana pasada"). Combina coincidencia textual + similitud
-    semántica + reranking local, ordenado por relevancia.
-
-    NO usar para guardar eventos: recordar_evento.
-    NO usar para recorrer un rango de fechas: obtener_linea_de_universo.
-
-    Args:
-        consulta: Pregunta o tema en lenguaje natural.
-        top_n: Máximo de resultados (1-50). Default 10.
-        rama: Línea de universo a consultar — "main" por defecto, así
-            los escenarios en ramas alternativas no contaminan el
-            recuerdo de la línea real. Usa "*" para todas las ramas.
-        workspace: Slug o UUID del workspace a consultar (override del
-            default de la key). Requiere membresía.
-        max_tokens: Presupuesto de tokens de la respuesta — la cola
-            de resultados se sacrifica primero y los omitidos se
-            declaran. None = sin recorte.
-
-    Returns:
-        Resultados ordenados por relevancia; cada uno trae el "evento"
-        completo, sus scores y "contexto_temporal": los eventos que
-        ocurrieron justo antes y después en la línea de tiempo. Las
-        consultas temporales/entidad declaran además su veredicto
-        (op, certeza, falsado, conflictos) y, cuando amerita, una
-        clarificación sugerida.
-    """
+    """Deprecated alias — use ``recall`` instead."""
     return await _consultar(
         consulta,
         top_n,
@@ -2476,35 +2273,18 @@ async def _mapa_lagunas(
 
 
 @mcp_server.tool()
+@ingles
 async def mapa_lagunas(
     consulta: str,
     top_n: int = 10,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Lo que la memoria NO sabe sobre la consulta — el mapa de huecos.
-
-    USAR CUANDO: antes de afirmar algo conviene saber si la memoria
-    lo respalda — una respuesta honesta declara qué faltó, no solo
-    qué encontró. Ejecuta la misma búsqueda que consultar_memoria y
-    reporta cobertura, confianza media y las lagunas concretas
-    (dimensiones sin evidencia, evidencia débil, contenido puramente
-    paramétrico).
-
-    Args:
-        consulta: Pregunta o tema en lenguaje natural.
-        top_n: Máximo de resultados a evaluar (default 10).
-        workspace: Slug o UUID del workspace a consultar.
-
-    Returns:
-        {consulta, resultados, cobertura, confianza_media, lagunas,
-        es_laguna_total, n_parametricas} — ``lagunas`` lista cada
-        hueco en lenguaje legible; vacía = la consulta quedó bien
-        cubierta.
-    """
+    """Deprecated alias — use ``gap_map`` instead."""
     return await _mapa_lagunas(consulta, top_n, workspace)
 
 
 @mcp_server.tool()
+@ingles
 async def obtener_linea_de_universo(
     desde_unix: int,
     hasta_unix: int,
@@ -2512,27 +2292,7 @@ async def obtener_linea_de_universo(
     rama: str = "main",
     workspace: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Devuelve los eventos de la línea temporal en un rango de fechas.
-
-    USAR CUANDO: el usuario pregunte "qué pasó ayer/esta semana/entre X
-    e Y" o se deba reconstruir su historia en un intervalo concreto.
-    Devuelve eventos en orden cronológico, del más antiguo al más nuevo.
-
-    NO usar para buscar por tema o semejanza: consultar_memoria.
-    Los timestamps son Unix epoch en SEGUNDOS, no milisegundos.
-
-    Args:
-        desde_unix: Inicio del rango, Unix epoch en segundos (inclusive).
-        hasta_unix: Fin del rango, Unix epoch en segundos (inclusive).
-        limite: Máximo de eventos a devolver (1-500). Default 100.
-        rama: Línea de universo a recorrer ("main" por defecto;
-            "*" para todas las ramas).
-        workspace: Slug o UUID del workspace a consultar.
-
-    Returns:
-        Eventos {"id","timestamp_unix","dimension","fuente","contenido",
-        "amplitud","frecuencia"} ordenados cronológicamente.
-    """
+    """Deprecated alias — use ``timeline`` instead."""
     return await _linea(
         desde_unix,
         hasta_unix,
@@ -2550,7 +2310,7 @@ async def _episodios(
 ) -> list[dict[str, Any]]:
     """Agrupa los eventos del rango en episodios por huecos temporales."""
     if desde_unix > hasta_unix:
-        raise ErrorValidacion("desde_unix debe ser <= hasta_unix")
+        raise ErrorValidacion("from_unix must be <= to_unix")
     gap = min(max(gap_max_segundos, 60), 86_400)
     ctx = await _ctx(workspace)
     async with get_session(obtener_engine()) as session:
@@ -2569,34 +2329,14 @@ async def _episodios(
 
 
 @mcp_server.tool()
+@ingles
 async def obtener_episodios(
     desde_unix: int,
     hasta_unix: int,
     gap_max_segundos: int = GAP_MAX_DEFECTO_SEGUNDOS,
     workspace: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Agrupa la línea temporal en episodios por huecos de inactividad.
-
-    USAR CUANDO: haya que entender la jornada del usuario en bloques
-    ("¿cómo fue mi día?", "¿en qué sesiones trabajé esta semana?").
-    Cada episodio resume inicio, fin, número de eventos y dimensión
-    dominante — la estructura narrativa de la línea, no los eventos
-    sueltos.
-
-    NO usar para buscar por tema: consultar_memoria.
-    NO usar para el detalle evento a evento: obtener_linea_de_universo.
-
-    Args:
-        desde_unix: Inicio del rango, Unix epoch en segundos.
-        hasta_unix: Fin del rango, Unix epoch en segundos.
-        gap_max_segundos: Hueco que separa dos episodios (60-86400).
-            Default 14400 (4 horas).
-        workspace: Slug o UUID del workspace a consultar.
-
-    Returns:
-        Episodios cronológicos con "inicio", "fin", "eventos",
-        "dimension_dominante" y "amplitud_media".
-    """
+    """Deprecated alias — use ``list_episodes`` instead."""
     return await _episodios(desde_unix, hasta_unix, gap_max_segundos, workspace)
 
 
@@ -2615,244 +2355,114 @@ def _trayectoria_a_dict(t: Trayectoria) -> dict[str, Any]:
 
 
 @mcp_server.tool()
+@ingles
 async def proyectar_trayectoria(
     horizonte_dias: int = 7,
     dias_historial: int = 30,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Proyecta la dimensión probable del futuro del usuario.
-
-    USAR CUANDO: pregunten hacia dónde va el usuario ("¿cómo ves mi
-    semana?", "¿qué patrón se está formando?", "¿qué es probable que
-    pase?"). Analiza el historial reciente, detecta rachas de dimensión
-    activas y proyecta la distribución probable de la dimensión dominante.
-
-    NO usar para recuperar memorias del pasado: consultar_memoria.
-    NO usar para listar eventos de un rango: obtener_linea_de_universo.
-    Cada llamada persiste la proyección como historial auditable.
-
-    Args:
-        horizonte_dias: Días hacia adelante a proyectar (1-90). Default 7.
-        dias_historial: Días de historial a analizar (1-365). Default 30.
-        workspace: Slug o UUID del workspace a consultar.
-
-    Returns:
-        Dict con "dimension_probable", "probabilidad", "distribucion"
-        por dimensión, "trayectorias" detectadas (con flag "activa") e
-        "id" de la proyección persistida en la tabla proyecciones.
-    """
+    """Deprecated alias — use ``project_trajectory`` instead."""
     return await _proyectar(horizonte_dias, dias_historial, workspace)
 
 
 @mcp_server.tool()
+@ingles
 async def olvidar_evento(evento_id: str) -> dict[str, Any]:
-    """Borra un evento de la memoria para siempre — derecho al olvido.
-
-    USAR CUANDO: el usuario pida explícitamente olvidar algo ("borra
-    eso", "no quiero que recuerdes X"). El evento y sus vínculos
-    desaparecen de la línea de universo; es irreversible.
-
-    NO usar para corregir un dato que sigue siendo válido con otro
-    valor: eso es ``reemplaza_id`` en recordar_evento (auditable).
-    NO usar para compromisos resueltos: cerrar_compromiso (el loop
-    queda cerrado en la línea, no borrado).
-
-    Args:
-        evento_id: UUID del evento a eliminar.
-
-    Returns:
-        Dict con "eliminado" y "vinculos_borrados".
-    """
+    """Deprecated alias — use ``forget_event`` instead."""
     return await _olvidar(evento_id)
 
 
 @mcp_server.tool()
+@ingles
 async def listar_tags(
     limite: int = 100,
     workspace: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Lista los tags de la memoria con su frecuencia de uso.
-
-    USAR CUANDO: necesites descubrir los hilos temáticos del usuario
-    antes de consultar (los tags enlazan eventos que comparten tema),
-    o para revisar qué etiquetas acumuló la memoria.
-
-    Args:
-        limite: Máximo de tags (1-500). Default 100.
-        workspace: Slug o UUID del workspace a consultar.
-
-    Returns:
-        [{"tag", "eventos"}] ordenados por frecuencia descendente.
-    """
+    """Deprecated alias — use ``list_tags`` instead."""
     return await _tags(min(max(limite, 1), 500), workspace)
 
 
 @mcp_server.tool()
+@ingles
 async def listar_fuentes(workspace: str | None = None) -> list[dict[str, Any]]:
-    """Lista las fuentes registradas y las usadas sin registrar.
-
-    USAR CUANDO: necesites saber de dónde viene la memoria (qué
-    agentes/importaciones escriben) o antes de crear una rama con
-    ramificar_fuente — la rama nace como sub-fuente de otra.
-
-    Args:
-        workspace: Slug o UUID del workspace a consultar.
-
-    Returns:
-        Fuentes con nombre, tipo, estado, namespace, rama_origen y
-        conteo de eventos.
-    """
+    """Deprecated alias — use ``list_sources`` instead."""
     return await _fuentes(workspace)
 
 
 @mcp_server.tool()
+@ingles
 async def ramificar_fuente(
     nombre: str,
     rama: str,
     namespace: str = "",
 ) -> dict[str, Any] | None:
-    """Crea una línea de universo alterna derivada de una fuente.
-
-    USAR CUANDO: el usuario quiera explorar un escenario sin tocar su
-    historia real ("¿y si hubiera...?"). La rama nace como sub-fuente
-    ``{nombre}:{rama}``: los eventos registrados bajo ella con
-    ``rama=<rama>`` viven en la línea paralela — comparten el pasado
-    pero divergen del presente, y consultar_memoria no los mezcla
-    con la línea main salvo que se pida ``rama="*"``.
-
-    Args:
-        nombre: Fuente origen (de listar_fuentes).
-        rama: Nombre de la línea alterna a crear.
-        namespace: Agrupador opcional (hereda el de la fuente).
-
-    Returns:
-        La sub-fuente creada, o None si la fuente origen no existe.
-    """
+    """Deprecated alias — use ``branch_source`` instead."""
     return await _ramificar_fuente(nombre, rama, namespace)
 
 
 @mcp_server.tool()
+@ingles
 async def listar_relaciones(
     limite: int = 500,
     workspace: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Lista los vínculos entre memorias — el grafo explícito.
-
-    USAR CUANDO: quieras ver cómo se conectan los recuerdos
-    (explícitos declarados con relaciona_ids y semánticos inferidos),
-    o auditar la estructura del grafo antes de proponer vínculos.
-
-    Args:
-        limite: Máximo de vínculos (1-5000). Default 500.
-        workspace: Slug o UUID del workspace a consultar.
-
-    Returns:
-        [{"origen_id", "destino_id", "tipo", "peso"}] recientes
-        primero.
-    """
+    """Deprecated alias — use ``list_relations`` instead."""
     return await _relaciones(limite, workspace)
 
 
 @mcp_server.tool()
+@ingles
 async def entidad(
     nombre: str,
     limite_menciones: int = 8,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Ficha de una entidad — persona, proyecto o concepto nombrado.
-
-    USAR CUANDO: la pregunta es «quién/qué es X», «cuándo apareció X»,
-    o necesitas todo lo que la memoria sabe de un mismo nombre: su
-    página propia, a qué documentos la ata el grafo, quién la
-    menciona, qué compromisos abiertos la involucran y su ventana
-    temporal (primera y última aparición). consultar_memoria recupera
-    documentos por relevancia; entidad devuelve la card completa.
-
-    Args:
-        nombre: Nombre de la entidad ("oscar", "Carlos", "kinam").
-        limite_menciones: Máximo de backlinks (1-24). Default 8.
-        workspace: Slug o UUID del workspace a consultar.
-
-    Returns:
-        {"encontrado", "card", "variantes", "vinculos", "menciones",
-        "compromisos_abiertos", "span"}. Si no hay página con ese
-        nombre, {"encontrado": false, "span"} — el span aún reporta
-        menciones sueltas en el cuerpo de otros documentos.
-    """
+    """Deprecated alias — use ``entity`` instead."""
     return await _entidad(nombre, limite_menciones, workspace)
 
 
 @mcp_server.tool()
+@ingles
 async def leer_preferencia(clave: str) -> dict[str, Any]:
-    """Lee un documento de preferencias persistido del usuario.
-
-    USAR CUANDO: necesites recordar una configuración duradera que el
-    usuario pidió en otra sesión ("prefiero respuestas breves",
-    "mi timezone es CDMX"). Las preferencias son JSON arbitrario
-    namespacado por clave — sobreviven sesiones y reinicios.
-
-    Args:
-        clave: Clave del documento (p. ej. "estilo.respuestas").
-
-    Returns:
-        El documento guardado, o {} si no existe.
-    """
+    """Deprecated alias — use ``read_preference`` instead."""
     return await _preferencia_leer(clave)
 
 
 @mcp_server.tool()
+@ingles
 async def guardar_preferencia(clave: str, valor: dict[str, Any]) -> dict[str, Any]:
-    """Persiste una preferencia duradera del usuario (upsert por clave).
-
-    USAR CUANDO: el usuario declare una preferencia estable de
-    comportamiento/configuración que aplique a futuras sesiones. Para
-    hechos sobre el mundo/la persona usa recordar_evento (tipo
-    "preferencia") — esto es para ajustes operativos del agente.
-
-    Args:
-        clave: Clave del documento (p. ej. "estilo.respuestas").
-        valor: Documento JSON a persistir.
-
-    Returns:
-        {"clave", "guardado": true}.
-    """
+    """Deprecated alias — use ``save_preference`` instead."""
     await _preferencia_guardar(clave, valor)
     return {"clave": clave, "guardado": True}
 
 
 @mcp_server.tool()
+@ingles
 async def render_persona(
+    filename: str | None = None,
     archivo: str | None = None,
 ) -> dict[str, Any]:
-    """Renderiza los archivos de identidad desde el banco de respuestas.
+    """Renders the agent persona files (SOUL.md, USER.md, ...).
 
-    USAR CUANDO: el banco ``persona.respuestas`` esté completo (o
-    actualizado) y haya que materializar SOUL.md / USER.md /
-    ACCESS_POLICY.md / HEARTBEAT.md. Devuelve el CONTENIDO — escribe
-    los archivos tú en el proyecto: el servidor puede correr en un
-    contenedor donde el path del proyecto no existe.
-
-    El banco se lee con ``leer_preferencia("persona.respuestas")`` y se
-    actualiza con ``guardar_preferencia`` o ``nous persona set`` — el
-    CLI materializa además a disco vía ``nous persona render``.
+    USE WHEN: producing the current persona documents from the stored
+    answer bank — for inspection or exporting identity config.
 
     Args:
-        archivo: Renderiza solo este archivo (p. ej. "SOUL.md"), o
-            None para los cuatro.
+        filename: Specific file to render (e.g. "SOUL.md"); None
+            renders the whole catalog with per-file completeness.
+        archivo: Deprecated Spanish alias of ``filename``.
 
     Returns:
-        {hash, archivos: {nombre: contenido}, faltantes: {nombre: [claves]}}.
-        `faltantes` vacío = render limpio; si un archivo tiene claves
-        sin responder se reporta y NO se incluye en `archivos`. El
-        `hash` es la huella del banco — si el .md en disco no salió de
-        este hash, hay drift.
+        Dict with "hash", rendered "files", "missing" required keys
+        per file and the "catalog" of required keys.
     """
+    elegido = filename or archivo
     banco = await _preferencia_leer(CLAVE_BANCO)
-    objetivos = [archivo] if archivo else list(ARCHIVOS)
+    objetivos = [elegido] if elegido else list(ARCHIVOS)
     for a in objetivos:
         if a not in ARCHIVOS:
             raise ErrorValidacion(
-                f"archivo de identidad desconocido: {a!r} — " f"válidos: {', '.join(ARCHIVOS)}"
+                f"unknown persona file: {a!r} — " f"valid: {', '.join(ARCHIVOS)}"
             )
     faltan = {a: list(faltantes(a, banco)) for a in objetivos}
     faltan = {a: f for a, f in faltan.items() if f}
@@ -2889,7 +2499,7 @@ async def _ctx_owner_en(workspace: str | None) -> Contexto:
     """
     ctx = await _ctx(workspace)
     if ctx.rol != "owner":
-        raise PermisoDenegadoError("se requiere rol owner en el workspace")
+        raise PermisoDenegadoError("owner role required in the workspace")
     return ctx
 
 
@@ -2900,20 +2510,13 @@ async def _miembro_por_handle(ctx: Contexto, handle: str) -> uuid.UUID:
     for m in miembros:
         if m.handle == handle:
             return m.usuario_id
-    raise ErrorValidacion(f"handle no es miembro del workspace: {handle!r}")
+    raise ErrorValidacion(f"handle is not a workspace member: {handle!r}")
 
 
 @mcp_server.tool()
+@ingles
 async def listar_workspaces() -> list[dict[str, Any]]:
-    """Lista los workspaces donde el usuario actual es miembro.
-
-    USAR CUANDO: necesites saber a qué workspaces pertenece el usuario,
-    su rol en cada uno, o resolver un slug antes de operar con el
-    parámetro ``workspace=`` de otras tools.
-
-    Returns:
-        Lista de {id, slug, nombre, rol} ordenada por creación.
-    """
+    """Deprecated alias — use ``list_workspaces`` instead."""
     engine = obtener_engine()
     ctx = await _ctx()
     return [
@@ -2923,24 +2526,12 @@ async def listar_workspaces() -> list[dict[str, Any]]:
 
 
 @mcp_server.tool()
+@ingles
 async def crear_workspace(slug: str, nombre: str) -> dict[str, Any]:
-    """Crea un workspace nuevo; el llamante queda como owner.
-
-    USAR CUANDO: el usuario pida crear un espacio de equipo o proyecto
-    ("crea un workspace para acme"). El slug es inmutable y público —
-    minúsculas, números y guiones. Después de crearlo, otras tools
-    aceptan ``workspace=slug`` y las escrituras usan scope="workspace".
-
-    Args:
-        slug: Identificador único (p. ej. "acme-corp").
-        nombre: Nombre legible (p. ej. "Acme Corp").
-
-    Returns:
-        {id, slug, nombre, rol: "owner"} del workspace creado.
-    """
+    """Deprecated alias — use ``create_workspace`` instead."""
     ctx = await _ctx()
     if ctx.usuario_id is None:
-        raise PermisoDenegadoError("sin identidad de usuario (modo desarrollo)")
+        raise PermisoDenegadoError("no user identity (development mode)")
     ws = await idn.crear_workspace(obtener_engine(), slug, nombre, ctx.usuario_id)
     return {
         "id": str(ws.id),
@@ -2951,17 +2542,11 @@ async def crear_workspace(slug: str, nombre: str) -> dict[str, Any]:
 
 
 @mcp_server.tool()
+@ingles
 async def listar_miembros(
     workspace: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Lista el roster de un workspace — cualquier miembro puede leerlo.
-
-    Args:
-        workspace: Slug o UUID del workspace (default: el activo).
-
-    Returns:
-        Lista de {usuario_id, handle, nombre, rol} por antigüedad.
-    """
+    """Deprecated alias — use ``list_members`` instead."""
     ctx = await _ctx(workspace)
     return [
         {
@@ -2975,26 +2560,13 @@ async def listar_miembros(
 
 
 @mcp_server.tool()
+@ingles
 async def invitar_miembro(
     rol: str = "member",
     dias: int = 7,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Emite un token de invitación ``ns_inv_*`` para un workspace.
-
-    USAR CUANDO: el usuario quiera sumar a alguien a un workspace.
-    Solo owners del workspace destino. El token se devuelve EN CLARO
-    una única vez — entrégalo al usuario para que lo comparta; el
-    invitado lo canjea en /unirse del dashboard o vía REST.
-
-    Args:
-        rol: Rol del invitado — "member" (escribe) o "viewer" (lee).
-        dias: Días hasta que expire el token (1-30).
-        workspace: Slug o UUID del workspace (default: el activo).
-
-    Returns:
-        {token, expira_dias, workspace, rol}.
-    """
+    """Deprecated alias — use ``invite_member`` instead."""
     ctx = await _ctx_owner_en(workspace)
     token = await idn.crear_invitacion(
         obtener_engine(),
@@ -3012,21 +2584,13 @@ async def invitar_miembro(
 
 
 @mcp_server.tool()
+@ingles
 async def cambiar_rol_miembro(
     handle: str,
     rol: str,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Cambia el rol de un miembro — solo owners del workspace.
-
-    Args:
-        handle: Handle del miembro (visible en listar_miembros).
-        rol: Nuevo rol — "member" o "viewer" (owner no es asignable).
-        workspace: Slug o UUID del workspace (default: el activo).
-
-    Returns:
-        {handle, rol} confirmado.
-    """
+    """Deprecated alias — use ``change_member_role`` instead."""
     ctx = await _ctx_owner_en(workspace)
     uid = await _miembro_por_handle(ctx, handle)
     await idn.cambiar_rol(obtener_engine(), ctx.workspace_id, uid, rol)
@@ -3034,22 +2598,12 @@ async def cambiar_rol_miembro(
 
 
 @mcp_server.tool()
+@ingles
 async def quitar_miembro(
     handle: str,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Expulsa un miembro del workspace — solo owners.
-
-    Sus memorias permanecen intactas (visibles según su scope); solo
-    pierde acceso. El último owner no puede ser expulsado.
-
-    Args:
-        handle: Handle del miembro a expulsar.
-        workspace: Slug o UUID del workspace (default: el activo).
-
-    Returns:
-        {handle, expulsado: true}.
-    """
+    """Deprecated alias — use ``remove_member`` instead."""
     ctx = await _ctx_owner_en(workspace)
     uid = await _miembro_por_handle(ctx, handle)
     await idn.quitar_miembro(obtener_engine(), ctx.workspace_id, uid)
@@ -3071,11 +2625,11 @@ async def _crear_intencion(
 ) -> dict[str, Any]:
     """Registra una intención prospectiva (time o event-based)."""
     if not intencion.strip():
-        raise ErrorValidacion("intencion no puede estar vacía")
+        raise ErrorValidacion("intention cannot be empty")
     if (en is None) == (cuando is None):
-        raise ErrorValidacion("declara exactamente un trigger: 'en' (fecha) o 'cuando' (evento)")
+        raise ErrorValidacion("declare exactly one trigger: 'at' (time) or 'when' (event)")
     if not 0.0 < umbral <= 1.0:
-        raise ErrorValidacion("umbral debe estar en (0, 1]")
+        raise ErrorValidacion("threshold must be in (0, 1]")
     ctx = await _ctx_escritura(workspace)
     ahora = int(time.time())
     if en is not None:
@@ -3084,7 +2638,7 @@ async def _crear_intencion(
         except ValueError as e:
             raise ErrorValidacion(str(e)) from e
         if ts is None or ts <= ahora:
-            raise ErrorValidacion("en debe resolver a un instante futuro")
+            raise ErrorValidacion("'at' must resolve to a future instant")
         trigger_tipo = "time"
         trigger_valor: dict[str, Any] = {"ts": ts}
     else:
@@ -3143,12 +2697,12 @@ async def _cancelar_intencion(intencion_id: str, workspace: str | None = None) -
     try:
         iid = uuid.UUID(str(intencion_id))
     except (ValueError, AttributeError) as e:
-        raise ErrorValidacion(f"intencion_id no es un UUID válido: {intencion_id!r}") from e
+        raise ErrorValidacion(f"intention_id is not a valid UUID: {intencion_id!r}") from e
     async with get_session(obtener_engine()) as session:
         ok = await IntencionProspectivaRepository(session, ctx).cancelar(iid, int(time.time()))
         await session.commit()
     if not ok:
-        raise ErrorValidacion(f"la intención no existe o ya está resuelta: {intencion_id}")
+        raise ErrorValidacion(f"intention does not exist or is already resolved: {intencion_id}")
     return {"id": str(iid), "cancelada": True}
 
 
@@ -3388,12 +2942,12 @@ async def _restaurar_evento(evento_id: str, workspace: str | None = None) -> dic
     try:
         eid = uuid.UUID(str(evento_id))
     except (ValueError, AttributeError) as e:
-        raise ErrorValidacion(f"evento_id no es un UUID válido: {evento_id!r}") from e
+        raise ErrorValidacion(f"event_id is not a valid UUID: {evento_id!r}") from e
     async with get_session(obtener_engine()) as session:
         ok = await EventoRepository(session, ctx).restaurar(eid)
         await session.commit()
     if not ok:
-        raise ErrorValidacion(f"el evento no existe o no está archivado: {evento_id}")
+        raise ErrorValidacion(f"event does not exist or is not archived: {evento_id}")
     return {"id": str(eid), "restaurado": True}
 
 
@@ -3407,7 +2961,7 @@ async def _marcar_curado(
     try:
         eid = uuid.UUID(str(evento_id))
     except (ValueError, AttributeError) as e:
-        raise ErrorValidacion(f"evento_id no es un UUID válido: {evento_id!r}") from e
+        raise ErrorValidacion(f"event_id is not a valid UUID: {evento_id!r}") from e
     async with get_session(obtener_engine()) as session:
         repo = EventoRepository(session, ctx)
         if curado:
@@ -3427,11 +2981,12 @@ async def _marcar_curado(
         ok = await repo.marcar_curado(eid, curado)
         await session.commit()
     if not ok:
-        raise ErrorValidacion(f"el evento no existe en tu visibilidad: {evento_id}")
+        raise ErrorValidacion(f"event not found in your visibility: {evento_id}")
     return {"id": str(eid), "curado": curado}
 
 
 @mcp_server.tool()
+@ingles
 async def crear_intencion(
     intencion: str,
     en: str | int | None = None,
@@ -3439,109 +2994,45 @@ async def crear_intencion(
     umbral: float = 0.6,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Registra una intención futura — memoria prospectiva.
-
-    USAR CUANDO: el usuario pida "recuérdame X el viernes" (trigger
-    temporal: ``en="3d"``, epoch, ISO…) o "avisame cuando alguien
-    mencione Y" (trigger de evento: ``cuando="texto a vigilar"``).
-    NO ES una proyección/alarma de calendario: Nous recuerda la
-    intención y la dispara cuando el trigger se cumple — en la
-    próxima consulta (time) o al llegar el evento que calza (event).
-
-    Args:
-        intencion: Qué recordar ("llamar a María").
-        en: Trigger temporal — "30d", "12h", epoch futuro.
-        cuando: Trigger de evento — texto; dispara cuando un evento
-            entrante lo cubre (similitud ≥ ``umbral``).
-        umbral: Similitud mínima para triggers de evento (default 0.6).
-        workspace: Slug o UUID del workspace destino.
-
-    Returns:
-        {id, intencion, trigger_tipo, dispara_en|trigger_query}.
-    """
+    """Deprecated alias — use ``create_intention`` instead."""
     return await _crear_intencion(intencion, en, cuando, umbral, workspace)
 
 
 @mcp_server.tool()
+@ingles
 async def listar_intenciones(
     ejecutadas: bool | None = None,
     workspace: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Lista las intenciones prospectivas registradas.
-
-    USAR CUANDO: quieras revisar qué recordatorios están pendientes,
-    cuáles ya se dispararon o auditar la memoria prospectiva.
-
-    Args:
-        ejecutadas: None = todas; False = solo pendientes; True = solo
-            ya disparadas.
-        workspace: Slug o UUID del workspace a consultar.
-
-    Returns:
-        [{id, intencion, trigger_tipo, trigger_valor, ejecutada, …}].
-    """
+    """Deprecated alias — use ``list_intentions`` instead."""
     return await _listar_intenciones(ejecutadas, workspace)
 
 
 @mcp_server.tool()
+@ingles
 async def cancelar_intencion(
     intencion_id: str,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Cancela una intención prospectiva pendiente.
-
-    USAR CUANDO: el usuario ya no quiera el recordatorio ("olvida lo
-    de llamar a María"). La intención queda cancelada — auditable,
-    no borrada.
-
-    Args:
-        intencion_id: UUID de la intención (de listar_intenciones).
-        workspace: Slug o UUID del workspace.
-
-    Returns:
-        {id, cancelada: true}.
-    """
+    """Deprecated alias — use ``cancel_intention`` instead."""
     return await _cancelar_intencion(intencion_id, workspace)
 
 
 @mcp_server.tool()
+@ingles
 async def consolidar_memoria(
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Ejecuta la consolidación-sueño — replay, promoción y olvido.
-
-    USAR CUANDO: quieras correr el ciclo de mantenimiento de memoria
-    (idealmente en quietud, como el sueño): fortalece lo importante
-    (replay), promueve a curado lo destacado (nunca decae) y archiva
-    lo débil/olvidado — reversible, con reporte auditable.
-    NO ES poda: nada se borra; lo archivado sigue en la worldline y
-    se restaura con restaurar_evento.
-
-    Args:
-        workspace: Slug o UUID del workspace a consolidar.
-
-    Returns:
-        {evaluados, fortalecidos, promovidos, archivados, resumen}.
-    """
+    """Deprecated alias — use ``consolidate_memory`` instead."""
     return await _consolidar(workspace)
 
 
 @mcp_server.tool()
+@ingles
 async def listar_reportes_consolidacion(
     workspace: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Lista los reportes de corridas de consolidación anteriores.
-
-    USAR CUANDO: quieras auditar qué hizo el sueño de consolidación —
-    qué se fortaleció, qué se archivó, qué se promovió a curado. Es
-    el diario del proceso: nada se olvida en silencio.
-
-    Args:
-        workspace: Slug o UUID del workspace.
-
-    Returns:
-        [{id, ejecutado_en, fortalecidos, archivados, promovidos}].
-    """
+    """Deprecated alias — use ``list_consolidation_reports`` instead."""
     ctx = await _ctx(workspace)
     async with get_session(obtener_engine()) as session:
         filas = await ReporteConsolidacionRepository(session, ctx).listar()
@@ -3559,81 +3050,39 @@ async def listar_reportes_consolidacion(
 
 
 @mcp_server.tool()
+@ingles
 async def minar_scripts(
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Detecta secuencias de comportamiento recurrentes (ADR-003).
-
-    USAR CUANDO: quieras descubrir patrones de acción del usuario
-    ("cada bug crítico: reproduzco → logs → fix → test") para
-    anticipar el siguiente paso. Re-mínalo tras registrar muchos
-    eventos nuevos; el upsert por nombre evita duplicados.
-
-    Args:
-        workspace: Slug o UUID del workspace a minar.
-
-    Returns:
-        {evaluados, detectados, guardados, scripts:[{pasos, soporte,
-        confianza}]}.
-    """
+    """Deprecated alias — use ``mine_scripts`` instead."""
     return await _minar_scripts(workspace)
 
 
 @mcp_server.tool()
+@ingles
 async def listar_scripts(
     workspace: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Lista los scripts/patrones detectados por minería.
-
-    USAR CUANDO: quieras ver qué rutinas conoce Nous del usuario —
-    secuencias recurrentes con su frecuencia y confianza.
-
-    Args:
-        workspace: Slug o UUID del workspace.
-
-    Returns:
-        [{id, nombre, pasos, frecuencia, confianza}].
-    """
+    """Deprecated alias — use ``list_scripts`` instead."""
     return await _listar_scripts(workspace)
 
 
 @mcp_server.tool()
+@ingles
 async def listar_archivados(
     workspace: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Lista las memorias archivadas por la consolidación-sueño.
-
-    USAR CUANDO: el usuario quiera revisar qué se "olvidó" — cada
-    archivado lleva su razón auditable y se restaura con
-    restaurar_evento. Nada desaparece en silencio.
-
-    Args:
-        workspace: Slug o UUID del workspace.
-
-    Returns:
-        [{id, contenido, archivado_en, razon_archivo}].
-    """
+    """Deprecated alias — use ``list_archived`` instead."""
     return await _listar_archivados(workspace)
 
 
 @mcp_server.tool()
+@ingles
 async def restaurar_evento(
     evento_id: str,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Restaura una memoria archivada — deshace el olvido.
-
-    USAR CUANDO: el usuario quiera recuperar algo que la consolidación
-    archivó ("en realidad sí me acuerdo de X"). Restaurar sube su
-    ``weight`` a 1.0 (re-aprendido) — vuelve a ser evocable.
-
-    Args:
-        evento_id: UUID del evento archivado (de listar_archivados).
-        workspace: Slug o UUID del workspace.
-
-    Returns:
-        {id, restaurado: true}.
-    """
+    """Deprecated alias — use ``restore_event`` instead."""
     return await _restaurar_evento(evento_id, workspace)
 
 
@@ -3680,7 +3129,7 @@ async def _consultar_decision(
     opciones = opciones or ["sí", "no"]
     opciones = [o.strip() for o in opciones if o and o.strip()]
     if len(opciones) < 2:
-        raise ErrorValidacion("se requieren al menos 2 opciones distintas")
+        raise ErrorValidacion("at least 2 distinct options are required")
     ctx = await _ctx(workspace)
     ahora = int(time.time())
     async with get_session(obtener_engine()) as session:
@@ -3705,8 +3154,8 @@ async def _consultar_decision(
                 "loops_abiertos": len(loops),
             },
             "mensaje": (
-                "sin provider System One (NOUS_DECISION_PROVIDER): "
-                "contexto 4D ensamblado, calibración ausente"
+                "no System One provider (NOUS_DECISION_PROVIDER): "
+                "4D context assembled, calibration unavailable"
             ),
         }
     from src.core.decision.consejero import recomendar
@@ -3717,7 +3166,7 @@ async def _consultar_decision(
             "disponible": False,
             "dilema": dilema,
             "opciones": opciones,
-            "mensaje": "el provider no devolvió respuesta útil",
+            "mensaje": "the provider returned no useful answer",
         }
     return {
         "disponible": True,
@@ -3737,37 +3186,13 @@ async def _consultar_decision(
 
 
 @mcp_server.tool()
+@ingles
 async def consultar_decision(
     dilema: str,
     opciones: list[str] | None = None,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Consejero prescriptivo sobre la línea de universo 4D (Pro).
-
-    USAR CUANDO: el usuario plantee un dilema concreto ("¿acepto este
-    proyecto?", "¿compro el equipo A o el B?") y quiera una
-    recomendación calibrada alimentada por SU historia — eventos
-    recientes, metas activas y loops abiertos componen el state del
-    modelo System One.
-
-    NO ES: memoria factual (usa ``consultar_memoria``), ni
-    extrapolación de rachas (usa ``proyectar_trayectoria``), ni
-    contexto para decidir solo (usa el prompt ``evaluar_decision``).
-    ``consultar_decision`` devuelve un veredicto con probabilidades;
-    presenta el razonamiento y deja la decisión al usuario.
-
-    Requiere licencia Pro (ADR-002 Nivel 2); sin provider System One
-    devuelve ``disponible=false`` con el contexto ensamblado.
-
-    Args:
-        dilema: La decisión en texto libre.
-        opciones: Opciones concretas (2-6); default ["sí", "no"].
-        workspace: Slug o UUID del workspace.
-
-    Returns:
-        {disponible, recomendacion, probabilidad, distribucion,
-        confianza, riesgo_oculto, motor, contexto}.
-    """
+    """Deprecated alias — use ``ask_decision`` instead."""
     return await _consultar_decision(dilema, opciones, workspace)
 
 
@@ -3797,8 +3222,8 @@ async def _recordar_borrador(
         activos = await repo.contar_vigentes(ahora)
         if not hay_cupo(activos):
             raise ErrorValidacion(
-                f"memoria de trabajo llena ({CAPACIDAD_MAX} borradores) — "
-                "ensaya uno para promoverlo o descarta"
+                f"working memory full ({CAPACIDAD_MAX} drafts) — "
+                "rehearse one to promote it or discard"
             )
         b = await repo.crear(
             BorradorModel(
@@ -3840,10 +3265,10 @@ async def _ensayar_borrador(
         repo = BorradorRepository(session, ctx)
         ensayos = await repo.ensayar(uuid.UUID(str(borrador_id)))
         if ensayos is None:
-            raise ErrorValidacion(f"borrador no existe o no es visible: {borrador_id}")
+            raise ErrorValidacion(f"draft does not exist or is not visible: {borrador_id}")
         b = await repo.obtener(uuid.UUID(str(borrador_id)))
         if b is None or esta_expirado(b.creado_en, ahora, b.expira_en - b.creado_en):
-            raise ErrorValidacion("borrador ya expiró — se perdió")
+            raise ErrorValidacion("draft already expired — it was lost")
         respuesta: dict[str, Any] = {"id": borrador_id, "ensayos": ensayos}
         if debe_promover(ensayos):
             contenido, dimension = b.contenido, b.dimension
@@ -3880,80 +3305,42 @@ async def _descartar_borrador(
 
 
 @mcp_server.tool()
+@ingles
 async def recordar_borrador(
     contenido: str,
     dimension: Literal["cognitiva", "somatica", "conductual"] = "cognitiva",
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Guarda un pensamiento volátil en la memoria de trabajo.
-
-    USAR CUANDO: el pensamiento es transitorio — borrador, hipótesis,
-    contexto de sesión que no merece aún largo plazo. NO ES la línea
-    de universo: expira en ~30 min sin ensayo (el olvido del buffer
-    es su función). Si se ensaya lo bastante (≥2 repasos) promueve
-    solo a evento real — la repetición es la señal de que importa.
-    Para memoria durable usa ``recordar_evento``.
-
-    Args:
-        contenido: Texto del borrador.
-        dimension: Dimensión del pensamiento (default cognitiva).
-        workspace: Slug o UUID del workspace destino.
-
-    Returns:
-        {id, expira_en, capacidad} del borrador guardado.
-    """
+    """Deprecated alias — use ``save_draft`` instead."""
     return await _recordar_borrador(contenido, dimension, workspace)
 
 
 @mcp_server.tool()
+@ingles
 async def listar_borrador(
     workspace: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Lista los borradores vivos de la memoria de trabajo.
-
-    USAR CUANDO: quieras ver qué tiene el agente "en mente" ahora —
-    pensamientos transitorios aún no promovidos ni expirados.
-
-    Returns:
-        [{id, contenido, dimension, ensayos, expira_en, expirado}].
-    """
+    """Deprecated alias — use ``list_drafts`` instead."""
     return await _listar_borrador(workspace)
 
 
 @mcp_server.tool()
+@ingles
 async def ensayar_borrador(
     borrador_id: str,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Ensaya (repasa) un borrador — la repetición lo promueve.
-
-    Cada ensayo suma una repetición; al llegar a
-    ``ENSAYOS_PARA_PROMOVER`` el borrador se gradúa solo: entra a la
-    línea de universo como evento real y sale del buffer. Es el
-    mecanismo por el que lo que importa sobrevive.
-
-    Args:
-        borrador_id: UUID del borrador a repasar.
-
-    Returns:
-        {id, ensayos, promovido, evento_id?}.
-    """
+    """Deprecated alias — use ``rehearse_draft`` instead."""
     return await _ensayar_borrador(borrador_id, workspace)
 
 
 @mcp_server.tool()
+@ingles
 async def descartar_borrador(
     borrador_id: str,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Saca un borrador del buffer sin promoverlo.
-
-    USAR CUANDO: el pensamiento ya no es útil — descartarlo es
-    sano: el buffer es corto a propósito.
-
-    Returns:
-        {id, descartado}.
-    """
+    """Deprecated alias — use ``discard_draft`` instead."""
     return await _descartar_borrador(borrador_id, workspace)
 
 
@@ -3967,40 +3354,24 @@ async def _olvidar_gradual(
     try:
         eid = uuid.UUID(str(evento_id))
     except (ValueError, AttributeError) as e:
-        raise ErrorValidacion(f"evento_id no es un UUID válido: {evento_id!r}") from e
+        raise ErrorValidacion(f"event_id is not a valid UUID: {evento_id!r}") from e
     async with get_session(obtener_engine()) as session:
         repo = EventoRepository(session, ctx)
         if await repo.obtener(eid) is None:
-            raise ErrorValidacion(f"el evento no existe: {evento_id}")
+            raise ErrorValidacion(f"event does not exist: {evento_id}")
         await repo.marcar_olvido_dirigido(eid, olvidar)
         await session.commit()
     return {"id": str(eid), "olvido_dirigido": olvidar}
 
 
 @mcp_server.tool()
+@ingles
 async def olvidar_gradual(
     evento_id: str,
     olvidar: bool = True,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Pide olvidar una memoria — decay acelerado, no borrado.
-
-    Olvido dirigido: la huella se disuelve ~3x más rápido por su curva
-    natural. NO es ``olvidar_evento`` (DELETE irreversible) ni archivar
-    (decisión del sueño): es dejar que el tiempo haga su trabajo antes
-    de tiempo. Con ``olvidar=false`` se revierte — la memoria vuelve a
-    su curva normal.
-
-    USAR CUANDO: el usuario pida "olvida esto" sin querer destruir la
-    historia — el olvido es gradual y auditable.
-
-    Args:
-        evento_id: UUID del evento a olvidar.
-        olvidar: True = acelerar el olvido; False = revertir.
-
-    Returns:
-        {id, olvido_dirigido}.
-    """
+    """Deprecated alias — use ``forget_gradually`` instead."""
     return await _olvidar_gradual(evento_id, olvidar, workspace)
 
 
@@ -4032,25 +3403,12 @@ async def _repasos_pendientes(
 
 
 @mcp_server.tool()
+@ingles
 async def repasos_pendientes(
     limite: int = 20,
     workspace: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Memorias que toca repasar — el SRS vive en la memoria misma.
-
-    Spaced repetition: cada evocación recalcula el repaso óptimo desde
-    la curva de retención (justo antes de olvidar es cuando el repaso
-    más consolida). Esta lista son las que ya vencieron, las más
-    atrasadas primero — consultarlas ES el repaso: refuerza la huella
-    y reprograma la siguiente revisión.
-
-    USAR CUANDO: quieras una sesión de repaso espaciado, o preguntar
-    "qué se me está olvidando".
-
-    Returns:
-        [{id, contenido, timestamp_unix, proxima_revision,
-          dias_atraso, dimension, tipo_memoria}].
-    """
+    """Deprecated alias — use ``pending_reviews`` instead."""
     return await _repasos_pendientes(limite, workspace)
 
 
@@ -4064,37 +3422,24 @@ async def _aplazar_intencion(
     try:
         iid = uuid.UUID(str(intencion_id))
     except (ValueError, AttributeError) as e:
-        raise ErrorValidacion(f"intencion_id no es un UUID válido: {intencion_id!r}") from e
+        raise ErrorValidacion(f"intention_id is not a valid UUID: {intencion_id!r}") from e
     hasta = int(time.time()) + max(0, segundos)
     async with get_session(obtener_engine()) as session:
         repo = IntencionProspectivaRepository(session, ctx)
         if not await repo.aplazar(iid, hasta):
-            raise ErrorValidacion(f"la intención no está pendiente o no existe: {intencion_id}")
+            raise ErrorValidacion(f"intention is not pending or does not exist: {intencion_id}")
         await session.commit()
     return {"id": str(iid), "aplazada_hasta": hasta, "segundos": segundos}
 
 
 @mcp_server.tool()
+@ingles
 async def aplazar_intencion(
     intencion_id: str,
     segundos: int = 3600,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Pospone una intención prospectiva — snooze, no cancelación.
-
-    La intención sigue viva: ni ejecutada ni cancelada, pero ningún
-    trigger la evalúa hasta ``segundos`` en el futuro. El snooze es
-    honesto — el recordatorio vuelve, no se finge atendido.
-
-    USAR CUANDO: el usuario diga "recuérdamelo luego" o "no ahora".
-
-    Args:
-        intencion_id: UUID de la intención a posponer.
-        segundos: Cuánto posponer (default 1h).
-
-    Returns:
-        {id, aplazada_hasta, segundos}.
-    """
+    """Deprecated alias — use ``snooze_intention`` instead."""
     return await _aplazar_intencion(intencion_id, segundos, workspace)
 
 
@@ -4112,7 +3457,7 @@ async def _confiar_fuente(
         # antes de su primera inyección.
         await repo_f.crear(nombre, tipo="agente")
         if not await repo_f.marcar_confiable(nombre, confiable):
-            raise ErrorValidacion(f"la fuente no existe: {nombre}")
+            raise ErrorValidacion(f"source does not exist: {nombre}")
         liberados = 0
         if confiable:
             # Aprobar la fuente saca del aislamiento a sus eventos —
@@ -4123,28 +3468,13 @@ async def _confiar_fuente(
 
 
 @mcp_server.tool()
+@ingles
 async def confiar_fuente(
     nombre: str,
     confiable: bool = True,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Aprueba o marca no-confiable una fuente de memorias.
-
-    Sistema inmune de la memoria: los eventos de una fuente no
-    confiable quedan en cuarentena — indexados pero invisibles al
-    recall, como un cuerpo que retiene al invasor sin dejarlo actuar.
-    Aprobar la fuente libera sus eventos de una vez.
-
-    USAR CUANDO: una fuente externa empiece a inyectar ruido o datos
-    dudosos, o para rehabilitar una fuente antes sospechosa.
-
-    Args:
-        nombre: Nombre de la fuente (``eventos.fuente``).
-        confiable: True = aprobar y liberar; False = cuarentena.
-
-    Returns:
-        {fuente, confiable, liberados}.
-    """
+    """Deprecated alias — use ``trust_source`` instead."""
     return await _confiar_fuente(nombre, confiable, workspace)
 
 
@@ -4169,18 +3499,12 @@ async def _listar_cuarentena(
 
 
 @mcp_server.tool()
+@ingles
 async def listar_cuarentena(
     limite: int = 50,
     workspace: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Eventos en cuarentena — memorias retenidas por fuente no confiable.
-
-    USAR CUANDO: auditar qué quedó aislado antes de decidir si la
-    fuente se aprueba (``confiar_fuente``) o se poda.
-
-    Returns:
-        [{id, contenido, timestamp_unix, fuente, dimension}].
-    """
+    """Deprecated alias — use ``list_quarantine`` instead."""
     return await _listar_cuarentena(limite, workspace)
 
 
@@ -4223,31 +3547,13 @@ async def _iniciar_sesion(
 
 
 @mcp_server.tool()
+@ingles
 async def iniciar_sesion(
     agente: str | None = None,
     presupuesto: int = 4000,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Abre una sesión de trabajo — bootstrap + snapshot en UNA llamada.
-
-    USAR CUANDO: arranques un turno de trabajo con el usuario. Crea
-    el límite de sesión (para el handoff de cierre), dispara las
-    intenciones temporales vencidas y devuelve el pack de arranque
-    con ``snapshot`` — el bloque frozen-snapshot para inyectar una
-    vez en el system prompt. Es ``contexto_inicial`` + persistencia
-    de boundary.
-
-    Args:
-        agente: Nombre del agente que abre la sesión (p. ej. "devin").
-        presupuesto: Caracteres del snapshot (default 4000 ≈ 1000
-            tokens; 0 o negativo = pack completo sin medidor).
-        workspace: Slug o UUID del workspace.
-
-    Returns:
-        {sesion_id, inicio, censores, nucleo, curado, loops,
-        calientes, stats, snapshot, presupuesto_usado, omitidos,
-        recordatorios?}.
-    """
+    """Deprecated alias — use ``start_session`` instead."""
     return await _iniciar_sesion(agente, presupuesto, workspace)
 
 
@@ -4270,13 +3576,13 @@ async def _cerrar_sesion(
             try:
                 sid = uuid.UUID(str(sesion_id))
             except (ValueError, AttributeError) as e:
-                raise ErrorValidacion(f"sesion_id no es un UUID válido: {sesion_id!r}") from e
+                raise ErrorValidacion(f"session_id is not a valid UUID: {sesion_id!r}") from e
             sesion = await repo_s.obtener(sid)
         else:
             sesion = await repo_s.ultima_abierta()
         if sesion is None or sesion.fin is not None:
             raise ErrorValidacion(
-                "no hay sesión abierta para cerrar" + (f" ({sesion_id})" if sesion_id else "")
+                "no open session to close" + (f" ({sesion_id})" if sesion_id else "")
             )
         repo_e = EventoRepository(session, ctx)
         escritos = await repo_e.listar_por_rango(sesion.inicio, ahora, limite=40)
@@ -4319,27 +3625,13 @@ async def _cerrar_sesion(
 
 
 @mcp_server.tool()
+@ingles
 async def cerrar_sesion(
     sesion_id: str | None = None,
     resumen: str | None = None,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Cierra la sesión abierta — genera el handoff de continuidad.
-
-    USAR CUANDO: termine un turno de trabajo — el boundary donde la
-    memoria "rinde": lo que quedó abierto, escrito y curado se destila
-    en un documento que la próxima sesión lee en dos minutos. Sin
-    cierre no hay continuidad — la worldline guarda todo, pero el
-    handoff cuenta solo lo que importa.
-
-    Args:
-        sesion_id: UUID de la sesión (default: la abierta más reciente).
-        resumen: Resumen libre de qué se hizo (va al handoff).
-        workspace: Slug o UUID del workspace.
-
-    Returns:
-        {id, fin, eventos, handoff}.
-    """
+    """Deprecated alias — use ``end_session`` instead."""
     return await _cerrar_sesion(sesion_id, resumen, workspace)
 
 
@@ -4355,12 +3647,12 @@ async def _obtener_handoff(
             try:
                 sid = uuid.UUID(str(sesion_id))
             except (ValueError, AttributeError) as e:
-                raise ErrorValidacion(f"sesion_id no es un UUID válido: {sesion_id!r}") from e
+                raise ErrorValidacion(f"session_id is not a valid UUID: {sesion_id!r}") from e
             sesion = await repo_s.obtener(sid)
         else:
             sesion = await repo_s.ultima_cerrada()
         if sesion is None or not sesion.handoff:
-            raise ErrorValidacion("no hay handoff disponible")
+            raise ErrorValidacion("no handoff available")
     return {
         "id": str(sesion.id),
         "agente": sesion.agente,
@@ -4372,19 +3664,12 @@ async def _obtener_handoff(
 
 
 @mcp_server.tool()
+@ingles
 async def obtener_handoff(
     sesion_id: str | None = None,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """El documento de continuidad de una sesión cerrada.
-
-    USAR CUANDO: quieras retomar el trabajo donde una sesión previa lo
-    dejó — o pegárselo a otra agente/máquina como contexto de arranque.
-    Sin id devuelve el handoff de la última sesión cerrada.
-
-    Returns:
-        {id, agente, inicio, fin, eventos, handoff}.
-    """
+    """Deprecated alias — use ``get_handoff`` instead."""
     return await _obtener_handoff(sesion_id, workspace)
 
 
@@ -4411,15 +3696,12 @@ async def _listar_sesiones(
 
 
 @mcp_server.tool()
+@ingles
 async def listar_sesiones(
     limite: int = 20,
     workspace: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Historial de sesiones — los boundaries de la memoria.
-
-    Returns:
-        [{id, agente, inicio, fin, eventos, cerrada, tiene_handoff}].
-    """
+    """Deprecated alias — use ``list_sessions`` instead."""
     return await _listar_sesiones(limite, workspace)
 
 
@@ -4432,7 +3714,7 @@ async def _crear_censor(
 ) -> dict[str, Any]:
     """Registra un censor — una corrección madura a regla de conducta."""
     if severidad not in ("bloquear", "advertir"):
-        raise ErrorValidacion("severidad debe ser 'bloquear' o 'advertir'")
+        raise ErrorValidacion("severity must be 'block' or 'warn'")
     respuesta = await _recordar(
         contenido=regla,
         dimension="conductual",
@@ -4454,6 +3736,7 @@ async def _crear_censor(
 
 
 @mcp_server.tool()
+@ingles
 async def crear_censor(
     regla: str,
     severidad: str = "advertir",
@@ -4461,28 +3744,7 @@ async def crear_censor(
     scope: Literal["personal", "workspace"] = "personal",
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Convierte una corrección en regla — el guardrail de la memoria.
-
-    USAR CUANDO: el usuario enseñe "nunca hagas X" o "siempre verifica
-    Y antes de Z" — la corrección madura a censor y pesa ANTES de
-    actuar: ``verificar_accion`` la consulta; el bootstrap la carga
-    de primera sección. ``bloquear`` veta la acción; ``advertir``
-    deja pasar con cautela. Los censores son inmunes al olvido —
-    una regla no se olvida sola.
-
-    NO ES: una preferencia blanda (usa tipo='preferencia') ni un
-    compromiso pendiente (usa tipo='compromiso').
-
-    Args:
-        regla: La regla en texto ("nunca pushear a main sin tests").
-        severidad: "advertir" (default) o "bloquear" (veta).
-        dominio: Ámbito opcional de la regla (p. ej. "git", "pagos").
-        scope: "personal" (default) o "workspace" (regla del equipo).
-        workspace: Slug o UUID del workspace.
-
-    Returns:
-        {id, severidad, staged?} — el evento censor creado.
-    """
+    """Deprecated alias — use ``create_censor`` instead."""
     return await _crear_censor(regla, severidad, dominio, scope, workspace)
 
 
@@ -4507,18 +3769,11 @@ async def _listar_censores(
 
 
 @mcp_server.tool()
+@ingles
 async def listar_censores(
     workspace: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Los guardrails activos — reglas aprendidas que vetan o advierten.
-
-    USAR CUANDO: auditar qué reglas rigen la conducta antes de
-    verificar una acción o de crear una nueva. Se revocan con
-    ``olvidar_evento`` o se corrigen con ``reemplaza_id``.
-
-    Returns:
-        [{id, contenido, severidad, dominio, timestamp_unix, ...}].
-    """
+    """Deprecated alias — use ``list_censors`` instead."""
     return await _listar_censores(workspace)
 
 
@@ -4544,7 +3799,7 @@ async def _verificar_accion(
         return {
             "permitido": True,
             "censores": [],
-            "motivo": "sin censores vigentes — vía libre",
+            "motivo": "no active censors — clear path",
         }
     try:
         vector = await _obtener_embeddings().generar(accion)
@@ -4596,29 +3851,12 @@ async def _verificar_accion(
 
 
 @mcp_server.tool()
+@ingles
 async def verificar_accion(
     accion: str,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Verifica una acción ANTES de ejecutarla contra los guardrails.
-
-    USAR CUANDO: estés a punto de hacer algo potencialmente prohibido
-    — pushear, borrar, pagar, escribir en prod. Los censores del
-    workspace se comparan semánticamente con la acción: un ``bloquear``
-    veta (obedece — la regla existe porque alguien la enseñó); una
-    ``advertir`` deja pasar informando el riesgo.
-
-    NO ES: confirmación del usuario — es memoria de reglas: el
-    veredicto sale de lo aprendido, no de una política externa.
-
-    Args:
-        accion: La acción propuesta en texto ("pushear a main").
-        workspace: Slug o UUID del workspace.
-
-    Returns:
-        {permitido, censores: [{id, contenido, severidad, dominio,
-        similitud}], motivo}.
-    """
+    """Deprecated alias — use ``verify_action`` instead."""
     return await _verificar_accion(accion, workspace)
 
 
@@ -4630,7 +3868,7 @@ async def _registrar_prediccion(
 ) -> dict[str, Any]:
     """Declara una confianza ANTES del resultado — materia del Brier."""
     if not 0.0 <= confianza <= 1.0:
-        raise ErrorValidacion("confianza debe estar entre 0.0 y 1.0")
+        raise ErrorValidacion("confidence must be between 0.0 and 1.0")
     ctx = await _ctx_escritura(workspace)
     ahora = int(time.time())
     eid: uuid.UUID | None = None
@@ -4638,7 +3876,7 @@ async def _registrar_prediccion(
         try:
             eid = uuid.UUID(str(evento_id))
         except (ValueError, AttributeError) as e:
-            raise ErrorValidacion(f"evento_id no es un UUID válido: {evento_id!r}") from e
+            raise ErrorValidacion(f"event_id is not a valid UUID: {evento_id!r}") from e
     async with get_session(obtener_engine()) as session:
         prediccion = await PrediccionRepository(session, ctx).crear(
             PrediccionModel(
@@ -4660,29 +3898,14 @@ async def _registrar_prediccion(
 
 
 @mcp_server.tool()
+@ingles
 async def registrar_prediccion(
     afirmacion: str,
     confianza: float,
     evento_id: str | None = None,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Registra una predicción con su confianza — honestidad medible.
-
-    USAR CUANDO: afirmes algo con probabilidad ("el deploy sale bien",
-    "este bug era X") — la confianza declarada ANTES del resultado es
-    lo único que hace medible la calibración. Al cumplirse o fallar,
-    ``resolver_prediccion`` cierra el loop y el Brier score dice si el
-    90% dicho valía 90%.
-
-    Args:
-        afirmacion: Lo que se predice, en texto.
-        confianza: Probabilidad declarada (0.0–1.0).
-        evento_id: UUID del evento relacionado, si lo hay.
-        workspace: Slug o UUID del workspace.
-
-    Returns:
-        {id, afirmacion, confianza, creado_en}.
-    """
+    """Deprecated alias — use ``register_prediction`` instead."""
     return await _registrar_prediccion(afirmacion, confianza, evento_id, workspace)
 
 
@@ -4696,36 +3919,26 @@ async def _resolver_prediccion(
     try:
         pid = uuid.UUID(str(prediccion_id))
     except (ValueError, AttributeError) as e:
-        raise ErrorValidacion(f"prediccion_id no es un UUID válido: {prediccion_id!r}") from e
+        raise ErrorValidacion(f"prediction_id is not a valid UUID: {prediccion_id!r}") from e
     ahora = int(time.time())
     async with get_session(obtener_engine()) as session:
         ok = await PrediccionRepository(session, ctx).resolver(pid, acierto, ahora)
         await session.commit()
     if not ok:
-        raise ErrorValidacion("la predicción no existe o ya está resuelta: " f"{prediccion_id}")
+        raise ErrorValidacion(
+            "prediction does not exist or is already resolved: " f"{prediccion_id}"
+        )
     return {"id": str(pid), "acierto": acierto, "resuelto_en": ahora}
 
 
 @mcp_server.tool()
+@ingles
 async def resolver_prediccion(
     prediccion_id: str,
     acierto: bool,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Resuelve una predicción — acertó o falló, el Brier lo cuenta.
-
-    USAR CUANDO: se sepa el resultado de algo predicho antes. Sin
-    resolución no hay calibración: una confianza que nunca se cobra
-    es solo una opinión.
-
-    Args:
-        prediccion_id: UUID de la predicción (de registrar_prediccion).
-        acierto: True si la afirmación resultó cierta.
-        workspace: Slug o UUID del workspace.
-
-    Returns:
-        {id, acierto, resuelto_en}.
-    """
+    """Deprecated alias — use ``resolve_prediction`` instead."""
     return await _resolver_prediccion(prediccion_id, acierto, workspace)
 
 
@@ -4754,22 +3967,13 @@ async def _listar_predicciones(
 
 
 @mcp_server.tool()
+@ingles
 async def listar_predicciones(
     pendientes: bool | None = None,
     limite: int = 50,
     workspace: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Predicciones del workspace — abiertas y resueltas.
-
-    Args:
-        pendientes: True = solo abiertas, False = solo resueltas,
-            None = todas.
-        limite: Máximo a devolver (default 50).
-        workspace: Slug o UUID del workspace.
-
-    Returns:
-        [{id, afirmacion, confianza, acierto, creado_en, resuelto_en}].
-    """
+    """Deprecated alias — use ``list_predictions`` instead."""
     return await _listar_predicciones(pendientes, limite, workspace)
 
 
@@ -4807,24 +4011,11 @@ async def _reporte_calibracion(
 
 
 @mcp_server.tool()
+@ingles
 async def reporte_calibracion(
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """El Brier score de la memoria — qué tan real es "90% seguro".
-
-    Mide la distancia entre la confianza declarada y el acierto
-    empírico: brier 0.0 = oráculo; la curva por deciles muestra DÓNDE
-    falla la calibración (p. ej. sobreconfianza en el rango 0.7–0.9);
-    ``sesgo_sobreconfianza`` positivo = el sistema se confía de más.
-
-    USAR CUANDO: auditar la honestidad del sistema o ajustar cuánta
-    fe poner en sus probabilidades. Sin predicciones resueltas el
-    reporte confiesa ``brier: null`` — sin datos no hay métrica.
-
-    Returns:
-        {resueltas, pendientes, brier, acierto_empirico,
-        confianza_media, sesgo_sobreconfianza, curva}.
-    """
+    """Deprecated alias — use ``calibration_report`` instead."""
     return await _reporte_calibracion(workspace)
 
 
@@ -4840,19 +4031,12 @@ async def _pendientes_aprobacion(
 
 
 @mcp_server.tool()
+@ingles
 async def pendientes_aprobacion(
     limite: int = 50,
     workspace: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Escrituras staged — la memoria propone, el humano dispone.
-
-    Solo hay pendientes si ``NOUS_ESCRITURA_APROBACION=true``: con la
-    política activa, recordar_evento deja la huella indexada pero
-    fuera del recall hasta que alguien la apruebe.
-
-    Returns:
-        [{id, contenido, tipo, fuente, timestamp_unix, ...}].
-    """
+    """Deprecated alias — use ``pending_approvals`` instead."""
     return await _pendientes_aprobacion(limite, workspace)
 
 
@@ -4865,29 +4049,22 @@ async def _aprobar_evento(
     try:
         eid = uuid.UUID(str(evento_id))
     except (ValueError, AttributeError) as e:
-        raise ErrorValidacion(f"evento_id no es un UUID válido: {evento_id!r}") from e
+        raise ErrorValidacion(f"event_id is not a valid UUID: {evento_id!r}") from e
     async with get_session(obtener_engine()) as session:
         aprobados = await EventoRepository(session, ctx).aprobar_staged([eid])
         await session.commit()
     if not aprobados:
-        raise ErrorValidacion(f"no hay propuesta staged con ese id: {evento_id}")
+        raise ErrorValidacion(f"no staged proposal with that id: {evento_id}")
     return {"id": str(eid), "aprobado": True}
 
 
 @mcp_server.tool()
+@ingles
 async def aprobar_evento(
     evento_id: str,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Aprueba una escritura staged — entra al recall como memoria.
-
-    Args:
-        evento_id: UUID de la propuesta (de pendientes_aprobacion).
-        workspace: Slug o UUID del workspace.
-
-    Returns:
-        {id, aprobado}.
-    """
+    """Deprecated alias — use ``approve_event`` instead."""
     return await _aprobar_evento(evento_id, workspace)
 
 
@@ -4900,28 +4077,22 @@ async def _rechazar_evento(
     try:
         eid = uuid.UUID(str(evento_id))
     except (ValueError, AttributeError) as e:
-        raise ErrorValidacion(f"evento_id no es un UUID válido: {evento_id!r}") from e
+        raise ErrorValidacion(f"event_id is not a valid UUID: {evento_id!r}") from e
     async with get_session(obtener_engine()) as session:
         rechazados = await EventoRepository(session, ctx).rechazar_staged([eid])
         await session.commit()
     if not rechazados:
-        raise ErrorValidacion(f"no hay propuesta staged con ese id: {evento_id}")
+        raise ErrorValidacion(f"no staged proposal with that id: {evento_id}")
     return {"id": str(eid), "rechazado": True}
 
 
 @mcp_server.tool()
+@ingles
 async def rechazar_evento(
     evento_id: str,
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Rechaza una escritura staged — se descarta sin dejar huella.
-
-    NO ES olvidar_evento: la propuesta nunca fue memoria — borrarla
-    es decidir que la escritura no ocurrió, no olvidar lo aprendido.
-
-    Returns:
-        {id, rechazado}.
-    """
+    """Deprecated alias — use ``reject_event`` instead."""
     return await _rechazar_evento(evento_id, workspace)
 
 
@@ -4939,16 +4110,9 @@ async def _aprobar_pendientes(
 
 
 @mcp_server.tool()
+@ingles
 async def aprobar_pendientes(
     workspace: str | None = None,
 ) -> dict[str, Any]:
-    """Aprueba todas las escrituras staged de una vez.
-
-    USAR CUANDO: revisaste la cola (``pendientes_aprobacion``) y todo
-    está bien — la aprobación en lote es la vía rápida, la individual
-    es la revisada.
-
-    Returns:
-        {aprobados}.
-    """
+    """Deprecated alias — use ``approve_all_pending`` instead."""
     return await _aprobar_pendientes(workspace)

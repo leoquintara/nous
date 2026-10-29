@@ -94,19 +94,14 @@ def _fila_base(
         {
             # Sin id explícito se deriva uno determinista de fuente+
             # contenido: reimportar el mismo origen no duplica.
-            "id": evento_id
-            or str(
-                uuid.uuid5(uuid.NAMESPACE_URL, f"{fuente}:{contenido}")
-            ),
+            "id": evento_id or str(uuid.uuid5(uuid.NAMESPACE_URL, f"{fuente}:{contenido}")),
             "timestamp_unix": ts or int(time.time()),
             "dimension": dimension,
             "fuente": fuente[:50],
             # Nulos sueltos rompen text en PostgreSQL y los \r\n crudos
             # rompen la idempotencia (read_text normaliza \r\n→\n pero
             # read_bytes no): el contenido canon lleva solo \n.
-            "contenido": contenido.replace("\x00", "")
-            .replace("\r\n", "\n")
-            .replace("\r", "\n"),
+            "contenido": contenido.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n"),
             "amplitud": amplitud,
             "tags": fusionar_tags(tags, contenido),
         }
@@ -117,9 +112,7 @@ def _decodificar(crudo: bytes) -> str:
     """Decodifica la nota tolerando UTF-16 (con BOM o nulos típicos):
     leer UTF-16 como UTF-8 no falla — solo inyecta ``\\x00`` que
     PostgreSQL rechaza al insertar."""
-    if crudo.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)) or (
-        b"\x00" in crudo[:512]
-    ):
+    if crudo.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)) or (b"\x00" in crudo[:512]):
         try:
             return crudo.decode("utf-16")
         except UnicodeDecodeError:
@@ -145,9 +138,7 @@ def _ts_nota(md: Path) -> int:
     return int(md.stat().st_mtime)
 
 
-def _leer_vault(
-    vault: Path, fuente: str
-) -> tuple[list[FilaEvento], list[tuple[int, int]], int]:
+def _leer_vault(vault: Path, fuente: str) -> tuple[list[FilaEvento], list[tuple[int, int]], int]:
     """Importa un vault Obsidian: notas → eventos, wikilinks → vínculos."""
     filas: list[FilaEvento] = []
     vinculos: list[tuple[int, int]] = []
@@ -158,7 +149,7 @@ def _leer_vault(
         try:
             texto = _decodificar(md.read_bytes())
         except (OSError, UnicodeDecodeError) as exc:
-            logger.warning("Nota ilegible %s: %s", md, exc)
+            logger.warning("Unreadable note %s: %s", md, exc)
             errores += 1
             continue
         tags = _tags_frontmatter(texto)
@@ -178,7 +169,7 @@ def _leer_vault(
             for m in _PATRON_WIKILINK.finditer(texto):
                 enlaces.append((len(filas) - 1, m.group(1).strip().lower()))
         except ValueError as exc:
-            logger.warning("Nota descartada %s: %s", md, exc)
+            logger.warning("Discarded note %s: %s", md, exc)
             errores += 1
     for origen, destino in enlaces:
         if destino in por_nombre and por_nombre[destino] != origen:
@@ -200,18 +191,14 @@ def _tags_frontmatter(texto: str) -> list[str]:
     return crudo.split()
 
 
-def _leer_gbrain(
-    ruta: Path, fuente: str
-) -> tuple[list[FilaEvento], list[tuple[int, int]], int]:
+def _leer_gbrain(ruta: Path, fuente: str) -> tuple[list[FilaEvento], list[tuple[int, int]], int]:
     """Importa páginas .md de un source gbrain o su export JSON/JSONL."""
     if ruta.is_dir():
         return _leer_vault(ruta, fuente)
     return _leer_json_generico(ruta, fuente)
 
 
-def _leer_memlord(
-    ruta: Path, fuente: str
-) -> tuple[list[FilaEvento], list[tuple[int, int]], int]:
+def _leer_memlord(ruta: Path, fuente: str) -> tuple[list[FilaEvento], list[tuple[int, int]], int]:
     """Importa un export memlord: filas con name/content/memory_type."""
     return _leer_json_generico(ruta, fuente, estilo="memlord")
 
@@ -227,28 +214,22 @@ def _leer_json_generico(
         try:
             crudo = json.loads(ruta.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            logger.warning("JSON inválido: %s", exc)
+            logger.warning("Invalid JSON: %s", exc)
             return [], [], 1
         lineas = crudo if isinstance(crudo, list) else [crudo]
     else:
-        lineas = [
-            linea
-            for linea in ruta.read_text(encoding="utf-8").splitlines()
-            if linea.strip()
-        ]
+        lineas = [linea for linea in ruta.read_text(encoding="utf-8").splitlines() if linea.strip()]
     for linea in lineas:
         try:
             obj = linea if isinstance(linea, dict) else json.loads(linea)
             filas.append(_fila_desde_obj(obj, fuente, estilo))
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
-            logger.warning("Fila inválida descartada: %s", exc)
+            logger.warning("Invalid row discarded: %s", exc)
             errores += 1
     return filas, [], errores
 
 
-def _fila_desde_obj(
-    obj: dict[str, Any], fuente: str, estilo: str
-) -> FilaEvento:
+def _fila_desde_obj(obj: dict[str, Any], fuente: str, estilo: str) -> FilaEvento:
     """Normaliza un objeto JSON a FilaEvento según el estilo de origen."""
     if "contenido" in obj and "timestamp_unix" in obj:
         # Formato nativo de nous export.
@@ -267,14 +248,10 @@ def _fila_desde_obj(
         )
     # Formato flexible (gbrain/openclaw): {fact|text|content}.
     contenido = str(
-        obj.get("contenido")
-        or obj.get("fact")
-        or obj.get("text")
-        or obj.get("content")
-        or ""
+        obj.get("contenido") or obj.get("fact") or obj.get("text") or obj.get("content") or ""
     )
     if not contenido:
-        raise ValueError("fila sin contenido reconocible")
+        raise ValueError("row without recognizable content")
     ts = obj.get("timestamp_unix") or obj.get("created_at")
     return _fila_base(
         contenido,

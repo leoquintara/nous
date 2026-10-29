@@ -188,9 +188,9 @@ def sugerir_clarificacion(
             razon="conflicto",
             accion="presentar_ambos",
             pregunta=(
-                f"Hay dos candidatos con la misma fuerza sobre "
-                f"«{tema}» en el mismo período — conviene mostrar "
-                "ambos antes de afirmar."
+                f"Two equally strong candidates exist about "
+                f"«{tema}» in the same period — showing both is "
+                "safer than asserting."
             ),
             opciones=[conflicto_rival],
         )
@@ -199,8 +199,8 @@ def sugerir_clarificacion(
             razon="sin_evidencia",
             accion="preguntar_contexto",
             pregunta=(
-                f"No hay recuerdo alguno sobre «{tema}» — "
-                "¿hay contexto que falte (nombre, fecha, proyecto)?"
+                f"No memory at all about «{tema}» — "
+                "is there missing context (name, date, project)?"
             ),
         )
     return None

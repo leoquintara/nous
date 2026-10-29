@@ -51,7 +51,7 @@ _TOOLS_MEMORIAS = (
 
 
 class ErrorRemoto(Exception):
-    """Fallo al hablar con la instancia MCP remota."""
+    """Failed to talk to the remote MCP instance."""
 
 
 class ClienteMCP:
@@ -100,9 +100,7 @@ class ClienteMCP:
         self._sesion = resp.headers.get("mcp-session-id")
         # Notificación: sin id; algunos servidores la exigen antes de tools/*.
         try:
-            await self._post(
-                "notifications/initialized", {}, notificacion=True
-            )
+            await self._post("notifications/initialized", {}, notificacion=True)
         except ErrorRemoto:
             pass
 
@@ -113,25 +111,19 @@ class ClienteMCP:
 
     async def llamar(self, tool: str, args: dict[str, Any]) -> Any:
         """Invoca ``tools/call`` y devuelve el payload parseado."""
-        datos = await self.llamar_metodo(
-            "tools/call", {"name": tool, "arguments": args}
-        )
+        datos = await self.llamar_metodo("tools/call", {"name": tool, "arguments": args})
         if datos.get("isError"):
             raise ErrorRemoto(f"tool {tool} rechazada: {_texto(datos)[:200]}")
         if "structuredContent" in datos:
             return datos["structuredContent"]
         return _parsear_contenido(datos)
 
-    async def llamar_metodo(
-        self, metodo: str, params: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def llamar_metodo(self, metodo: str, params: dict[str, Any]) -> dict[str, Any]:
         """POST JSON-RPC y devuelve el objeto ``result``."""
         resp = await self._post(metodo, params)
         cuerpo = _cuerpo_jsonrpc(resp)
         if "error" in cuerpo:
-            raise ErrorRemoto(
-                f"{metodo}: {cuerpo['error'].get('message', 'error JSON-RPC')}"
-            )
+            raise ErrorRemoto(f"{metodo}: {cuerpo['error'].get('message', 'error JSON-RPC')}")
         resultado = cuerpo.get("result")
         return resultado if isinstance(resultado, dict) else {}
 
@@ -144,13 +136,9 @@ class ClienteMCP:
             mensaje["id"] = self._seq
         if params:
             mensaje["params"] = params
-        headers = (
-            {"mcp-session-id": self._sesion} if self._sesion else {}
-        )
+        headers = {"mcp-session-id": self._sesion} if self._sesion else {}
         try:
-            resp = await self._http.post(
-                self._url, json=mensaje, headers=headers
-            )
+            resp = await self._http.post(self._url, json=mensaje, headers=headers)
         except httpx.HTTPError as exc:
             raise ErrorRemoto(f"servidor inalcanzable: {exc}") from exc
         if resp.status_code >= 400:
@@ -171,11 +159,11 @@ def _cuerpo_jsonrpc(resp: httpx.Response) -> dict[str, Any]:
                     continue
         if ultimo is not None:
             return ultimo
-        raise ErrorRemoto("respuesta SSE sin evento JSON válido")
+        raise ErrorRemoto("SSE response without a valid JSON event")
     try:
         cuerpo = resp.json()
     except json.JSONDecodeError as exc:
-        raise ErrorRemoto("respuesta no es JSON-RPC") from exc
+        raise ErrorRemoto("response is not JSON-RPC") from exc
     # Las notificaciones pueden devolver 202 sin body útil.
     return cuerpo if isinstance(cuerpo, dict) else {}
 
@@ -271,9 +259,7 @@ async def _leer_gbrain_api(
         offset += len(paginas)
     for slug in slugs[:_MAX_PAGINAS_GBRAIN]:
         try:
-            pagina = await cli.llamar(
-                "get_page", {"slug": slug, "include_content": True}
-            )
+            pagina = await cli.llamar("get_page", {"slug": slug, "include_content": True})
             cuerpo = _contenido_pagina(pagina)
             if not cuerpo:
                 continue
@@ -282,34 +268,26 @@ async def _leer_gbrain_api(
                     f"{slug}\n\n{cuerpo}",
                     fuente,
                     ts=_ts_pagina(pagina),
-                    evento_id=str(
-                        uuid.uuid5(uuid.NAMESPACE_URL, f"gbrain:{slug}")
-                    ),
+                    evento_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"gbrain:{slug}")),
                 )
             )
         except (ErrorRemoto, ValueError) as exc:
-            logger.warning("Página gbrain descartada %s: %s", slug, exc)
+            logger.warning("gbrain page discarded %s: %s", slug, exc)
             errores += 1
     errores += await _leer_facts_gbrain(cli, fuente, filas)
     return filas, [], errores
 
 
-async def _leer_facts_gbrain(
-    cli: ClienteMCP, fuente: str, filas: list[FilaEvento]
-) -> int:
+async def _leer_facts_gbrain(cli: ClienteMCP, fuente: str, filas: list[FilaEvento]) -> int:
     """Intenta exportar los facts globales (recall sin entidad)."""
     from src.cli.importadores import _fila_base
 
     errores = 0
     try:
-        datos = await cli.llamar(
-            "recall", {"since": "1970-01-01", "budget_tokens": 200_000}
-        )
+        datos = await cli.llamar("recall", {"since": "1970-01-01", "budget_tokens": 200_000})
     except ErrorRemoto:
         return 0
-    for f in _extraer_lista(datos, ("facts", "items", "results"))[
-        :_MAX_FACTS_GBRAIN
-    ]:
+    for f in _extraer_lista(datos, ("facts", "items", "results"))[:_MAX_FACTS_GBRAIN]:
         try:
             texto = str(f.get("fact") or f.get("content") or "")
             if not texto:
@@ -321,13 +299,11 @@ async def _leer_facts_gbrain(
                     fuente,
                     f.get("tags") if isinstance(f.get("tags"), list) else None,
                     ts=_ts_iso(f.get("created_at") or f.get("ts")),
-                    evento_id=str(
-                        uuid.uuid5(uuid.NAMESPACE_URL, f"gbrain-fact:{fid}")
-                    ),
+                    evento_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"gbrain-fact:{fid}")),
                 )
             )
         except ValueError as exc:
-            logger.warning("Fact gbrain descartado: %s", exc)
+            logger.warning("gbrain fact discarded: %s", exc)
             errores += 1
     return errores
 
@@ -407,16 +383,14 @@ async def _leer_memlord_api(
         try:
             datos = await cli.llamar(tool, args)
         except ErrorRemoto as exc:
-            logger.warning("listado memlord falló (%s): %s", ws, exc)
+            logger.warning("memlord listing failed (%s): %s", ws, exc)
             errores += 1
             continue
-        for obj in _extraer_lista(
-            datos, ("memories", "items", "results", "data")
-        )[:_MAX_MEMORIAS]:
+        for obj in _extraer_lista(datos, ("memories", "items", "results", "data"))[:_MAX_MEMORIAS]:
             try:
                 filas.append(_fila_desde_obj(obj, fuente, "memlord"))
             except (ValueError, KeyError, TypeError, AttributeError) as exc:
-                logger.warning("Memoria memlord descartada: %s", exc)
+                logger.warning("memlord memory discarded: %s", exc)
                 errores += 1
     return filas, [], errores
 
@@ -431,9 +405,7 @@ async def _memlord_paginas(
     vistos = 0
     pagina = 1
     while len(filas) < _MAX_MEMORIAS:
-        datos = await cli.llamar(
-            "list_memories", {"page": pagina, "page_size": 100}
-        )
+        datos = await cli.llamar("list_memories", {"page": pagina, "page_size": 100})
         items = _extraer_lista(datos, ("items", "memories", "results"))
         total = datos.get("total") if isinstance(datos, dict) else None
         if not items:
@@ -448,20 +420,14 @@ async def _memlord_paginas(
                     "get_memory",
                     {
                         "name": nombre,
-                        **(
-                            {"workspace": str(item["workspace"])}
-                            if item.get("workspace")
-                            else {}
-                        ),
+                        **({"workspace": str(item["workspace"])} if item.get("workspace") else {}),
                     },
                 )
                 filas.append(_fila_memlord(detalle or item, fuente))
             except (ErrorRemoto, ValueError) as exc:
-                logger.warning("Memoria memlord descartada: %s", exc)
+                logger.warning("memlord memory discarded: %s", exc)
                 errores += 1
-        if len(items) < 100 or (
-            isinstance(total, int | float) and vistos >= int(total)
-        ):
+        if len(items) < 100 or (isinstance(total, int | float) and vistos >= int(total)):
             break
         pagina += 1
     return filas, [], errores
@@ -476,10 +442,11 @@ def _fila_memlord(obj: dict[str, Any], fuente: str) -> FilaEvento:
     principal en memorias de captura (signal/whatsapp).
     """
     from src.cli.importadores import _fila_base
+
     nombre = str(obj.get("name") or "")
     contenido = str(obj.get("content") or obj.get("text") or "")
     if not contenido:
-        raise ValueError("memoria sin contenido")
+        raise ValueError("memory without content")
     meta = obj.get("metadata")
     sender = str(meta.get("sender") or "").strip() if isinstance(meta, dict) else ""
     source = str(meta.get("source") or "").strip() if isinstance(meta, dict) else ""
@@ -492,27 +459,18 @@ def _fila_memlord(obj: dict[str, Any], fuente: str) -> FilaEvento:
         lista_tags.append(f"sender:{sender.lower().replace(' ', '-')}")
     if source:
         lista_tags.append(f"src:{source.lower()}")
-    cuerpo = (
-        f"{nombre}\n\n{sender}: {contenido}" if sender
-        else f"{nombre}\n\n{contenido}"
-    )
+    cuerpo = f"{nombre}\n\n{sender}: {contenido}" if sender else f"{nombre}\n\n{contenido}"
     return _fila_base(
         cuerpo.strip(),
         fuente,
         lista_tags or None,
         ts=_ts_iso(obj.get("created_at")),
         amplitud=0.6 if obj.get("memory_type") == "decision" else 0.5,
-        evento_id=str(
-            uuid.uuid5(
-                uuid.NAMESPACE_URL, f"memlord:{workspace or ''}:{nombre}"
-            )
-        ),
+        evento_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"memlord:{workspace or ''}:{nombre}")),
     )
 
 
-async def _workspaces_memlord(
-    cli: ClienteMCP, tools: dict[str, dict[str, Any]]
-) -> list[str]:
+async def _workspaces_memlord(cli: ClienteMCP, tools: dict[str, dict[str, Any]]) -> list[str]:
     """Lista los workspaces si la instancia anuncia list_workspaces."""
     if "list_workspaces" not in tools:
         return []
@@ -526,19 +484,13 @@ async def _workspaces_memlord(
         if nombre:
             nombres.append(str(nombre))
     if not nombres and isinstance(datos, str):
-        nombres = [
-            linea.strip() for linea in datos.splitlines() if linea.strip()
-        ]
+        nombres = [linea.strip() for linea in datos.splitlines() if linea.strip()]
     return nombres
 
 
-def _args_memoria(
-    schema: dict[str, Any], workspace: str | None
-) -> dict[str, Any]:
+def _args_memoria(schema: dict[str, Any], workspace: str | None) -> dict[str, Any]:
     """Construye los args del tool de listado según su inputSchema."""
-    props: dict[str, Any] = (
-        schema.get("inputSchema", {}).get("properties", {})
-    )
+    props: dict[str, Any] = schema.get("inputSchema", {}).get("properties", {})
     args: dict[str, Any] = {}
     for nombre in props:
         clave = nombre.lower()

@@ -175,7 +175,7 @@ def test_veredicto_solo_advertir_permite_con_cautela() -> None:
     """Advertir nunca bloquea — informa."""
     v = veredicto_censores([_censor("advertir")])
     assert v.permitido
-    assert "advertencia" in v.motivo
+    assert "warning" in v.motivo
 
 
 def test_parsear_censor_defaults_advierten() -> None:

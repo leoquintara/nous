@@ -261,7 +261,7 @@ class BearerTokenMiddleware:
         send: Send,
     ) -> None:
         """Emite una respuesta 401 JSON sin tocar la app interior."""
-        cuerpo = b'{"error":"Token de acceso invalido o ausente"}'
+        cuerpo = b'{"error":"Invalid or missing access token"}'
         await send(
             {
                 "type": "http.response.start",

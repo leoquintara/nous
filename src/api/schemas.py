@@ -1,4 +1,4 @@
-"""Schemas Pydantic de la API REST."""
+"""Pydantic schemas for the REST API."""
 
 import json
 from datetime import datetime
@@ -8,542 +8,543 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class HealthResponse(BaseModel):
-    """Respuesta del endpoint /health."""
+    """Response of the /health endpoint."""
 
     status: str
 
 
 class BenchmarkResponse(BaseModel):
-    """Una corrida de benchmark persistida."""
+    """A persisted benchmark run."""
 
     id: str
-    nombre: str
-    escenario: str | None
-    parametros: dict[str, Any]
-    metricas: dict[str, Any]
+    name: str
+    scenario: str | None
+    params: dict[str, Any]
+    metrics: dict[str, Any]
     git_commit: str | None
-    creado_en: datetime
+    created_at: datetime
 
 
 class LoginRequest(BaseModel):
-    """Credenciales de acceso alternativo al dashboard."""
+    """Alternative access credentials for the dashboard."""
 
-    usuario: str
+    username: str
     password: str
 
 
 class LoginResponse(BaseModel):
-    """Respuesta de login: el token de servicio para usar como Bearer."""
+    """Login response: the service token to use as Bearer."""
 
     token: str
 
 
-class EventoRequest(BaseModel):
-    """Cuerpo para registrar un evento desde la API REST."""
+class EventRequest(BaseModel):
+    """Body to register an event via the REST API."""
 
-    contenido: str = Field(min_length=1, max_length=100_000)
-    dimension: Literal["cognitiva", "somatica", "conductual"] | None = None
-    fuente: str = Field(default="dashboard", min_length=1, max_length=50)
-    amplitud: float = Field(default=0.5, ge=0.0, le=1.0)
-    frecuencia: float | None = Field(default=None, gt=0.0)
+    content: str = Field(min_length=1, max_length=100_000)
+    dimension: Literal["cognitive", "somatic", "behavioral"] | None = None
+    source: str = Field(default="dashboard", min_length=1, max_length=50)
+    amplitude: float = Field(default=0.5, ge=0.0, le=1.0)
+    frequency: float | None = Field(default=None, gt=0.0)
     timestamp_unix: int | None = Field(default=None, ge=0)
-    relaciona_ids: list[str] | None = Field(default=None, max_length=20)
+    related_ids: list[str] | None = Field(default=None, max_length=20)
     tags: list[str] | None = Field(default=None, max_length=12)
-    rama: str = Field(default="main", min_length=1, max_length=64)
-    tipo: Literal[
-        "evento", "hecho", "creencia", "compromiso", "preferencia",
+    branch: str = Field(default="main", min_length=1, max_length=64)
+    kind: Literal[
+        "event",
+        "fact",
+        "belief",
+        "commitment",
+        "preference",
         "censor",
-    ] = "evento"
+    ] = "event"
     ttl: str | int | None = Field(default=None)
-    reemplaza_id: str | None = Field(default=None)
-    con_quien: str | None = Field(default=None, max_length=128)
+    supersedes_id: str | None = Field(default=None)
+    with_whom: str | None = Field(default=None, max_length=128)
     scope: Literal["personal", "workspace"] = "personal"
     workspace: str | None = Field(default=None, max_length=64)
-    # ADR-003: campos declarados por el usuario (el estimador
-    # automático no los sobrescribe — ver fijar_tipo_memoria).
-    tipo_memoria: Literal["episodica", "semantica", "procedimental"] | None = None
-    estado_emocional: float | None = Field(default=None, ge=-1.0, le=1.0)
-    contexto: dict[str, Any] | None = Field(default=None)
-    # Neuro-6: True = contenido afirmado desde los pesos del agente,
-    # no observado — techo epistémico en el recall.
-    parametrica: bool = False
+    # ADR-003: user-declared fields (the automatic estimator
+    # does not overwrite them — see fijar_tipo_memoria).
+    memory_kind: Literal["episodic", "semantic", "procedural"] | None = None
+    emotional_state: float | None = Field(default=None, ge=-1.0, le=1.0)
+    context: dict[str, Any] | None = Field(default=None)
+    # Neuro-6: True = content asserted from the agent's weights,
+    # not observed — epistemic ceiling in recall.
+    parametric: bool = False
 
-    @field_validator("contexto")
+    @field_validator("context")
     @classmethod
-    def _contexto_acotado(
-        cls, valor: dict[str, Any] | None
-    ) -> dict[str, Any] | None:
-        """Rechaza contextos >4KB — la columna es JSON, no un blob."""
-        if valor is None:
+    def _context_bounded(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Rejects contexts >4KB — the column is JSON, not a blob."""
+        if value is None:
             return None
-        if len(json.dumps(valor, default=str)) > 4_096:
-            raise ValueError("contexto excede 4KB serializado")
-        return valor
+        if len(json.dumps(value, default=str)) > 4_096:
+            raise ValueError("context exceeds 4KB serialized")
+        return value
 
 
-class CerrarLoopRequest(BaseModel):
-    """Cuerpo para cerrar un compromiso abierto."""
+class CloseCommitmentRequest(BaseModel):
+    """Body to close an open commitment."""
 
-    resolucion: str = Field(min_length=1, max_length=10_000)
-    fuente: str = Field(default="dashboard", min_length=1, max_length=50)
+    resolution: str = Field(min_length=1, max_length=10_000)
+    source: str = Field(default="dashboard", min_length=1, max_length=50)
 
 
-class ObjetivoRequest(BaseModel):
-    """Cuerpo para fijar una meta en la línea de universo."""
+class GoalRequest(BaseModel):
+    """Body to set a goal on the universe line."""
 
-    titulo: str = Field(min_length=1, max_length=200)
-    fecha_objetivo: int = Field(ge=0)
-    dimension: Literal["cognitiva", "somatica", "conductual"] | None = None
-    descripcion: str | None = Field(default=None, max_length=10_000)
-    rama: str = Field(default="main", min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=200)
+    target_date: int = Field(ge=0)
+    dimension: Literal["cognitive", "somatic", "behavioral"] | None = None
+    description: str | None = Field(default=None, max_length=10_000)
+    branch: str = Field(default="main", min_length=1, max_length=64)
     scope: Literal["personal", "workspace"] = "personal"
     workspace: str | None = Field(default=None, max_length=64)
 
 
-class ObjetivoPatch(BaseModel):
-    """Cambios parciales sobre un objetivo existente."""
+class GoalPatch(BaseModel):
+    """Partial changes to an existing goal."""
 
-    titulo: str | None = Field(default=None, min_length=1, max_length=200)
-    descripcion: str | None = Field(default=None, max_length=10_000)
-    fecha_objetivo: int | None = Field(default=None, ge=0)
-    dimension: Literal["cognitiva", "somatica", "conductual"] | None = None
-    estado: Literal["activo", "cumplido", "abandonado"] | None = None
-
-
-class CerrarObjetivoRequest(BaseModel):
-    """Cuerpo para cerrar un objetivo (cumplido/abandonado)."""
-
-    estado: Literal["cumplido", "abandonado"]
-    resolucion: str | None = Field(default=None, max_length=10_000)
-    fuente: str = Field(default="dashboard", min_length=1, max_length=50)
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=10_000)
+    target_date: int | None = Field(default=None, ge=0)
+    dimension: Literal["cognitive", "somatic", "behavioral"] | None = None
+    status: Literal["active", "fulfilled", "abandoned"] | None = None
 
 
-class RelacionResponse(BaseModel):
-    """Vínculo entre dos eventos de la línea de universo."""
+class CloseGoalRequest(BaseModel):
+    """Body to close a goal (fulfilled/abandoned)."""
 
-    origen_id: str
-    destino_id: str
-    tipo: str
-    peso: float
+    status: Literal["fulfilled", "abandoned"]
+    resolution: str | None = Field(default=None, max_length=10_000)
+    source: str = Field(default="dashboard", min_length=1, max_length=50)
 
 
-class EventoResponse(BaseModel):
-    """Evento persistido de la línea de universo."""
+class RelationResponse(BaseModel):
+    """Link between two events on the universe line."""
+
+    origin_id: str
+    target_id: str
+    kind: str
+    weight: float
+
+
+class EventResponse(BaseModel):
+    """Persisted event on the universe line."""
 
     id: str
     timestamp_unix: int
     dimension: str
-    fuente: str | None = None
-    contenido: str
-    amplitud: float
-    frecuencia: float | None = None
-    refuerzos: int = 0
+    source: str | None = None
+    content: str
+    amplitude: float
+    frequency: float | None = None
+    reinforcements: int = 0
     tags: list[str] = []
-    rama: str = "main"
-    tipo: str = "evento"
-    expira_en: int | None = None
-    reemplazado_por: str | None = None
-    con_quien: str | None = None
+    branch: str = "main"
+    kind: str = "event"
+    expires_at: int | None = None
+    superseded_by: str | None = None
+    with_whom: str | None = None
     scope: str = "personal"
     workspace_id: str | None = None
-    autor_id: str | None = None
-    # ADR-003 — patrones de memoria (opcionales para compatibilidad).
-    tipo_memoria: str | None = None
-    estado_emocional: float | None = None
-    contexto: dict[str, Any] = Field(default_factory=dict)
+    author_id: str | None = None
+    # ADR-003 — memory patterns (optional for compatibility).
+    memory_kind: str | None = None
+    emotional_state: float | None = None
+    context: dict[str, Any] = Field(default_factory=dict)
     weight: float = 1.0
-    archivado: bool = False
-    curado: bool = False
+    archived: bool = False
+    curated: bool = False
 
 
 class TagResponse(BaseModel):
-    """Tag agregado con su frecuencia de uso."""
+    """Aggregated tag with its usage count."""
 
     tag: str
-    eventos: int
+    events: int
 
 
-class FuenteRequest(BaseModel):
-    """Cuerpo para registrar una fuente de datos."""
+class SourceRequest(BaseModel):
+    """Body to register a data source."""
 
-    nombre: str = Field(min_length=1, max_length=64)
-    tipo: Literal[
-        "manual", "obsidian", "gbrain", "memlord", "agente", "import"
-    ] = "manual"
+    name: str = Field(min_length=1, max_length=64)
+    kind: Literal["manual", "obsidian", "gbrain", "memlord", "agent", "import"] = "manual"
     namespace: str = Field(default="", max_length=128)
-    rama_origen: str = Field(default="main", max_length=64)
+    origin_branch: str = Field(default="main", max_length=64)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class FuentePatch(BaseModel):
-    """Cambio de estado de una fuente (activar/archivar)."""
+class SourcePatch(BaseModel):
+    """State change for a source (activate/archive)."""
 
-    estado: Literal["activa", "archivada"]
+    status: Literal["active", "archived"]
 
 
-class RamificarRequest(BaseModel):
-    """Crea una rama de línea de universo a partir de una fuente."""
+class BranchRequest(BaseModel):
+    """Creates a universe-line branch from a source."""
 
-    rama: str = Field(min_length=1, max_length=64)
+    branch: str = Field(min_length=1, max_length=64)
     namespace: str = Field(default="", max_length=128)
 
 
-class FuenteResponse(BaseModel):
-    """Fuente registrada con su conteo real de eventos."""
+class SourceResponse(BaseModel):
+    """Registered source with its real event count."""
 
-    nombre: str
-    tipo: str
-    estado: str
+    name: str
+    kind: str
+    status: str
     namespace: str
-    rama_origen: str
+    origin_branch: str
     metadata: dict[str, Any]
-    eventos: int
+    events: int
 
 
-class ProveedorIARequest(BaseModel):
-    """Cuerpo para configurar un proveedor de IA externo.
+class AIProviderRequest(BaseModel):
+    """Body to configure an external AI provider.
 
-    ``api_key`` es opcional en actualizaciones: si no viene, se
-    conserva la ya cifrada. ``incluir_contenido`` autoriza enviar
-    fragmentos de memorias al endpoint — por defecto solo viajan
-    agregados estadísticos.
+    ``api_key`` is optional on updates: when absent, the already
+    encrypted one is kept. ``include_content`` authorizes sending
+    memory fragments to the endpoint — by default only statistical
+    aggregates travel.
     """
 
-    nombre: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=80)
     base_url: str = Field(min_length=8, max_length=300)
-    modelo: str = Field(min_length=1, max_length=120)
+    model: str = Field(min_length=1, max_length=120)
     api_key: str | None = Field(default=None, max_length=300)
-    habilitado: bool = True
-    incluir_contenido: bool = False
-    predeterminado: bool = False
+    enabled: bool = True
+    include_content: bool = False
+    default: bool = False
     fallback_id: str | None = Field(default=None, max_length=40)
 
 
-class CandidatoPredictivo(BaseModel):
-    """Candidato heurístico que el LLM puede re-ponderar."""
+class PredictiveCandidate(BaseModel):
+    """Heuristic candidate the LLM can re-weight."""
 
     id: str = Field(max_length=80)
-    nombre: str = Field(max_length=80)
-    probabilidad: float = Field(ge=0.0, le=1.0)
-    descripcion: str = Field(default="", max_length=400)
+    name: str = Field(max_length=80)
+    probability: float = Field(ge=0.0, le=1.0)
+    description: str = Field(default="", max_length=400)
 
 
-class PredecirRequest(BaseModel):
-    """Cuerpo de la petición de predicción con IA."""
+class PredictRequest(BaseModel):
+    """Body of an AI prediction request."""
 
-    origen_unix: int | None = Field(default=None, ge=0)
-    horizonte_dias: int = Field(default=30, ge=1, le=365)
-    candidatos: list[CandidatoPredictivo] | None = Field(default=None, max_length=12)
-    proveedor_id: str | None = Field(default=None, max_length=40)
+    origin_unix: int | None = Field(default=None, ge=0)
+    horizon_days: int = Field(default=30, ge=1, le=365)
+    candidates: list[PredictiveCandidate] | None = Field(default=None, max_length=12)
+    provider_id: str | None = Field(default=None, max_length=40)
 
 
-class LlamadaResponse(BaseModel):
-    """Una llamada registrada a Nous (metadata, nunca contenido)."""
+class CallResponse(BaseModel):
+    """A registered call to Nous (metadata, never content)."""
 
     id: str
     ts: int
-    metodo: str
-    ruta: str
-    origen: str
-    agente: str
-    latencia_ms: int
+    method: str
+    route: str
+    origin: str
+    agent: str
+    latency_ms: int
     status: int
-    es_ping: bool
+    is_ping: bool
 
 
-class LlamadaRutaStats(BaseModel):
-    """Conteo y latencia media agregados por ruta."""
+class CallRouteStats(BaseModel):
+    """Call count and mean latency aggregated by route."""
 
-    ruta: str
-    llamadas: int
-    latencia_media: int
+    route: str
+    calls: int
+    mean_latency: int
 
 
-class LlamadaOrigenStats(BaseModel):
-    """Conteo de llamadas agregado por origen."""
+class CallOriginStats(BaseModel):
+    """Call count aggregated by origin."""
 
-    origen: str
-    llamadas: int
+    origin: str
+    calls: int
 
 
 class PingsStats(BaseModel):
-    """Resumen del registro de pings/sondas de vida."""
+    """Summary of the pings/liveness probes registry."""
 
     total: int
-    ultimo: int | None
+    last: int | None
 
 
-class LlamadasStatsResponse(BaseModel):
-    """Agregados del registro de llamadas para el panel."""
+class CallsStatsResponse(BaseModel):
+    """Aggregates of the call registry for the panel."""
 
     total: int
-    por_ruta: list[LlamadaRutaStats]
-    por_origen: list[LlamadaOrigenStats]
+    by_route: list[CallRouteStats]
+    by_origin: list[CallOriginStats]
     pings: PingsStats
 
 
-class ImportarRequest(BaseModel):
-    """Parámetros de una migración de memoria hacia Nous.
+class ImportRequest(BaseModel):
+    """Parameters of a memory migration into Nous.
 
-    ``ruta`` es un archivo o directorio en la máquina donde corre el
-    backend — local-first: la migración no sale del equipo. Para
-    ``gbrain``/``memlord`` se puede indicar ``url`` del servidor MCP
-    (streamable-HTTP) y ``token`` Bearer: Nous descarga las memorias
-    directamente de la instancia en vez de leer un export.
+    ``path`` is a file or directory on the machine running the
+    backend — local-first: the migration never leaves the device.
+    For ``gbrain``/``memlord`` you may pass the MCP server ``url``
+    (streamable-HTTP) and a Bearer ``token``: Nous downloads the
+    memories directly from the instance instead of reading an
+    export.
     """
 
-    formato: Literal["auto", "jsonl", "json", "obsidian", "gbrain", "memlord"]
-    ruta: str | None = Field(default=None, min_length=1, max_length=500)
+    format: Literal["auto", "jsonl", "json", "obsidian", "gbrain", "memlord"]
+    path: str | None = Field(default=None, min_length=1, max_length=500)
     url: str | None = Field(default=None, min_length=8, max_length=500)
     token: str | None = Field(default=None, max_length=500)
-    fuente: str | None = Field(default=None, max_length=50)
-    rama: str | None = Field(default=None, max_length=64)
-    vista_previa: bool = False
+    source: str | None = Field(default=None, max_length=50)
+    branch: str | None = Field(default=None, max_length=64)
+    preview: bool = False
 
 
-class ImportarResponse(BaseModel):
-    """Resultado de una migración de memoria.
+class ImportResponse(BaseModel):
+    """Result of a memory migration.
 
-    En ``vista_previa`` no se escribe nada: ``nuevas``/``omitidos``
-    anticipan lo que haría la ejecución real.
+    In ``preview`` mode nothing is written: ``new``/``skipped``
+    anticipate what a real execution would do.
     """
 
-    importados: int
-    omitidos: int
-    errores: int
-    vinculos: int
-    formato: str
-    fuente: str
-    vista_previa: bool = False
-    nuevas: int | None = None
+    imported: int
+    skipped: int
+    errors: int
+    links: int
+    format: str
+    source: str
+    preview: bool = False
+    new: int | None = None
 
 
-class HistorialImportacion(BaseModel):
-    """Entrada del historial de migraciones ejecutadas."""
+class ImportHistoryEntry(BaseModel):
+    """Entry of the executed migrations history."""
 
     ts: int
-    formato: str
-    fuente: str
-    ruta: str
-    resultado: dict[str, Any]
+    format: str
+    source: str
+    path: str
+    result: dict[str, Any]
 
 
-# ── Identidad multi-tenant ──────────────────────────────────────
+# ── Multi-tenant identity ───────────────────────────────────────
 
 
-class UsuarioResumen(BaseModel):
-    """Datos públicos de un usuario."""
+class UserSummary(BaseModel):
+    """Public data of a user."""
 
     id: str
     handle: str
-    nombre: str | None = None
+    name: str | None = None
     email: str | None = None
 
 
-class WorkspaceResumen(BaseModel):
-    """Workspace con el rol del llamante en él."""
+class WorkspaceSummary(BaseModel):
+    """Workspace with the caller's role in it."""
 
     id: str
     slug: str
-    nombre: str
-    rol: str
+    name: str
+    role: str
 
 
-class LicenciaResumen(BaseModel):
-    """Uso actual contra los límites de la edición libre."""
+class LicenseSummary(BaseModel):
+    """Current usage against the free-edition limits."""
 
-    licenciado: bool
-    usuarios: int
-    max_usuarios: int | None
+    licensed: bool
+    users: int
+    max_users: int | None
     workspaces: int
     max_workspaces: int | None
     tier: str = "oss"
     features: list[str] = []
 
 
-class IdentidadResponse(BaseModel):
-    """Quién es el llamante y a qué workspaces pertenece."""
+class IdentityResponse(BaseModel):
+    """Who the caller is and which workspaces they belong to."""
 
-    usuario: UsuarioResumen | None
-    workspace_activo: WorkspaceResumen
-    workspaces: list[WorkspaceResumen]
-    licencia: LicenciaResumen | None = None
+    user: UserSummary | None
+    active_workspace: WorkspaceSummary
+    workspaces: list[WorkspaceSummary]
+    license: LicenseSummary | None = None
 
 
 class WorkspaceRequest(BaseModel):
-    """Cuerpo para crear un workspace nuevo."""
+    """Body to create a new workspace."""
 
     slug: str = Field(min_length=1, max_length=64)
-    nombre: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=200)
 
 
-class MiembroResumen(BaseModel):
-    """Miembro de un workspace con su rol."""
+class MemberSummary(BaseModel):
+    """Workspace member with their role."""
 
-    usuario_id: str
+    user_id: str
     handle: str
-    nombre: str | None
-    rol: str
+    name: str | None
+    role: str
 
 
-class MiembroPatch(BaseModel):
-    """Cambio de rol de un miembro (owner no asignable)."""
+class MemberPatch(BaseModel):
+    """Member role change (owner is not assignable)."""
 
-    rol: Literal["member", "viewer"]
-
-
-class InvitacionRequest(BaseModel):
-    """Cuerpo para emitir una invitación canjeable."""
-
-    rol: Literal["member", "viewer"] = "member"
-    dias: int = Field(default=7, ge=1, le=30)
+    role: Literal["member", "viewer"]
 
 
-class InvitacionResponse(BaseModel):
-    """Token de invitación en claro — se muestra una sola vez."""
+class InvitationRequest(BaseModel):
+    """Body to issue a redeemable invitation."""
+
+    role: Literal["member", "viewer"] = "member"
+    days: int = Field(default=7, ge=1, le=30)
+
+
+class InvitationResponse(BaseModel):
+    """Invitation token in the clear — shown only once."""
 
     token: str
-    expira_dias: int
+    expires_days: int
 
 
-class CanjearRequest(BaseModel):
-    """Canje de invitación: crea el usuario del invitado."""
+class RedeemRequest(BaseModel):
+    """Invitation redemption: creates the guest's user."""
 
     token: str = Field(min_length=8, max_length=128)
     handle: str = Field(min_length=1, max_length=64)
-    nombre: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=200)
     email: str | None = Field(default=None, max_length=320)
 
 
-class CanjearResponse(BaseModel):
-    """Resultado del canje: key del nuevo usuario en claro."""
+class RedeemResponse(BaseModel):
+    """Redemption result: the new user's key in the clear."""
 
     handle: str
     key: str
 
 
-class LlaveRequest(BaseModel):
-    """Cuerpo para emitir una key propia nueva."""
+class KeyRequest(BaseModel):
+    """Body to issue a new own key."""
 
-    nombre: str | None = Field(default=None, max_length=80)
+    name: str | None = Field(default=None, max_length=80)
     workspace_default_id: str | None = Field(default=None)
 
 
-class LlaveResponse(BaseModel):
-    """Metadata de una key (nunca el hash ni el secreto)."""
+class KeyResponse(BaseModel):
+    """Key metadata (never the hash nor the secret)."""
 
     id: str
-    prefijo: str
-    nombre: str | None
+    prefix: str
+    name: str | None
     workspace_default_id: str | None
-    revocada: bool
-    ultimo_uso: datetime | None
-    creado_en: datetime
+    revoked: bool
+    last_used: datetime | None
+    created_at: datetime
 
 
-class IntencionRequest(BaseModel):
-    """Cuerpo para registrar una intención prospectiva (ADR-003)."""
+class IntentionRequest(BaseModel):
+    """Body to register a prospective intention (ADR-003)."""
 
-    intencion: str = Field(min_length=1, max_length=2_000)
-    en: str | int | None = Field(default=None)
-    cuando: str | None = Field(default=None, max_length=500)
-    umbral: float = Field(default=0.6, gt=0.0, le=1.0)
+    intention: str = Field(min_length=1, max_length=2_000)
+    at: str | int | None = Field(default=None)
+    when: str | None = Field(default=None, max_length=500)
+    threshold: float = Field(default=0.6, gt=0.0, le=1.0)
     workspace: str | None = Field(default=None, max_length=64)
 
 
 class DecisionRequest(BaseModel):
-    """Cuerpo para el consejero prescriptivo (ADR-002 Nivel 2, Pro)."""
+    """Body for the prescriptive advisor (ADR-002 Level 2, Pro)."""
 
-    dilema: str = Field(min_length=1, max_length=2_000)
-    opciones: list[str] | None = Field(default=None, max_length=6)
+    dilemma: str = Field(min_length=1, max_length=2_000)
+    options: list[str] | None = Field(default=None, max_length=6)
     workspace: str | None = Field(default=None, max_length=64)
 
 
-class CurarRequest(BaseModel):
-    """Cuerpo para curar/descurar un evento (inmunidad al olvido)."""
+class CurateRequest(BaseModel):
+    """Body to curate/uncurate an event (forgetting immunity)."""
 
-    curado: bool = True
+    curated: bool = True
 
 
-class LicenciaActivarRequest(BaseModel):
-    """Cuerpo para activar una license key desde el dashboard (ADR-001)."""
+class ActivateLicenseRequest(BaseModel):
+    """Body to activate a license key from the dashboard (ADR-001)."""
 
     key: str = Field(min_length=8, max_length=4_096)
 
 
-class BorradorRequest(BaseModel):
-    """Cuerpo para guardar un pensamiento volátil (buffer de trabajo)."""
+class DraftRequest(BaseModel):
+    """Body to save a volatile thought (working buffer)."""
 
-    contenido: str = Field(min_length=1, max_length=4_000)
-    dimension: Literal["cognitiva", "somatica", "conductual"] = "cognitiva"
+    content: str = Field(min_length=1, max_length=4_000)
+    dimension: Literal["cognitive", "somatic", "behavioral"] = "cognitive"
     workspace: str | None = Field(default=None, max_length=64)
 
 
-class OlvidoDirigidoRequest(BaseModel):
-    """Cuerpo para marcar/desmarcar el olvido dirigido (Neuro-3)."""
+class DirectedForgettingRequest(BaseModel):
+    """Body to mark/unmark directed forgetting (Neuro-3)."""
 
-    olvidar: bool = True
+    forget: bool = True
     workspace: str | None = Field(default=None, max_length=64)
 
 
-class AplazarRequest(BaseModel):
-    """Cuerpo para posponer una intención prospectiva (snooze)."""
+class SnoozeRequest(BaseModel):
+    """Body to postpone a prospective intention (snooze)."""
 
-    segundos: int = Field(default=3600, ge=0, le=31_536_000)
+    seconds: int = Field(default=3600, ge=0, le=31_536_000)
     workspace: str | None = Field(default=None, max_length=64)
 
 
-class ConfianzaFuenteRequest(BaseModel):
-    """Cuerpo para aprobar/cuarentenar una fuente (Neuro-3)."""
+class TrustSourceRequest(BaseModel):
+    """Body to approve/quarantine a source (Neuro-3)."""
 
-    confiable: bool = True
+    trusted: bool = True
     workspace: str | None = Field(default=None, max_length=64)
 
 
-class SesionIniciarRequest(BaseModel):
-    """Cuerpo para abrir una sesión — bootstrap + boundary (Neuro-5)."""
+class SessionStartRequest(BaseModel):
+    """Body to open a session — bootstrap + boundary (Neuro-5)."""
 
-    agente: str | None = Field(default=None, max_length=80)
-    presupuesto: int = Field(default=4000, ge=0, le=100_000)
+    agent: str | None = Field(default=None, max_length=80)
+    budget: int = Field(default=4000, ge=0, le=100_000)
     workspace: str | None = Field(default=None, max_length=64)
 
 
-class SesionCerrarRequest(BaseModel):
-    """Cuerpo para cerrar una sesión — genera el handoff."""
+class SessionEndRequest(BaseModel):
+    """Body to close a session — generates the handoff."""
 
-    sesion_id: str | None = Field(default=None, max_length=40)
-    resumen: str | None = Field(default=None, max_length=4_000)
+    session_id: str | None = Field(default=None, max_length=40)
+    summary: str | None = Field(default=None, max_length=4_000)
     workspace: str | None = Field(default=None, max_length=64)
 
 
 class CensorRequest(BaseModel):
-    """Cuerpo para registrar un guardrail (regla aprendida)."""
+    """Body to register a guardrail (learned rule)."""
 
-    regla: str = Field(min_length=1, max_length=2_000)
-    severidad: Literal["bloquear", "advertir"] = "advertir"
-    dominio: str | None = Field(default=None, max_length=80)
+    rule: str = Field(min_length=1, max_length=2_000)
+    severity: Literal["block", "warn"] = "warn"
+    domain: str | None = Field(default=None, max_length=80)
     scope: Literal["personal", "workspace"] = "personal"
     workspace: str | None = Field(default=None, max_length=64)
 
 
-class VerificarRequest(BaseModel):
-    """Cuerpo para verificar una acción contra los censores."""
+class VerifyRequest(BaseModel):
+    """Body to verify an action against the censors."""
 
-    accion: str = Field(min_length=1, max_length=2_000)
+    action: str = Field(min_length=1, max_length=2_000)
     workspace: str | None = Field(default=None, max_length=64)
 
 
-class PrediccionRequest(BaseModel):
-    """Cuerpo para declarar una predicción con confianza (Brier)."""
+class PredictionRequest(BaseModel):
+    """Body to declare a prediction with confidence (Brier)."""
 
-    afirmacion: str = Field(min_length=1, max_length=2_000)
-    confianza: float = Field(ge=0.0, le=1.0)
-    evento_id: str | None = Field(default=None, max_length=40)
+    claim: str = Field(min_length=1, max_length=2_000)
+    confidence: float = Field(ge=0.0, le=1.0)
+    event_id: str | None = Field(default=None, max_length=40)
     workspace: str | None = Field(default=None, max_length=64)
 
 
-class ResolverPrediccionRequest(BaseModel):
-    """Cuerpo para resolver una predicción — cierra el loop."""
+class ResolvePredictionRequest(BaseModel):
+    """Body to resolve a prediction — closes the loop."""
 
-    acierto: bool
+    hit: bool
     workspace: str | None = Field(default=None, max_length=64)

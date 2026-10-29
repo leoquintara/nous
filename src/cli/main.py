@@ -34,282 +34,297 @@ def _parser() -> argparse.ArgumentParser:
     """Construye el parser raíz con todos los subcomandos."""
     p = argparse.ArgumentParser(
         prog="nous",
-        description="Nous — memoria persistente 4D para agentes de IA.",
+        description="Nous — persistent 4D memory for AI agents.",
     )
     p.add_argument(
-        "--version", action="store_true",
-        help="Muestra la versión instalada y sale.",
+        "--version",
+        action="store_true",
+        help="Prints the installed version and exits.",
     )
     sub = p.add_subparsers(dest="comando")
 
-    serve = sub.add_parser("serve", help="Arranca el servidor Nous.")
+    serve = sub.add_parser("serve", help="Starts the Nous server.")
     serve.add_argument(
-        "--transport", choices=["stdio", "http"], default=None,
-        help="Transporte MCP (default: el de la configuración).",
+        "--transport",
+        choices=["stdio", "http"],
+        default=None,
+        help="MCP transport (default: configuration value).",
     )
-    serve.add_argument("--host", default=None, help="Host del transporte HTTP.")
-    serve.add_argument("--port", type=int, default=None, help="Puerto HTTP.")
+    serve.add_argument("--host", default=None, help="HTTP transport host.")
+    serve.add_argument("--port", type=int, default=None, help="HTTP port.")
     serve.add_argument(
-        "--sin-dashboard", action="store_true",
-        help="No levantar el dashboard Next.js junto al transporte HTTP.",
+        "--no-dashboard",
+        "--no-dashboard",
+        action="store_true",
+        help="Do not start the Next.js dashboard with the HTTP transport.",
     )
 
-    v = sub.add_parser("version", help="Versión y método de instalación.")
-    v.add_argument("--json", action="store_true", help="Salida JSON.")
+    v = sub.add_parser("version", help="Version and installation method.")
+    v.add_argument("--json", action="store_true", help="JSON output.")
 
-    chk = sub.add_parser(
-        "check-update", help="Comprueba si hay una versión nueva."
-    )
-    chk.add_argument("--json", action="store_true", help="Salida JSON.")
+    chk = sub.add_parser("check-update", help="Checks whether a newer version exists.")
+    chk.add_argument("--json", action="store_true", help="JSON output.")
 
-    upg = sub.add_parser(
-        "upgrade", help="Actualiza Nous y migra la base de datos."
+    upg = sub.add_parser("upgrade", help="Upgrades Nous and migrates the database.")
+    upg.add_argument(
+        "--no-migrate",
+        action="store_true",
+        help="Swap code only; skip alembic upgrade head.",
     )
     upg.add_argument(
-        "--no-migrate", action="store_true",
-        help="Solo intercambia el código; omite alembic upgrade head.",
+        "--yes",
+        action="store_true",
+        help="Do not ask for interactive confirmation.",
     )
-    upg.add_argument(
-        "--yes", action="store_true",
-        help="No pedir confirmación interactiva.",
-    )
-    upg.add_argument("--json", action="store_true", help="Salida JSON.")
+    upg.add_argument("--json", action="store_true", help="JSON output.")
 
-    doc = sub.add_parser("doctor", help="Diagnóstico del entorno local.")
-    doc.add_argument("--json", action="store_true", help="Salida JSON.")
+    doc = sub.add_parser("doctor", help="Diagnoses the local environment.")
+    doc.add_argument("--json", action="store_true", help="JSON output.")
 
-    db = sub.add_parser("db", help="Migraciones de base de datos (Alembic).")
+    db = sub.add_parser("db", help="Database migrations (Alembic).")
     db.add_argument(
-        "accion", choices=["upgrade", "current", "heads", "history"],
-        help="Acción de Alembic a ejecutar.",
+        "accion",
+        metavar="action",
+        choices=["upgrade", "current", "heads", "history"],
+        help="Alembic action to run.",
     )
 
-    seed = sub.add_parser("seed", help="Siembra eventos de ejemplo.")
-    seed.add_argument(
-        "--eventos", type=int, default=210, help="Eventos a sembrar."
-    )
+    seed = sub.add_parser("seed", help="Seeds sample events.")
+    seed.add_argument("--events", "--eventos", type=int, default=210, help="Events to seed.")
 
-    st = sub.add_parser("stats", help="Estadísticas de la memoria.")
-    st.add_argument("--json", action="store_true", help="Salida JSON.")
+    st = sub.add_parser("stats", help="Memory statistics.")
+    st.add_argument("--json", action="store_true", help="JSON output.")
 
-    ex = sub.add_parser("export", help="Exporta la memoria a JSONL.")
-    ex.add_argument("archivo", type=Path, help="Ruta de destino (.jsonl).")
+    ex = sub.add_parser("export", help="Exports memory to JSONL.")
+    ex.add_argument("archivo", metavar="path", type=Path, help="Destination path (.jsonl).")
 
     im = sub.add_parser(
         "import",
-        help="Importa memoria desde obsidian/gbrain/memlord/JSON/JSONL.",
+        help="Imports memory from obsidian/gbrain/memlord/JSON/JSONL.",
     )
     im.add_argument(
         "origen",
+        metavar="source_path",
         type=Path,
-        help="Archivo (.json/.jsonl) o directorio (vault .md).",
+        help="File (.json/.jsonl) or directory (.md vault).",
     )
     im.add_argument(
+        "--format",
         "--formato",
         choices=["auto", "jsonl", "json", "obsidian", "gbrain", "memlord"],
         default="auto",
-        help="Formato de origen (default: auto por extensión).",
+        help="Source format (default: auto by extension).",
     )
     im.add_argument(
+        "--source",
         "--fuente",
         default=None,
-        help="Nombre de eventos.fuente para lo importado (default: formato).",
+        help="eventos.fuente name for the import (default: format).",
     )
     im.add_argument(
+        "--branch",
         "--rama",
         default=None,
-        help="Línea de universo donde registrar lo importado.",
+        help="Universe line to record the import into.",
     )
     im.add_argument(
         "--workspace",
         default=None,
-        help="Slug o UUID del workspace destino (default: personal).",
+        help="Slug or UUID of the target workspace (default: personal).",
     )
 
-    sk = sub.add_parser(
-        "skills", help="Instala los skills/agentes de Nous en el proyecto."
-    )
+    sk = sub.add_parser("skills", help="Installs the Nous skills/agents into the project.")
     sk.add_argument(
         "accion",
+        metavar="action",
         choices=["install", "list"],
-        help="install copia los artefactos; list muestra lo disponible.",
+        help="install copies the artifacts; list shows what is available.",
     )
     sk.add_argument(
         "--target",
         default=".agents",
         help=(
-            "Destino: .agents (default), .claude, .opencode, .cursor "
-            "o una ruta personalizada."
+            "Destino: .agents (default), .claude, .opencode, .cursor " "o una ruta personalizada."
         ),
     )
     sk.add_argument(
         "--dir",
         type=Path,
         default=Path("."),
-        help="Raíz del proyecto donde instalar (default: cwd).",
+        help="Project root to install into (default: cwd).",
     )
 
-    sub.add_parser(
-        "benchmark", help="Ejecuta la suite de benchmarks."
-    )
+    sub.add_parser("benchmark", help="Runs the benchmark suite.")
 
-    prune = sub.add_parser(
-        "prune", help="Poda sináptica: elimina huellas débiles y viejas."
+    prune = sub.add_parser("prune", help="Synaptic pruning: removes weak, old imprints.")
+    prune.add_argument(
+        "--days",
+        "--dias",
+        type=int,
+        default=90,
+        help="Only events older than N days (default 90).",
     )
     prune.add_argument(
-        "--dias", type=int, default=90,
-        help="Solo eventos más antiguos que N días (default 90).",
+        "--amplitude",
+        "--amplitud",
+        type=float,
+        default=0.3,
+        help="Prunes only imprints with amplitude <= this value (default 0.3).",
     )
     prune.add_argument(
-        "--amplitud", type=float, default=0.3,
-        help="Poda solo huellas con amplitud <= este valor (default 0.3).",
+        "--apply",
+        "--aplicar",
+        action="store_true",
+        help="Actually deletes; without it only shows the count (dry-run).",
     )
-    prune.add_argument(
-        "--aplicar", action="store_true",
-        help="Elimina de verdad; sin él solo muestra el conteo (dry-run).",
-    )
-    prune.add_argument("--json", action="store_true", help="Salida JSON.")
+    prune.add_argument("--json", action="store_true", help="JSON output.")
 
     con = sub.add_parser(
-        "consolidar",
-        help="Consolidación-sueño: refuerza, promueve a curado y archiva.",
+        "consolidate",
+        aliases=["consolidar"],
+        help="Sleep-consolidation: strengthens, promotes to curated and archives.",
     )
-    con.add_argument("--json", action="store_true", help="Salida JSON.")
+    con.add_argument("--json", action="store_true", help="JSON output.")
 
     sub.add_parser(
-        "intenciones",
-        help="Lista las intenciones prospectivas pendientes.",
-    )
-
-    sub.add_parser(
-        "repasos",
-        help="Lista las memorias cuyo repaso óptimo (SRS) ya venció.",
+        "intentions",
+        aliases=["intenciones"],
+        help="Lists pending prospective intentions.",
     )
 
     sub.add_parser(
-        "archivados",
-        help="Lista las memorias archivadas por consolidación.",
+        "reviews",
+        aliases=["repasos"],
+        help="Lists memories whose optimal (SRS) review has elapsed.",
+    )
+
+    sub.add_parser(
+        "archived",
+        aliases=["archivados"],
+        help="Lists memories archived by consolidation.",
     )
 
     res = sub.add_parser(
-        "restaurar",
-        help="Restaura una memoria archivada (deshace el olvido).",
+        "restore",
+        aliases=["restaurar"],
+        help="Restores an archived memory (undoes forgetting).",
     )
-    res.add_argument("evento_id", help="UUID del evento archivado.")
+    res.add_argument("evento_id", metavar="event_id", help="UUID of the archived event.")
 
     olv = sub.add_parser(
-        "olvidar",
-        help="Olvido dirigido: acelera el olvido natural de una memoria.",
+        "forget",
+        aliases=["olvidar"],
+        help="Directed forgetting: accelerates the natural decay of a memory.",
     )
-    olv.add_argument("evento_id", help="UUID del evento a olvidar.")
+    olv.add_argument("evento_id", metavar="event_id", help="UUID of the event to forget.")
     olv.add_argument(
-        "--deshacer", action="store_true",
-        help="Quita la marca: la memoria vuelve a decaer normal.",
+        "--undo",
+        "--deshacer",
+        action="store_true",
+        help="Removes the mark: the memory decays normally again.",
     )
 
     sub.add_parser(
-        "cuarentena",
-        help="Lista memorias aisladas por fuente no confiable.",
+        "quarantine",
+        aliases=["cuarentena"],
+        help="Lists memories quarantined by an untrusted source.",
     )
 
     cf = sub.add_parser(
-        "confiar",
-        help="Aprueba una fuente (o la desconfía con --desconfiar).",
+        "trust",
+        aliases=["confiar"],
+        help="Approves a source (or distrusts it with --distrust).",
     )
-    cf.add_argument("fuente", help="Nombre de la fuente.")
+    cf.add_argument("fuente", help="Source name.")
     cf.add_argument(
-        "--desconfiar", action="store_true",
+        "--distrust",
+        "--desconfiar",
+        action="store_true",
         help="Marca la fuente como no confiable (cuarentena).",
     )
 
     ap = sub.add_parser(
-        "aplazar",
+        "snooze",
+        aliases=["aplazar"],
         help="Snooze: pospone el disparo de una intención pendiente.",
     )
-    ap.add_argument("intencion_id", help="UUID de la intención.")
+    ap.add_argument("intencion_id", metavar="intention_id", help="UUID of the intention.")
     ap.add_argument("horas", type=int, help="Horas a posponer.")
 
     al = sub.add_parser(
         "activate-license",
-        help="Activa una license key Pro (~/.nous/license.jwt).",
+        help="Activates a Pro license key (~/.nous/license.jwt).",
     )
-    al.add_argument("key", help="License key (JWT o serial de la landing).")
-    al.add_argument("--json", action="store_true", help="Salida JSON.")
+    al.add_argument("key", help="License key (JWT or landing serial).")
+    al.add_argument("--json", action="store_true", help="JSON output.")
 
     # Neuro-5 — ciclo de sesión completo.
-    sub.add_parser(
-        "sesiones", help="Historial de sesiones (boundaries de la memoria)."
-    )
-    ho = sub.add_parser(
-        "handoff", help="Handoff de la última sesión cerrada."
-    )
+    sub.add_parser("sessions", aliases=["sesiones"], help="Session history (memory boundaries).")
+    ho = sub.add_parser("handoff", help="Handoff of the last closed session.")
     ho.add_argument(
-        "sesion_id", nargs="?", default=None,
-        help="UUID de la sesión (default: la última cerrada).",
+        "sesion_id",
+        metavar="session_id",
+        nargs="?",
+        default=None,
+        help="Session UUID (default: last closed).",
     )
-    sub.add_parser(
-        "censores", help="Lista los guardrails vigentes."
-    )
-    cn = sub.add_parser(
-        "censor", help="Registra un guardrail (regla aprendida)."
-    )
-    cn.add_argument("regla", help="La regla en texto.")
+    sub.add_parser("censors", aliases=["censores"], help="Lists active guardrails.")
+    cn = sub.add_parser("censor", help="Registers a guardrail (learned rule).")
+    cn.add_argument("regla", metavar="rule", help="La regla en texto.")
     cn.add_argument(
-        "--bloquear", action="store_true",
-        help="Severidad bloquear — veta la acción (default: advertir).",
+        "--block",
+        "--bloquear",
+        action="store_true",
+        help="Block severity — vetoes the action (default: warn).",
     )
-    cn.add_argument(
-        "--dominio", default=None, help="Ámbito de la regla (p. ej. git)."
-    )
+    cn.add_argument("--domain", "--dominio", default=None, help="Scope of the rule (e.g. git).")
     ver = sub.add_parser(
-        "verificar", help="Verifica una acción contra los censores."
+        "verify", aliases=["verificar"], help="Verifies an action against the censors."
     )
-    ver.add_argument("accion", help="La acción propuesta en texto.")
+    ver.add_argument("accion", metavar="action", help="The proposed action as text.")
     sub.add_parser(
-        "calibracion",
-        help="Brier score y curva de confiabilidad de las predicciones.",
+        "calibration",
+        aliases=["calibracion"],
+        help="Brier score and reliability curve of predictions.",
     )
     pre = sub.add_parser(
-        "predecir", help="Registra una predicción con confianza."
+        "predict", aliases=["predecir"], help="Registers a prediction with confidence."
     )
-    pre.add_argument("afirmacion", help="Lo que se predice.")
+    pre.add_argument("afirmacion", metavar="claim", help="What is being predicted.")
     pre.add_argument(
-        "--confianza", type=float, default=0.7,
+        "--confidence",
+        "--confianza",
+        type=float,
+        default=0.7,
         help="Probabilidad declarada 0.0-1.0 (default 0.7).",
     )
-    res2 = sub.add_parser(
-        "resolver", help="Resuelve una predicción (acierto/fallo)."
-    )
-    res2.add_argument("prediccion_id", help="UUID de la predicción.")
+    res2 = sub.add_parser("resolve", aliases=["resolver"], help="Resolves a prediction (hit/miss).")
+    res2.add_argument("prediccion_id", metavar="prediction_id", help="UUID of the prediction.")
     res2.add_argument(
-        "--fallo", action="store_true",
-        help="La afirmación falló (default: acertó).",
+        "--miss",
+        "--fallo",
+        action="store_true",
+        help="The claim missed (default: hit).",
     )
     sub.add_parser(
-        "predicciones", help="Lista predicciones abiertas y resueltas."
+        "predictions", aliases=["predicciones"], help="Lista predicciones abiertas y resueltas."
     )
-    sub.add_parser(
-        "pendientes", help="Escrituras staged pendientes de aprobación."
-    )
-    ap2 = sub.add_parser(
-        "aprobar", help="Aprueba una escritura staged (o --todo)."
-    )
+    sub.add_parser("pending", aliases=["pendientes"], help="Staged writes pending approval.")
+    ap2 = sub.add_parser("approve", aliases=["aprobar"], help="Approves a staged write (or --all).")
     ap2.add_argument(
-        "evento_id", nargs="?", default=None, help="UUID de la propuesta."
+        "evento_id", metavar="event_id", nargs="?", default=None, help="UUID of the proposal."
     )
-    ap2.add_argument(
-        "--todo", action="store_true", help="Aprueba todas las staged."
-    )
+    ap2.add_argument("--all", "--todo", action="store_true", help="Approves every staged write.")
     rec = sub.add_parser(
-        "rechazar", help="Rechaza una escritura staged (la descarta)."
+        "reject", aliases=["rechazar"], help="Rejects a staged write (discards it)."
     )
-    rec.add_argument("evento_id", help="UUID de la propuesta.")
-    lag = sub.add_parser(
-        "lagunas", help="Mapa de lagunas — lo que la memoria no sabe."
-    )
-    lag.add_argument("consulta", help="El tema a sondear.")
+    rec.add_argument("evento_id", metavar="event_id", help="UUID of the proposal.")
+    lag = sub.add_parser("gaps", aliases=["lagunas"], help="Gap map — what memory does not know.")
+    lag.add_argument("consulta", metavar="query", help="El tema a sondear.")
     lag.add_argument(
-        "--top", type=int, default=10,
+        "--top",
+        type=int,
+        default=10,
         help="Resultados a evaluar (default 10).",
     )
 
@@ -356,10 +371,7 @@ def _cmd_check_update(como_json: bool) -> int:
     if resultado.version_reciente:
         sys.stdout.write(f"Más reciente: {resultado.version_reciente}\n")
     if resultado.actualizacion_disponible:
-        sys.stdout.write(
-            ui.ok("Actualización disponible")
-            + f" → {ui.info(resultado.comando_upgrade)}\n"
-        )
+        sys.stdout.write(ui.ok("Update available") + f" → {ui.info(resultado.comando_upgrade)}\n")
     else:
         sys.stdout.write(ui.suave(resultado.detalle) + "\n")
     return 0
@@ -369,10 +381,10 @@ def _cmd_upgrade(no_migrate: bool, yes: bool, como_json: bool) -> int:
     """Implementa ``nous upgrade`` con confirmación y pasos."""
     info = up.check_update()
     if info.actualizacion_disponible is False:
-        sys.stdout.write(ui.ok("Ya estás en la versión más reciente.") + "\n")
+        sys.stdout.write(ui.ok("Already on the latest version.") + "\n")
         return 0
     if not yes and not _confirmar():
-        sys.stdout.write("Upgrade cancelado.\n")
+        sys.stdout.write("Upgrade cancelled.\n")
         return 1
     resultado = up.upgrade(no_migrate=no_migrate)
     if como_json:
@@ -389,7 +401,7 @@ def _cmd_upgrade(no_migrate: bool, yes: bool, como_json: bool) -> int:
 def _confirmar() -> bool:
     """Pide confirmación interactiva para el upgrade."""
     try:
-        return input("¿Continuar con el upgrade? [s/N] ").lower() == "s"
+        return input("Continue with the upgrade? [y/N] ").lower() == "s"
     except (EOFError, KeyboardInterrupt):
         return False
 
@@ -444,7 +456,7 @@ def _cmd_doctor(como_json: bool) -> int:
         for clave, valor in datos.items():
             if valor in ("ok", True):
                 render = ui.ok(str(valor))
-            elif valor in (False, "error", "fallo", "sin conexión"):
+            elif valor in (False, "error", "fallo", "offline"):
                 render = ui.error(str(valor))
             else:
                 render = str(valor)
@@ -474,12 +486,9 @@ def _cmd_activate_license(key: str, como_json: bool) -> int:
         lic = lic_mod.activar_licencia(key)
     except ErrorValidacion:
         if como_json:
-            _json({"activada": False, "motivo": "key inválida o expirada"})
+            _json({"activada": False, "motivo": "invalid or expired key"})
         else:
-            sys.stderr.write(
-                ui.error("License key inválida o expirada — nada se guardó.")
-                + "\n"
-            )
+            sys.stderr.write(ui.error("Invalid or expired license key — nothing was saved.") + "\n")
         return 1
     if como_json:
         _json(
@@ -534,9 +543,9 @@ async def _stats() -> dict[str, object]:
     try:
         async with get_session(engine) as session:
             filas = await session.execute(
-                select(
-                    EventoModel.dimension, func.count(EventoModel.id)
-                ).group_by(EventoModel.dimension)
+                select(EventoModel.dimension, func.count(EventoModel.id)).group_by(
+                    EventoModel.dimension
+                )
             )
             total = await session.scalar(select(func.count(EventoModel.id)))
             rango = await session.execute(
@@ -605,9 +614,7 @@ async def _cmd_import(
                 sys.stderr.write(ui.error(f"error: {e}") + "\n")
                 return 1
             ws_id = ws.id
-        resumen = await importar(
-            engine, origen, formato, fuente, rama, ws_id
-        )
+        resumen = await importar(engine, origen, formato, fuente, rama, ws_id)
     finally:
         await engine.dispose()
     exito = resumen["errores"] == 0 or resumen["importados"] > 0
@@ -622,9 +629,7 @@ async def _cmd_import(
     return 0 if exito else 1
 
 
-async def _poda(
-    dias: int, amplitud: float, aplicar: bool
-) -> dict[str, object]:
+async def _poda(dias: int, amplitud: float, aplicar: bool) -> dict[str, object]:
     """Cuenta o elimina los eventos débiles anteriores a N días."""
     import time as _time
 
@@ -640,8 +645,7 @@ async def _poda(
                 eliminados = await repo.podar(antes_de, amplitud, 0)
                 await session.commit()
                 return {"eliminados": eliminados, "aplicado": 1}
-            return {"candidatos": await repo.contar_podables(antes_de, amplitud, 0),
-                    "aplicado": 0}
+            return {"candidatos": await repo.contar_podables(antes_de, amplitud, 0), "aplicado": 0}
     finally:
         await engine.dispose()
 
@@ -685,11 +689,7 @@ async def _consolidar_cli() -> dict[str, object]:
                         amplitud=m.amplitud,
                         refuerzos=m.refuerzos,
                         weight=m.weight,
-                        tipo_memoria=(
-                            TipoMemoria(m.tipo_memoria)
-                            if m.tipo_memoria
-                            else None
-                        ),
+                        tipo_memoria=(TipoMemoria(m.tipo_memoria) if m.tipo_memoria else None),
                         ultimo_acceso=m.ultimo_acceso,
                         archivado=m.archivado,
                         curado=m.curado,
@@ -754,9 +754,7 @@ async def _consolidar_cli() -> dict[str, object]:
                 )
                 await repo.crear(evento_gist)
                 for miembro in gist.miembros:
-                    await relaciones.vincular(
-                        evento_gist.id, uuid.UUID(miembro), "gist"
-                    )
+                    await relaciones.vincular(evento_gist.id, uuid.UUID(miembro), "gist")
                 gist_ids.append(str(evento_gist.id))
             # Fase REM: pares de similitud media reciben aristas
             # "rem" — la recombinación creativa del sueño.
@@ -773,9 +771,7 @@ async def _consolidar_cli() -> dict[str, object]:
             )
             rem_ids: list[tuple[str, str]] = []
             for id_a, id_b in pares_soñados:
-                if await relaciones.vincular(
-                    uuid.UUID(id_a), uuid.UUID(id_b), "rem"
-                ):
+                if await relaciones.vincular(uuid.UUID(id_a), uuid.UUID(id_b), "rem"):
                     rem_ids.append((id_a, id_b))
             await ReporteConsolidacionRepository(session).crear(
                 ReporteConsolidacionModel(
@@ -796,9 +792,7 @@ async def _consolidar_cli() -> dict[str, object]:
                 )
             )
             await session.commit()
-        ventana = ventana_optima_sueno(
-            [m.timestamp_unix for m in modelos]
-        )
+        ventana = ventana_optima_sueno([m.timestamp_unix for m in modelos])
         return {
             "evaluados": len(modelos),
             "fortalecidos": len(plan.fortalecer),
@@ -820,16 +814,14 @@ async def _consolidar_cli() -> dict[str, object]:
 
 
 async def _listar_intenciones_cli() -> list[dict[str, object]]:
-    """Lista las intenciones prospectivas pendientes."""
+    """Lists pending prospective intentions."""
     from src.storage.database import crear_engine, get_session
     from src.storage.repositories import IntencionProspectivaRepository
 
     engine = crear_engine()
     try:
         async with get_session(engine) as session:
-            filas = await IntencionProspectivaRepository(
-                session
-            ).listar(ejecutadas=False)
+            filas = await IntencionProspectivaRepository(session).listar(ejecutadas=False)
         return [
             {
                 "id": str(f.id),
@@ -845,7 +837,7 @@ async def _listar_intenciones_cli() -> list[dict[str, object]]:
 
 
 async def _listar_repasos_cli() -> list[dict[str, object]]:
-    """Lista las memorias cuyo repaso óptimo (SRS) ya venció."""
+    """Lists memories whose optimal (SRS) review has elapsed."""
     import time
 
     from src.storage.database import crear_engine, get_session
@@ -861,9 +853,7 @@ async def _listar_repasos_cli() -> list[dict[str, object]]:
                 "id": str(f.id),
                 "contenido": f.contenido[:120],
                 "proxima_revision": f.proxima_revision,
-                "dias_atraso": round(
-                    (ahora - (f.proxima_revision or 0)) / 86400.0, 1
-                ),
+                "dias_atraso": round((ahora - (f.proxima_revision or 0)) / 86400.0, 1),
             }
             for f in filas
         ]
@@ -903,9 +893,7 @@ async def _restaurar_cli(evento_id: str) -> bool:
     engine = crear_engine()
     try:
         async with get_session(engine) as session:
-            restaurado = await EventoRepository(session).restaurar(
-                _uuid.UUID(evento_id)
-            )
+            restaurado = await EventoRepository(session).restaurar(_uuid.UUID(evento_id))
             await session.commit()
         return restaurado
     finally:
@@ -964,16 +952,14 @@ async def _confiar_cli(fuente: str, confiable: bool) -> None:
             await repo_f.crear(fuente)
             await repo_f.marcar_confiable(fuente, confiable)
             if confiable:
-                await EventoRepository(
-                    session
-                ).aprobar_cuarentena_fuente(fuente)
+                await EventoRepository(session).aprobar_cuarentena_fuente(fuente)
             await session.commit()
     finally:
         await engine.dispose()
 
 
 async def _aplazar_cli(intencion_id: str, horas: int) -> bool:
-    """Pospone el disparo de una intención N horas (snooze)."""
+    """Postpones an intention firing by N hours (snooze)."""
     import time
     import uuid as _uuid
 
@@ -997,9 +983,7 @@ def _cmd_benchmark() -> int:
     """Ejecuta la suite de benchmarks como subproceso."""
     import subprocess
 
-    proc = subprocess.run(
-        [sys.executable, "-m", "scripts.benchmark_search"], check=False
-    )
+    proc = subprocess.run([sys.executable, "-m", "scripts.benchmark_search"], check=False)
     return proc.returncode
 
 
@@ -1022,9 +1006,7 @@ def _dir_dashboard() -> Path | None:
 
 def _hay_dashboard_empaquetado() -> bool:
     """Indica si el paquete incluye el build estático del dashboard."""
-    estatico = (
-        Path(__file__).resolve().parents[1] / "dashboard_static" / "index.html"
-    )
+    estatico = Path(__file__).resolve().parents[1] / "dashboard_static" / "index.html"
     return estatico.is_file()
 
 
@@ -1040,7 +1022,9 @@ def _detener_dashboard(proc: subprocess.Popen[bytes]) -> None:
     if sys.platform == "win32":
         subprocess.run(
             ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-            capture_output=True, timeout=15, check=False,
+            capture_output=True,
+            timeout=15,
+            check=False,
         )
         return
     killpg = getattr(os, "killpg", None)  # solo POSIX
@@ -1078,9 +1062,7 @@ def _lanzar_dashboard(directorio: Path) -> subprocess.Popen[bytes] | None:
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
         )
     else:
-        proc = subprocess.Popen(
-            [yarn, "dev"], cwd=directorio, start_new_session=True
-        )
+        proc = subprocess.Popen([yarn, "dev"], cwd=directorio, start_new_session=True)
     atexit.register(_detener_dashboard, proc)
     return proc
 
@@ -1125,21 +1107,17 @@ def _cmd_serve(args: argparse.Namespace) -> int:
                 ui.aviso(
                     "stdio es para clientes MCP — cada Enter imprime un "
                     "error de protocolo inofensivo.\n"
-                    "Para uso manual: nous serve --transport http"
+                    "For manual use: nous serve --transport http"
                 )
                 + "\n"
             )
-    elif not args.sin_dashboard:
+    elif not args.no_dashboard:
         directorio = _dir_dashboard()
         if directorio is not None:
             if _lanzar_dashboard(directorio) is None:
-                sys.stderr.write(
-                    ui.aviso("yarn no está en PATH — dashboard no lanzado.\n")
-                )
+                sys.stderr.write(ui.aviso("yarn no está en PATH — dashboard no lanzado.\n"))
             else:
-                sys.stderr.write(
-                    ui.info(f"Dashboard Next.js dev en {directorio}\n")
-                )
+                sys.stderr.write(ui.info(f"Dashboard Next.js dev en {directorio}\n"))
         elif _hay_dashboard_empaquetado():
             sys.stderr.write(
                 ui.info(
@@ -1158,9 +1136,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     if problema_db is not None:
         sys.stderr.write(
             ui.error(f"PostgreSQL inalcanzable: {problema_db}\n")
-            + ui.suave(
-                "Revisa NOUS_DATABASE_URL y que el servidor esté arriba.\n"
-            )
+            + ui.suave("Revisa NOUS_DATABASE_URL y que el servidor esté arriba.\n")
         )
         return 1
     from src.main import main as servidor_main
@@ -1198,9 +1174,34 @@ def main(argv: list[str] | None = None) -> int:
     return _despachar(args)
 
 
+_COMANDO_ALIAS: dict[str, str] = {
+    "consolidar": "consolidate",
+    "intenciones": "intentions",
+    "repasos": "reviews",
+    "archivados": "archived",
+    "restaurar": "restore",
+    "olvidar": "forget",
+    "cuarentena": "quarantine",
+    "confiar": "trust",
+    "aplazar": "snooze",
+    "sesiones": "sessions",
+    "censores": "censors",
+    "verificar": "verify",
+    "calibracion": "calibration",
+    "predecir": "predict",
+    "resolver": "resolve",
+    "predicciones": "predictions",
+    "pendientes": "pending",
+    "aprobar": "approve",
+    "rechazar": "reject",
+    "lagunas": "gaps",
+    "canjear": "redeem",
+}
+
+
 def _despachar(args: argparse.Namespace) -> int:
     """Enruta el subcomando parseado a su implementación."""
-    comando = args.comando
+    comando = _COMANDO_ALIAS.get(args.comando, args.comando)
     if comando == "serve":
         return _cmd_serve(args)
     if comando == "check-update":
@@ -1216,16 +1217,16 @@ def _despachar(args: argparse.Namespace) -> int:
         _json(datos) if args.json else _imprimir_stats(datos)
         return 0
     if comando == "seed":
-        return asyncio.run(_cmd_seed(args.eventos))
+        return asyncio.run(_cmd_seed(args.events))
     if comando == "export":
         return asyncio.run(_cmd_export(args.archivo))
     if comando == "import":
         return asyncio.run(
             _cmd_import(
                 args.origen,
-                args.formato,
-                args.fuente,
-                args.rama,
+                args.format,
+                args.source,
+                args.branch,
                 args.workspace,
             )
         )
@@ -1246,23 +1247,18 @@ def _despachar(args: argparse.Namespace) -> int:
 
         return cmd_persona(args)
     if comando == "prune":
-        datos = asyncio.run(_poda(args.dias, args.amplitud, args.aplicar))
+        datos = asyncio.run(_poda(args.days, args.amplitude, args.apply))
         if args.json:
             _json(datos)
         elif datos["aplicado"]:
-            sys.stdout.write(
-                ui.ok(f"Podados {datos['eliminados']} eventos.") + "\n"
-            )
+            sys.stdout.write(ui.ok(f"Podados {datos['eliminados']} eventos.") + "\n")
         else:
             sys.stdout.write(
-                ui.aviso(
-                    f"{datos['candidatos']} eventos podables "
-                    "(usa --aplicar para eliminarlos)."
-                )
+                ui.aviso(f"{datos['candidatos']} eventos podables " "(use --apply to delete them).")
                 + "\n"
             )
         return 0
-    if comando == "consolidar":
+    if comando == "consolidate":
         datos = asyncio.run(_consolidar_cli())
         if args.json:
             _json(datos)
@@ -1288,111 +1284,79 @@ def _despachar(args: argparse.Namespace) -> int:
                 + "\n"
             )
         return 0
-    if comando == "intenciones":
+    if comando == "intentions":
         filas = asyncio.run(_listar_intenciones_cli())
         if not filas:
-            sys.stdout.write(ui.suave("Sin intenciones pendientes.\n"))
+            sys.stdout.write(ui.suave("No pending intentions.\n"))
         for f in filas:
-            sys.stdout.write(
-                f"{ui.acento(str(f['trigger_tipo']))} "
-                f"{f['intencion']}\n"
-            )
+            sys.stdout.write(f"{ui.acento(str(f['trigger_tipo']))} " f"{f['intencion']}\n")
         return 0
-    if comando == "repasos":
+    if comando == "reviews":
         filas = asyncio.run(_listar_repasos_cli())
         if not filas:
             sys.stdout.write(ui.suave("Sin repasos pendientes.\n"))
         for f in filas:
-            sys.stdout.write(
-                f"{ui.acento(str(f['dias_atraso']) + 'd')} "
-                f"{f['contenido']}\n"
-            )
+            sys.stdout.write(f"{ui.acento(str(f['dias_atraso']) + 'd')} " f"{f['contenido']}\n")
         return 0
-    if comando == "archivados":
+    if comando == "archived":
         filas = asyncio.run(_listar_archivados_cli())
         if not filas:
             sys.stdout.write(ui.suave("Sin memorias archivadas.\n"))
         for f in filas:
             razon = ui.suave(f"({f['razon_archivo']})")
-            sys.stdout.write(
-                f"{ui.suave(str(f['id']))} {f['contenido']} {razon}\n"
-            )
+            sys.stdout.write(f"{ui.suave(str(f['id']))} {f['contenido']} {razon}\n")
         return 0
-    if comando == "restaurar":
+    if comando == "restore":
         try:
             restaurado = asyncio.run(_restaurar_cli(args.evento_id))
         except ValueError:
-            sys.stderr.write(
-                ui.error(f"UUID inválido: {args.evento_id}") + "\n"
-            )
+            sys.stderr.write(ui.error(f"UUID inválido: {args.evento_id}") + "\n")
             return 2
         if restaurado:
             sys.stdout.write(ui.ok("Memoria restaurada.") + "\n")
             return 0
-        sys.stderr.write(
-            ui.error("El evento no existe o no está archivado.") + "\n"
-        )
+        sys.stderr.write(ui.error("The event does not exist or is not archived.") + "\n")
         return 1
-    if comando == "olvidar":
+    if comando == "forget":
         try:
-            ok = asyncio.run(
-                _olvidar_cli(args.evento_id, args.deshacer)
-            )
+            ok = asyncio.run(_olvidar_cli(args.evento_id, args.undo))
         except ValueError:
-            sys.stderr.write(
-                ui.error(f"UUID inválido: {args.evento_id}") + "\n"
-            )
+            sys.stderr.write(ui.error(f"UUID inválido: {args.evento_id}") + "\n")
             return 2
         if ok:
-            accion = "Olvido normal restaurado." if args.deshacer else (
-                "Olvido dirigido marcado."
-            )
+            accion = "Olvido normal restaurado." if args.undo else ("Olvido dirigido marcado.")
             sys.stdout.write(ui.ok(accion) + "\n")
             return 0
         sys.stderr.write(ui.error("El evento no existe.") + "\n")
         return 1
-    if comando == "cuarentena":
+    if comando == "quarantine":
         filas = asyncio.run(_listar_cuarentena_cli())
         if not filas:
             sys.stdout.write(ui.suave("Sin memorias en cuarentena.\n"))
         for f in filas:
             sys.stdout.write(
-                f"{ui.acento(str(f['fuente']))} "
-                f"{ui.suave(str(f['id']))} {f['contenido']}\n"
+                f"{ui.acento(str(f['fuente']))} " f"{ui.suave(str(f['id']))} {f['contenido']}\n"
             )
         return 0
-    if comando == "confiar":
-        asyncio.run(_confiar_cli(args.fuente, not args.desconfiar))
-        if args.desconfiar:
-            sys.stdout.write(
-                ui.ok(f"Fuente '{args.fuente}' en cuarentena.") + "\n"
-            )
+    if comando == "trust":
+        asyncio.run(_confiar_cli(args.source, not args.distrust))
+        if args.distrust:
+            sys.stdout.write(ui.ok(f"Fuente '{args.source}' en cuarentena.") + "\n")
         else:
-            sys.stdout.write(
-                ui.ok(f"Fuente '{args.fuente}' aprobada.") + "\n"
-            )
+            sys.stdout.write(ui.ok(f"Fuente '{args.source}' aprobada.") + "\n")
         return 0
-    if comando == "aplazar":
+    if comando == "snooze":
         try:
-            ok = asyncio.run(
-                _aplazar_cli(args.intencion_id, args.horas)
-            )
+            ok = asyncio.run(_aplazar_cli(args.intencion_id, args.horas))
         except ValueError:
-            sys.stderr.write(
-                ui.error(f"UUID inválido: {args.intencion_id}") + "\n"
-            )
+            sys.stderr.write(ui.error(f"UUID inválido: {args.intencion_id}") + "\n")
             return 2
         if ok:
-            sys.stdout.write(
-                ui.ok(f"Intención aplazada {args.horas}h.") + "\n"
-            )
+            sys.stdout.write(ui.ok(f"Intención aplazada {args.horas}h.") + "\n")
             return 0
-        sys.stderr.write(
-            ui.error("La intención no existe o ya no está pendiente.")
-            + "\n"
-        )
+        sys.stderr.write(ui.error("The intention does not exist or is no longer pending.") + "\n")
         return 1
-    if comando == "sesiones":
+    if comando == "sessions":
         from src.mcp.tools import _listar_sesiones
 
         filas = asyncio.run(_listar_sesiones())
@@ -1416,55 +1380,39 @@ def _despachar(args: argparse.Namespace) -> int:
             return 1
         sys.stdout.write(str(datos["handoff"]) + "\n")
         return 0
-    if comando == "censores":
+    if comando == "censors":
         from src.mcp.tools import _listar_censores
 
         filas = asyncio.run(_listar_censores())
         if not filas:
             sys.stdout.write(ui.suave("Sin guardrails vigentes.\n"))
         for f in filas:
-            sys.stdout.write(
-                f"{ui.acento(str(f['severidad']).upper())} "
-                f"{f['contenido']}\n"
-            )
+            sys.stdout.write(f"{ui.acento(str(f['severidad']).upper())} " f"{f['contenido']}\n")
         return 0
     if comando == "censor":
         from src.mcp.tools import _crear_censor
 
-        severidad = "bloquear" if args.bloquear else "advertir"
-        creado = asyncio.run(
-            _crear_censor(args.regla, severidad, args.dominio)
-        )
-        sys.stdout.write(
-            ui.ok(f"Censor registrado ({severidad}): {creado['id']}")
-            + "\n"
-        )
+        severidad = "bloquear" if args.block else "advertir"
+        creado = asyncio.run(_crear_censor(args.regla, severidad, args.domain))
+        sys.stdout.write(ui.ok(f"Censor registrado ({severidad}): {creado['id']}") + "\n")
         return 0
-    if comando == "verificar":
+    if comando == "verify":
         from src.mcp.tools import _verificar_accion
 
         veredicto = asyncio.run(_verificar_accion(args.accion))
         if veredicto["permitido"]:
-            sys.stdout.write(
-                ui.ok(f"Permitido — {veredicto['motivo']}") + "\n"
-            )
+            sys.stdout.write(ui.ok(f"Permitido — {veredicto['motivo']}") + "\n")
         else:
-            sys.stdout.write(
-                ui.error(f"Bloqueado — {veredicto['motivo']}") + "\n"
-            )
+            sys.stdout.write(ui.error(f"Bloqueado — {veredicto['motivo']}") + "\n")
         for c in cast("list[dict[str, Any]]", veredicto["censores"]):
-            sys.stdout.write(
-                f"  {ui.suave(str(c['severidad']))} {c['contenido']}\n"
-            )
+            sys.stdout.write(f"  {ui.suave(str(c['severidad']))} {c['contenido']}\n")
         return 0 if veredicto["permitido"] else 1
-    if comando == "calibracion":
+    if comando == "calibration":
         from src.mcp.tools import _reporte_calibracion
 
         rep = asyncio.run(_reporte_calibracion())
         if rep["brier"] is None:
-            sys.stdout.write(
-                ui.suave("Sin predicciones resueltas aún.\n")
-            )
+            sys.stdout.write(ui.suave("Sin predicciones resueltas aún.\n"))
             return 0
         sys.stdout.write(
             f"Brier: {ui.negrita(str(rep['brier']))} "
@@ -1481,31 +1429,23 @@ def _despachar(args: argparse.Namespace) -> int:
                 f"→ real {b['acierto_empirico']:.2f}\n"
             )
         return 0
-    if comando == "predecir":
+    if comando == "predict":
         from src.mcp.tools import _registrar_prediccion
 
-        datos = asyncio.run(
-            _registrar_prediccion(args.afirmacion, args.confianza)
-        )
-        sys.stdout.write(
-            ui.ok(f"Predicción registrada: {datos['id']}") + "\n"
-        )
+        datos = asyncio.run(_registrar_prediccion(args.afirmacion, args.confidence))
+        sys.stdout.write(ui.ok(f"Predicción registrada: {datos['id']}") + "\n")
         return 0
-    if comando == "resolver":
+    if comando == "resolve":
         from src.mcp.tools import _resolver_prediccion
 
         try:
-            asyncio.run(
-                _resolver_prediccion(
-                    args.prediccion_id, not args.fallo
-                )
-            )
+            asyncio.run(_resolver_prediccion(args.prediccion_id, not args.miss))
         except ValueError as e:
             sys.stderr.write(ui.error(str(e)) + "\n")
             return 1
-        sys.stdout.write(ui.ok("Predicción resuelta.") + "\n")
+        sys.stdout.write(ui.ok("Prediction resolved.") + "\n")
         return 0
-    if comando == "predicciones":
+    if comando == "predictions":
         from src.mcp.tools import _listar_predicciones
 
         filas = asyncio.run(_listar_predicciones())
@@ -1513,43 +1453,30 @@ def _despachar(args: argparse.Namespace) -> int:
             sys.stdout.write(ui.suave("Sin predicciones.\n"))
         for f in filas:
             estado = (
-                "pendiente"
-                if f["acierto"] is None
-                else ("acertó" if f["acierto"] else "falló")
+                "pendiente" if f["acierto"] is None else ("acertó" if f["acierto"] else "falló")
             )
-            sys.stdout.write(
-                f"{ui.acento(estado)} {f['confianza']:.0%} "
-                f"{f['afirmacion']}\n"
-            )
+            sys.stdout.write(f"{ui.acento(estado)} {f['confianza']:.0%} " f"{f['afirmacion']}\n")
         return 0
-    if comando == "pendientes":
+    if comando == "pending":
         from src.mcp.tools import _pendientes_aprobacion
 
         filas = asyncio.run(_pendientes_aprobacion())
         if not filas:
-            sys.stdout.write(
-                ui.suave("Sin escrituras pendientes de aprobación.\n")
-            )
+            sys.stdout.write(ui.suave("Sin escrituras pendientes de aprobación.\n"))
         for f in cast("list[dict[str, Any]]", filas):
             sys.stdout.write(
-                f"{ui.suave(str(f['id']))} [{f['tipo']}] "
-                f"{str(f['contenido'])[:120]}\n"
+                f"{ui.suave(str(f['id']))} [{f['tipo']}] " f"{str(f['contenido'])[:120]}\n"
             )
         return 0
-    if comando == "aprobar":
+    if comando == "approve":
         from src.mcp.tools import _aprobar_evento, _aprobar_pendientes
 
-        if args.todo:
+        if args.all:
             aprob = asyncio.run(_aprobar_pendientes())
-            sys.stdout.write(
-                ui.ok(f"{aprob['aprobados']} propuestas aprobadas.")
-                + "\n"
-            )
+            sys.stdout.write(ui.ok(f"{aprob['aprobados']} propuestas aprobadas.") + "\n")
             return 0
         if not args.evento_id:
-            sys.stderr.write(
-                ui.error("indica un UUID o usa --todo") + "\n"
-            )
+            sys.stderr.write(ui.error("provide a UUID or use --all") + "\n")
             return 2
         try:
             asyncio.run(_aprobar_evento(args.evento_id))
@@ -1558,7 +1485,7 @@ def _despachar(args: argparse.Namespace) -> int:
             return 1
         sys.stdout.write(ui.ok("Propuesta aprobada.") + "\n")
         return 0
-    if comando == "rechazar":
+    if comando == "reject":
         from src.mcp.tools import _rechazar_evento
 
         try:
@@ -1568,14 +1495,12 @@ def _despachar(args: argparse.Namespace) -> int:
             return 1
         sys.stdout.write(ui.ok("Propuesta descartada.") + "\n")
         return 0
-    if comando == "lagunas":
+    if comando == "gaps":
         from src.mcp.tools import _mapa_lagunas
 
         datos = asyncio.run(_mapa_lagunas(args.consulta, args.top))
         if datos["es_laguna_total"]:
-            sys.stdout.write(
-                ui.aviso("Laguna total — sin evidencia alguna.") + "\n"
-            )
+            sys.stdout.write(ui.aviso("Total gap — no evidence at all.") + "\n")
             return 0
         sys.stdout.write(
             f"cobertura {datos['cobertura']:.0%} · "
@@ -1590,9 +1515,7 @@ def _despachar(args: argparse.Namespace) -> int:
 
 def _imprimir_stats(datos: dict[str, object]) -> None:
     """Imprime las estadísticas en formato legible."""
-    sys.stdout.write(
-        f"Eventos totales: {ui.negrita(str(datos['total']))}\n"
-    )
+    sys.stdout.write(f"Eventos totales: {ui.negrita(str(datos['total']))}\n")
     por_dimension = cast("dict[str, int]", datos["por_dimension"])
     for dim, n in por_dimension.items():
         sys.stdout.write(f"  {ui.info(dim)}: {n}\n")

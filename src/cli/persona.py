@@ -40,27 +40,21 @@ def registrar_subparsers(sub: argparse._SubParsersAction) -> None:  # type: igno
     )
     p_sub = persona.add_subparsers(dest="accion", required=True)
 
-    p_set = p_sub.add_parser(
-        "set", help="Guarda una respuesta del banco (upsert por clave)."
-    )
-    p_set.add_argument("clave", help="Clave del banco (p. ej. persona.nombre).")
-    p_set.add_argument("valor", help="Respuesta verbatim del usuario.")
+    p_set = p_sub.add_parser("set", help="Saves a bank answer (upsert by key).")
+    p_set.add_argument("clave", metavar="key", help="Bank key (e.g. persona.nombre).")
+    p_set.add_argument("valor", metavar="answer", help="Verbatim answer from the user.")
 
-    p_show = p_sub.add_parser("show", help="Muestra el banco y su hash.")
-    p_show.add_argument("--json", action="store_true", help="Salida JSON.")
+    p_show = p_sub.add_parser("show", help="Shows the bank and its hash.")
+    p_show.add_argument("--json", action="store_true", help="JSON output.")
 
-    p_sub.add_parser(
-        "claves", help="Catálogo de claves requeridas por archivo."
-    )
+    p_sub.add_parser("claves", help="Catalog of required keys per file.")
 
-    p_render = p_sub.add_parser(
-        "render", help="Renderiza los archivos de identidad."
-    )
+    p_render = p_sub.add_parser("render", help="Renders the identity files.")
     p_render.add_argument(
         "--only",
         choices=list(ARCHIVOS),
         default=None,
-        help="Renderiza solo este archivo.",
+        help="Renders only this file.",
     )
     p_render.add_argument(
         "--out",
@@ -73,7 +67,7 @@ def registrar_subparsers(sub: argparse._SubParsersAction) -> None:  # type: igno
         action="store_true",
         help="Solo reporta claves faltantes; no escribe nada.",
     )
-    p_render.add_argument("--json", action="store_true", help="Salida JSON.")
+    p_render.add_argument("--json", action="store_true", help="JSON output.")
 
 
 def cmd_persona(args: argparse.Namespace) -> int:
@@ -97,9 +91,7 @@ def cmd_persona(args: argparse.Namespace) -> int:
 async def _leer_banco(engine: Any) -> dict[str, Any]:
     """Lee el banco de respuestas del almacén de preferencias."""
     async with get_session(engine) as session:
-        valor = await ConfiguracionRepository(session, None).obtener(
-            CLAVE_BANCO
-        )
+        valor = await ConfiguracionRepository(session, None).obtener(CLAVE_BANCO)
     return valor if isinstance(valor, dict) else {}
 
 
@@ -110,15 +102,12 @@ async def _set(args: argparse.Namespace) -> int:
         banco = await _leer_banco(engine)
         banco[args.clave] = args.valor
         async with get_session(engine) as session:
-            await ConfiguracionRepository(session, None).guardar(
-                CLAVE_BANCO, banco
-            )
+            await ConfiguracionRepository(session, None).guardar(CLAVE_BANCO, banco)
             await session.commit()
     finally:
         await engine.dispose()
     sys.stdout.write(
-        ui.ok(f"{args.clave} guardada.") + " "
-        + ui.suave(f"banco: {hash_banco(banco)}") + "\n"
+        ui.ok(f"{args.clave} guardada.") + " " + ui.suave(f"banco: {hash_banco(banco)}") + "\n"
     )
     return 0
 
@@ -134,8 +123,7 @@ async def _show(args: argparse.Namespace) -> int:
         "hash": hash_banco(banco),
         "respuestas": banco,
         "cobertura": {
-            archivo: {"faltantes": list(faltantes(archivo, banco))}
-            for archivo in ARCHIVOS
+            archivo: {"faltantes": list(faltantes(archivo, banco))} for archivo in ARCHIVOS
         },
     }
     if args.json:
@@ -143,17 +131,12 @@ async def _show(args: argparse.Namespace) -> int:
         return 0
     sys.stdout.write(ui.negrita(f"banco {salida['hash']}") + "\n")
     if not banco:
-        sys.stdout.write(
-            ui.suave("  (vacío — `nous persona claves` muestra el catálogo)")
-            + "\n"
-        )
+        sys.stdout.write(ui.suave("  (empty — `nous persona claves` shows the catalog)") + "\n")
     for clave in sorted(banco):
         sys.stdout.write(f"  {clave} = {banco[clave]}\n")
     for archivo, cob in salida["cobertura"].items():
         falta = cob["faltantes"]
-        marca = ui.ok("listo") if not falta else ui.aviso(
-            f"faltan {len(falta)}"
-        )
+        marca = ui.ok("listo") if not falta else ui.aviso(f"faltan {len(falta)}")
         sys.stdout.write(f"  {archivo}: {marca}\n")
     return 0
 
@@ -176,17 +159,11 @@ async def _render(args: argparse.Namespace) -> int:
         await engine.dispose()
 
     objetivos = [args.only] if args.only else list(ARCHIVOS)
-    pendientes = {
-        a: faltantes(a, banco) for a in objetivos if faltantes(a, banco)
-    }
+    pendientes = {a: faltantes(a, banco) for a in objetivos if faltantes(a, banco)}
     if pendientes:
         for archivo, falta in pendientes.items():
-            sys.stderr.write(
-                ui.error(f"{archivo}: faltan {', '.join(falta)}") + "\n"
-            )
-        sys.stderr.write(
-            ui.suave("complétalas con `nous persona set`") + "\n"
-        )
+            sys.stderr.write(ui.error(f"{archivo}: faltan {', '.join(falta)}") + "\n")
+        sys.stderr.write(ui.suave("complete them with `nous persona set`") + "\n")
         return 1
 
     if args.check:
@@ -194,9 +171,7 @@ async def _render(args: argparse.Namespace) -> int:
         if args.json:
             _json(salida)
         else:
-            sys.stdout.write(
-                ui.ok(f"todo listo (banco {salida['hash']})") + "\n"
-            )
+            sys.stdout.write(ui.ok(f"todo listo (banco {salida['hash']})") + "\n")
         return 0
 
     out = args.out
@@ -215,6 +190,8 @@ async def _render(args: argparse.Namespace) -> int:
             sys.stdout.write(f"  - {ruta}\n")
         sys.stdout.write(
             ui.ok(f"{len(escritos)} archivos renderizados.")
-            + " " + ui.suave(f"banco {hash_banco(banco)}") + "\n"
+            + " "
+            + ui.suave(f"banco {hash_banco(banco)}")
+            + "\n"
         )
     return 0

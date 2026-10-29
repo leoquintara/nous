@@ -22,12 +22,12 @@ def _evento(
 
 
 class TestResumen:
-    """Comportamiento del resource memoria://resumen/{periodo}."""
+    """Comportamiento del resource memory://summary/{period}."""
 
     async def test_periodo_invalido_devuelve_error_json(self) -> None:
-        salida = json.loads(await resources.resumen("mensual"))
+        salida = json.loads(await resources.summary("monthly"))
         assert "error" in salida
-        assert set(salida["periodos_validos"]) == {"diario", "semanal"}
+        assert set(salida["valid_periods"]) == {"daily", "weekly"}
 
     async def test_resumen_agrupa_por_dimension(self) -> None:
         eventos = [
@@ -38,29 +38,37 @@ class TestResumen:
         with patch.object(
             resources, "_eventos_recientes", AsyncMock(return_value=eventos)
         ):
-            salida = json.loads(await resources.resumen("diario"))
-        assert salida["total_eventos"] == 3
-        assert salida["por_dimension"]["cognitiva"]["total"] == 2
-        assert salida["por_dimension"]["somatica"]["total"] == 1
-        assert salida["por_dimension"]["conductual"]["total"] == 0
+            salida = json.loads(await resources.summary("daily"))
+        assert salida["total_events"] == 3
+        assert salida["by_dimension"]["cognitive"]["total"] == 2
+        assert salida["by_dimension"]["somatic"]["total"] == 1
+        assert salida["by_dimension"]["behavioral"]["total"] == 0
         assert (
-            salida["por_dimension"]["cognitiva"]["amplitud_media"] == 0.6
+            salida["by_dimension"]["cognitive"]["mean_amplitude"] == 0.6
         )
         assert (
-            salida["eventos_destacados"][0]["amplitud"] == 0.9
+            salida["top_events"][0]["amplitude"] == 0.9
         )
 
     async def test_resumen_sin_eventos(self) -> None:
         with patch.object(
             resources, "_eventos_recientes", AsyncMock(return_value=[])
         ):
+            salida = json.loads(await resources.summary("weekly"))
+        assert salida["total_events"] == 0
+        assert salida["by_dimension"]["cognitive"]["mean_amplitude"] is None
+
+    async def test_alias_resumen_acepta_periodo_espanol(self) -> None:
+        """El alias legado traduce su argumento y comparte el payload EN."""
+        with patch.object(
+            resources, "_eventos_recientes", AsyncMock(return_value=[])
+        ):
             salida = json.loads(await resources.resumen("semanal"))
-        assert salida["total_eventos"] == 0
-        assert salida["por_dimension"]["cognitiva"]["amplitud_media"] is None
+        assert salida["total_events"] == 0
 
 
 class TestPatronesFlow:
-    """Comportamiento del resource memoria://patrones/flow."""
+    """Comportamiento del resource memory://patterns/flow."""
 
     async def test_detecta_racha_activa(self) -> None:
         base = 1_700_000_000
@@ -76,18 +84,18 @@ class TestPatronesFlow:
         with patch.object(
             resources, "_eventos_recientes", AsyncMock(return_value=eventos)
         ):
-            salida = json.loads(await resources.patrones_flow())
-        assert len(salida["trayectorias"]) == 1
-        assert salida["trayectorias"][0]["activa"] is True
-        assert salida["trayectorias"][0]["tipo"] == "racha_conductual"
+            salida = json.loads(await resources.flow_patterns())
+        assert len(salida["trajectories"]) == 1
+        assert salida["trajectories"][0]["active"] is True
+        assert salida["trajectories"][0]["kind"] == "behavioral_streak"
 
     async def test_sin_eventos_retorna_lista_vacia(self) -> None:
         with patch.object(
             resources, "_eventos_recientes", AsyncMock(return_value=[])
         ):
-            salida = json.loads(await resources.patrones_flow())
-        assert salida["trayectorias"] == []
-        assert salida["eventos_analizados"] == 0
+            salida = json.loads(await resources.flow_patterns())
+        assert salida["trajectories"] == []
+        assert salida["events_analyzed"] == 0
 
 
 class TestSerializadores:
