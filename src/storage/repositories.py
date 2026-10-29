@@ -1765,6 +1765,44 @@ class EventoRepository:
         resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
         return resultado.rowcount > 0
 
+    async def archivar(
+        self,
+        evento_id: uuid.UUID,
+        ahora_unix: int,
+        razon: str = "manual",
+    ) -> bool:
+        """Archiva un evento a petición del usuario — el olvido manual.
+
+        Espejo de :meth:`restaurar`: sale de todo camino de recall pero
+        queda listado en el archivo y es recuperable. La razón queda
+        registrada para la auditoría del olvido.
+
+        Args:
+            evento_id: UUID del evento.
+            ahora_unix: timestamp del archivo (para ``archivado_en``).
+            razon: Razón visible (default ``"manual"``).
+
+        Returns:
+            True si el evento existía dentro de la visibilidad y no
+            estaba ya archivado.
+        """
+        stmt = (
+            update(EventoModel)
+            .where(
+                EventoModel.id == evento_id,
+                EventoModel.archivado.is_(False),
+                *self._vis(),
+            )
+            .values(
+                archivado=True,
+                archivado_en=ahora_unix,
+                razon_archivo=razon,
+                olvido_dirigido=False,
+            )
+        )
+        resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
+        return resultado.rowcount > 0
+
     async def marcar_curado(self, evento_id: uuid.UUID, curado: bool = True) -> bool:
         """Marca o desmarca un evento como curado (inmune al olvido).
 

@@ -261,3 +261,86 @@ async def test_aplazar_intencion_devuelve_timestamp(
     )
     assert resp.status_code == 200
     assert "snoozed_until" in resp.json()
+
+
+# ── Olvido manual: archivar ahora y borrado duro ──────────────
+
+
+@pytest.mark.asyncio
+async def test_archivar_evento_manual_y_restaurar(
+    cliente: AsyncClient,
+) -> None:
+    """POST /events/{id}/archive → sale del recall; /restore lo devuelve."""
+    alta = await cliente.post(
+        "/api/events",
+        json={
+            "content": "memoria que decido archivar a mano",
+            "source": FUENTE_TEST,
+        },
+    )
+    assert alta.status_code == 200
+    eid = alta.json()["id"]
+    resp = await cliente.post(f"/api/events/{eid}/archive")
+    assert resp.status_code == 200
+    assert resp.json()["archived"] is True
+    assert resp.json()["archive_reason"] == "manual"
+    # Archivar dos veces → 422, nunca 500 ni falso éxito.
+    resp = await cliente.post(f"/api/events/{eid}/archive")
+    assert resp.status_code == 422
+    # Aparece en el archivo y se restaura.
+    archivados = await cliente.get("/api/archived")
+    assert any(a["id"] == eid for a in archivados.json())
+    resp = await cliente.post(f"/api/events/{eid}/restore")
+    assert resp.status_code == 200
+    assert resp.json()["restored"] is True
+
+
+@pytest.mark.asyncio
+async def test_archivar_con_razon_queda_registrada(
+    cliente: AsyncClient,
+) -> None:
+    """La razón del archivo manual queda en ``archive_reason``."""
+    alta = await cliente.post(
+        "/api/events",
+        json={"content": "dato obsoleto", "source": FUENTE_TEST},
+    )
+    eid = alta.json()["id"]
+    resp = await cliente.post(
+        f"/api/events/{eid}/archive", json={"reason": "superseded"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["archive_reason"] == "superseded"
+
+
+@pytest.mark.asyncio
+async def test_eliminar_evento_borrado_duro(
+    cliente: AsyncClient,
+) -> None:
+    """DELETE /events/{id} → el evento y sus vínculos desaparecen."""
+    alta = await cliente.post(
+        "/api/events",
+        json={
+            "content": "memoria a borrar del todo",
+            "source": FUENTE_TEST,
+        },
+    )
+    assert alta.status_code == 200
+    eid = alta.json()["id"]
+    resp = await cliente.delete(f"/api/events/{eid}")
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] is True
+    # Ya no está ni archivada ni visible: archivarla → 422.
+    resp = await cliente.post(f"/api/events/{eid}/archive")
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_eliminar_evento_inexistente_devuelve_false(
+    cliente: AsyncClient,
+) -> None:
+    """DELETE de un id inexistente → ``deleted: false``, sin 500."""
+    resp = await cliente.delete(
+        "/api/events/00000000-0000-0000-0000-000000000000"
+    )
+    assert resp.status_code == 200
+    assert resp.json()["deleted"] is False

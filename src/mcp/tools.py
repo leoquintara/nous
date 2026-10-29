@@ -1828,14 +1828,14 @@ async def _cerrar_loop(
     }
 
 
-async def _olvidar(evento_id: str) -> dict[str, Any]:
+async def _olvidar(evento_id: str, workspace: str | None = None) -> dict[str, Any]:
     """Borra un evento de la memoria — derecho al olvido.
 
     Borrado duro e irreversible: el evento y sus vínculos desaparecen
     de la línea de universo. Para correcciones con historia usa
     ``reemplaza_id`` en ``recordar_evento`` en su lugar.
     """
-    ctx = await _ctx_escritura()
+    ctx = await _ctx_escritura(workspace)
     try:
         eid = uuid.UUID(str(evento_id))
     except (ValueError, AttributeError) as e:
@@ -2949,6 +2949,27 @@ async def _restaurar_evento(evento_id: str, workspace: str | None = None) -> dic
     if not ok:
         raise ErrorValidacion(f"event does not exist or is not archived: {evento_id}")
     return {"id": str(eid), "restaurado": True}
+
+
+async def _archivar_evento(
+    evento_id: str,
+    razon: str = "manual",
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Archiva una memoria a petición — el olvido manual, reversible."""
+    ctx = await _ctx_escritura(workspace)
+    try:
+        eid = uuid.UUID(str(evento_id))
+    except (ValueError, AttributeError) as e:
+        raise ErrorValidacion(f"event_id is not a valid UUID: {evento_id!r}") from e
+    async with get_session(obtener_engine()) as session:
+        ok = await EventoRepository(session, ctx).archivar(
+            eid, int(time.time()), razon[:200] or "manual"
+        )
+        await session.commit()
+    if not ok:
+        raise ErrorValidacion(f"event does not exist or is already archived: {evento_id}")
+    return {"id": str(eid), "archivado": True, "razon_archivo": razon}
 
 
 async def _marcar_curado(

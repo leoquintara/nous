@@ -23,6 +23,7 @@ from src.api.rate_limit import LimitadorIntentos
 from src.api.schemas import (
     ActivateLicenseRequest,
     AIProviderRequest,
+    ArchiveRequest,
     BenchmarkResponse,
     BranchRequest,
     CallOriginStats,
@@ -459,7 +460,7 @@ async def entity_card(
 
 
 @router.delete("/events/{event_id}", dependencies=[Depends(requerir_escritura)])
-async def forget_event(event_id: str) -> dict[str, Any]:
+async def forget_event(event_id: str, workspace: str | None = None) -> dict[str, Any]:
     """Deletes an event from memory (``forget_event``).
 
     Hard, irreversible deletion — the event and its links disappear
@@ -468,11 +469,12 @@ async def forget_event(event_id: str) -> dict[str, Any]:
 
     Args:
         event_id: UUID of the event to delete.
+        workspace: Workspace override (membership required).
 
     Returns:
         Dict with deleted and links_removed.
     """
-    return traducir_payload(await tools_impl._olvidar(event_id))
+    return traducir_payload(await tools_impl._olvidar(event_id, workspace))
 
 
 @router.get("/search", dependencies=[Depends(verificar_token)])
@@ -1356,6 +1358,21 @@ async def list_archived(
 async def restore_event(event_id: str, workspace: str | None = None) -> dict[str, Any]:
     """Restores an archived memory — undoes the forgetting."""
     return traducir_payload(await tools_impl._restaurar_evento(event_id, workspace))
+
+
+@router.post(
+    "/events/{event_id}/archive",
+    dependencies=[Depends(requerir_escritura)],
+)
+async def archive_event(
+    event_id: str,
+    request_body: ArchiveRequest | None = None,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Manually archives a memory — reversible forgetting on demand."""
+    razon = "manual" if request_body is None else (request_body.reason or "manual")
+    ws = workspace or (request_body.workspace if request_body else None)
+    return traducir_payload(await tools_impl._archivar_evento(event_id, razon, ws))
 
 
 @router.post(

@@ -487,6 +487,13 @@ class DirectedForgettingRequest(BaseModel):
     workspace: str | None = Field(default=None, max_length=64)
 
 
+class ArchiveRequest(BaseModel):
+    """Body to manually archive an event — reversible forgetting."""
+
+    reason: str | None = Field(default=None, max_length=200)
+    workspace: str | None = Field(default=None, max_length=64)
+
+
 class SnoozeRequest(BaseModel):
     """Body to postpone a prospective intention (snooze)."""
 
