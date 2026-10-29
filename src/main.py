@@ -53,6 +53,10 @@ class SecurityHeadersMiddleware:
         (b"x-frame-options", b"DENY"),
         (b"referrer-policy", b"no-referrer"),
         (b"content-security-policy", b"default-src 'none'"),
+        # Respuestas autenticadas: nunca cacheables. Sin esto un 200
+        # erróneo (p. ej. un proxy devolviendo HTML) puede quedar en
+        # caché heurístico del navegador y envenenar fetches futuros.
+        (b"cache-control", b"no-store"),
     )
     _HEADERS_DASH = (
         (b"x-content-type-options", b"nosniff"),
