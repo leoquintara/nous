@@ -98,9 +98,7 @@ def _lexemas_consulta(query: str) -> Subquery:
     documentos, no una tokenización propia.
     """
     return select(
-        func.unnest(
-            func.tsvector_to_array(func.to_tsvector("spanish", query))
-        ).label("lexema")
+        func.unnest(func.tsvector_to_array(func.to_tsvector("spanish", query))).label("lexema")
     ).subquery()
 
 
@@ -134,9 +132,7 @@ def _score_idf(
         .join(
             ev_df,
             and_(
-                ev_df.contenido_tsv.op("@@")(
-                    func.to_tsquery("spanish", lexemas.c.lexema)
-                ),
+                ev_df.contenido_tsv.op("@@")(func.to_tsquery("spanish", lexemas.c.lexema)),
                 *([vis_df] if vis_df is not None else []),
             ),
             isouter=True,
@@ -154,18 +150,12 @@ def _score_idf(
     return (
         select(
             func.coalesce(
-                func.max(
-                    func.ln(1.0 + total / func.greatest(df.c.docs, 1))
-                ),
+                func.max(func.ln(1.0 + total / func.greatest(df.c.docs, 1))),
                 0.0,
             )
         )
         .select_from(df)
-        .where(
-            titulo_tsv.op("@@")(
-                func.to_tsquery("spanish", df.c.lexema)
-            )
-        )
+        .where(titulo_tsv.op("@@")(func.to_tsquery("spanish", df.c.lexema)))
         .scalar_subquery()
         .label("score")
     )
@@ -193,9 +183,7 @@ def _vis_eventos(ctx: Contexto | None) -> ColumnElement[bool] | None:
     )
 
 
-def _vis_generico(
-    modelo: Any, ctx: Contexto | None
-) -> ColumnElement[bool] | None:
+def _vis_generico(modelo: Any, ctx: Contexto | None) -> ColumnElement[bool] | None:
     """Misma regla de visibilidad para entidades con scope+autor."""
     if ctx is None:
         return None
@@ -212,9 +200,7 @@ def _vis_generico(
 class EventoRepository:
     """Acceso a datos de los eventos de la línea de universo."""
 
-    def __init__(
-        self, session: AsyncSession, ctx: Contexto | None = None
-    ) -> None:
+    def __init__(self, session: AsyncSession, ctx: Contexto | None = None) -> None:
         """Inicializa el repositorio con una sesión async.
 
         Args:
@@ -291,17 +277,12 @@ class EventoRepository:
         if repartir:
             return await self._listar_repartido(filtros, limite)
         stmt = (
-            select(EventoModel)
-            .where(*filtros)
-            .order_by(EventoModel.timestamp_unix)
-            .limit(limite)
+            select(EventoModel).where(*filtros).order_by(EventoModel.timestamp_unix).limit(limite)
         )
         resultado = await self._session.execute(stmt)
         return resultado.scalars().all()
 
-    async def _listar_repartido(
-        self, filtros: list[Any], limite: int
-    ) -> Sequence[EventoModel]:
+    async def _listar_repartido(self, filtros: list[Any], limite: int) -> Sequence[EventoModel]:
         """Reparte el límite entre las fuentes presentes en el filtro.
 
         Cada fuente aporta sus ``cuota`` eventos más recientes vía
@@ -313,9 +294,7 @@ class EventoRepository:
         nfuentes = int(
             (
                 await self._session.execute(
-                    select(func.count(func.distinct(EventoModel.fuente))).where(
-                        *filtros
-                    )
+                    select(func.count(func.distinct(EventoModel.fuente))).where(*filtros)
                 )
             ).scalar_one()
             or 1
@@ -396,9 +375,7 @@ class EventoRepository:
         resultado = await self._session.execute(stmt)
         return resultado.scalars().all()
 
-    async def marcar_reemplazado(
-        self, viejo_id: uuid.UUID, nuevo_id: uuid.UUID
-    ) -> None:
+    async def marcar_reemplazado(self, viejo_id: uuid.UUID, nuevo_id: uuid.UUID) -> None:
         """Marca un evento como sustituido por otro más reciente.
 
         Args:
@@ -406,9 +383,7 @@ class EventoRepository:
             nuevo_id: Evento cabeza de la cadena de supersede.
         """
         stmt = (
-            update(EventoModel)
-            .where(EventoModel.id == viejo_id)
-            .values(reemplazado_por=nuevo_id)
+            update(EventoModel).where(EventoModel.id == viejo_id).values(reemplazado_por=nuevo_id)
         )
         await self._session.execute(stmt)
 
@@ -446,9 +421,7 @@ class EventoRepository:
         resultado = await self._session.execute(stmt)
         return resultado.scalars().all()
 
-    async def span_menciones(
-        self, nombre: str
-    ) -> tuple[int | None, int | None, int]:
+    async def span_menciones(self, nombre: str) -> tuple[int | None, int | None, int]:
         """Ventana temporal de la entidad en la línea de universo.
 
         Responde «¿cuándo apareció X por primera vez?» — la pregunta
@@ -515,9 +488,7 @@ class EventoRepository:
         Returns:
             Tuplas (evento, ts_rank) ordenadas por rank descendente.
         """
-        return await self._buscar_por_texto(
-            query, _tsquery(query, "&"), limite, rama
-        )
+        return await self._buscar_por_texto(query, _tsquery(query, "&"), limite, rama)
 
     async def buscar_por_texto_or(
         self, query: str, limite: int = 20, rama: str | None = None
@@ -539,9 +510,7 @@ class EventoRepository:
         Returns:
             Tuplas (evento, ts_rank) ordenadas por rank descendente.
         """
-        return await self._buscar_por_texto(
-            query, _tsquery(query, "|"), limite, rama
-        )
+        return await self._buscar_por_texto(query, _tsquery(query, "|"), limite, rama)
 
     async def _buscar_por_texto(
         self,
@@ -559,19 +528,12 @@ class EventoRepository:
             0,
             or_(
                 EventoModel.contenido_tsv.op("@@")(tsquery),
-                func.array_to_string(EventoModel.tags, " ").ilike(
-                    f"%{query}%"
-                ),
+                func.array_to_string(EventoModel.tags, " ").ilike(f"%{query}%"),
             ),
         )
         if rama is not None:
             filtros.append(EventoModel.rama == rama)
-        stmt = (
-            select(EventoModel, rank)
-            .where(*filtros)
-            .order_by(rank.desc())
-            .limit(limite)
-        )
+        stmt = select(EventoModel, rank).where(*filtros).order_by(rank.desc()).limit(limite)
         resultado = await self._session.execute(stmt)
         return [(fila["EventoModel"], float(fila["score"])) for fila in resultado.mappings().all()]
 
@@ -597,12 +559,7 @@ class EventoRepository:
         ]
         if rama is not None:
             filtros.append(EventoModel.rama == rama)
-        stmt = (
-            select(EventoModel, distancia)
-            .where(*filtros)
-            .order_by(distancia)
-            .limit(limite)
-        )
+        stmt = select(EventoModel, distancia).where(*filtros).order_by(distancia).limit(limite)
         resultado = await self._session.execute(stmt)
         return [
             (fila["EventoModel"], 1.0 - float(fila["distancia"]))
@@ -631,9 +588,7 @@ class EventoRepository:
             EventoModel.cuarentena.is_(False),
             EventoModel.staged.is_(False),
             EventoModel.reemplazado_por.is_(None),
-            func.array_position(EventoModel.tags, "wanted-link").is_(
-                None
-            ),
+            func.array_position(EventoModel.tags, "wanted-link").is_(None),
             *self._vis(),
         ]
 
@@ -654,13 +609,9 @@ class EventoRepository:
             Número de fragmentos insertados.
         """
         await self._session.execute(
-            delete(EventoChunkModel).where(
-                EventoChunkModel.evento_id == evento_id
-            )
+            delete(EventoChunkModel).where(EventoChunkModel.evento_id == evento_id)
         )
-        for indice, (pieza, vector) in enumerate(
-            zip(piezas, vectores, strict=True)
-        ):
+        for indice, (pieza, vector) in enumerate(zip(piezas, vectores, strict=True)):
             self._session.add(
                 EventoChunkModel(
                     evento_id=evento_id,
@@ -679,9 +630,7 @@ class EventoRepository:
         El score del evento es el del mejor fragmento — la unidad de
         respuesta sigue siendo el evento completo.
         """
-        return await self._buscar_chunks_por_texto(
-            query, _tsquery(query, "&"), limite, rama
-        )
+        return await self._buscar_chunks_por_texto(query, _tsquery(query, "&"), limite, rama)
 
     async def buscar_chunks_por_texto_or(
         self, query: str, limite: int = 20, rama: str | None = None
@@ -691,9 +640,7 @@ class EventoRepository:
         Misma motivación que ``buscar_por_texto_or``: la pregunta
         natural no muere en el ``&``.
         """
-        return await self._buscar_chunks_por_texto(
-            query, _tsquery(query, "|"), limite, rama
-        )
+        return await self._buscar_chunks_por_texto(query, _tsquery(query, "|"), limite, rama)
 
     async def _buscar_chunks_por_texto(
         self,
@@ -727,10 +674,7 @@ class EventoRepository:
             mejores, mejores.c.evento_id == EventoModel.id
         )
         resultado = await self._session.execute(stmt)
-        return [
-            (fila["EventoModel"], float(fila["score"]))
-            for fila in resultado.mappings().all()
-        ]
+        return [(fila["EventoModel"], float(fila["score"])) for fila in resultado.mappings().all()]
 
     async def buscar_por_titulo(
         self, query: str, limite: int = 20, rama: str | None = None
@@ -807,10 +751,7 @@ class EventoRepository:
             mejores, mejores.c.evento_id == EventoModel.id
         )
         resultado = await self._session.execute(stmt)
-        return [
-            (fila["EventoModel"], float(fila["score"]))
-            for fila in resultado.mappings().all()
-        ]
+        return [(fila["EventoModel"], float(fila["score"])) for fila in resultado.mappings().all()]
 
     async def buscar_linea_temporal(
         self,
@@ -848,9 +789,7 @@ class EventoRepository:
         stmt = (
             select(EventoModel)
             .where(
-                EventoModel.contenido_tsv.op("@@")(
-                    _tsquery(query, "|")
-                ),
+                EventoModel.contenido_tsv.op("@@")(_tsquery(query, "|")),
                 *filtros,
             )
             .order_by(orden)
@@ -859,9 +798,143 @@ class EventoRepository:
         resultado = await self._session.execute(stmt)
         eventos = resultado.scalars().all()
         total = max(len(eventos), 1)
-        return [
-            (e, 1.0 - (i / total)) for i, e in enumerate(eventos)
-        ]
+        return [(e, 1.0 - (i / total)) for i, e in enumerate(eventos)]
+
+    async def buscar_antes_de(
+        self,
+        query: str,
+        hasta_unix: int,
+        limite: int = 20,
+        rama: str | None = None,
+    ) -> Sequence[tuple[EventoModel, float]]:
+        """Estado del tema EN un instante: evidencia ≤ al corte (asof).
+
+        «¿Quién era X en junio 2022?» no se responde con el dato
+        más reciente — se responde con la última evidencia **en o
+        antes** del corte. Misma pata OR por timestamp, acotada.
+
+        Args:
+            query: Texto de la consulta (lexemas OR).
+            hasta_unix: Corte superior (inclusive) en epoch.
+            limite: Máximo de eventos.
+            rama: Línea de universo (None = todas).
+
+        Returns:
+            Tuplas (evento, 1.0 − posición/limite) desc por tiempo.
+        """
+        filtros = self._filtros_evocables()
+        if rama is not None:
+            filtros.append(EventoModel.rama == rama)
+        stmt = (
+            select(EventoModel)
+            .where(
+                EventoModel.contenido_tsv.op("@@")(_tsquery(query, "|")),
+                EventoModel.timestamp_unix <= hasta_unix,
+                *filtros,
+            )
+            .order_by(EventoModel.timestamp_unix.desc())
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        eventos = resultado.scalars().all()
+        total = max(len(eventos), 1)
+        return [(e, 1.0 - (i / total)) for i, e in enumerate(eventos)]
+
+    async def reemplazos_de(
+        self, query: str, limite: int = 20, rama: str | None = None
+    ) -> Sequence[tuple[EventoModel, float]]:
+        """Puntos de cambio: hechos sobre el tema ya reemplazados.
+
+        «¿Cuándo cambió X?» = el momento en que el estado vigente
+        entró — la cabeza de cada cadena ``reemplazado_por`` cuyo
+        viejo hecho mencionaba el tema. La cara vieja sale del
+        recall normal (es historia conservada); aquí se consulta
+        a propósito para fechar el cambio.
+
+        Args:
+            query: Texto de la consulta (lexemas OR).
+            limite: Máximo de reemplazos.
+            rama: Línea de universo (None = todas).
+
+        Returns:
+            Tuplas (evento_nuevo, 1.0 − posición/limite) asc por
+            tiempo del reemplazo — el primero es el cambio pedido.
+        """
+        viejo = aliased(EventoModel, name="viejo")
+        filtros_nuevos = self._filtros_evocables()
+        if rama is not None:
+            filtros_nuevos.append(EventoModel.rama == rama)
+        stmt = (
+            select(EventoModel)
+            .join(viejo, viejo.reemplazado_por == EventoModel.id)
+            .where(
+                viejo.contenido_tsv.op("@@")(_tsquery(query, "|")),
+                *filtros_nuevos,
+            )
+            .order_by(EventoModel.timestamp_unix.asc())
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        eventos = resultado.scalars().all()
+        total = max(len(eventos), 1)
+        return [(e, 1.0 - (i / total)) for i, e in enumerate(eventos)]
+
+    async def buscar_por_tags(
+        self,
+        tags: list[str],
+        excluir: list[uuid.UUID],
+        limite: int = 10,
+        rama: str | None = None,
+    ) -> Sequence[EventoModel]:
+        """Vecinos de un hop por tags compartidos.
+
+        Expansión asociativa: eventos que comparten al menos un
+        tag con los ya recuperados — el filtro anti-hub (tags
+        raros/fingerprint) se decide en el llamante con los
+        conteos de ``listar_tags``.
+
+        Args:
+            tags: Tags candidatos (overlap ``&&``).
+            excluir: Ids de eventos ya recuperados (no repetir).
+            limite: Máximo de vecinos.
+            rama: Línea de universo (None = todas).
+
+        Returns:
+            Eventos evocables que comparten tags, recientes primero.
+        """
+        filtros = self._filtros_evocables()
+        if excluir:
+            filtros.append(~EventoModel.id.in_(excluir))
+        if rama is not None:
+            filtros.append(EventoModel.rama == rama)
+        stmt = (
+            select(EventoModel)
+            .where(EventoModel.tags.overlap(tags), *filtros)
+            .order_by(EventoModel.timestamp_unix.desc())
+            .limit(limite)
+        )
+        resultado = await self._session.execute(stmt)
+        return resultado.scalars().all()
+
+    async def total_evocables(self, rama: str | None = None) -> int:
+        """Tamaño del corpus evocable — el denominador del anti-hub.
+
+        Un tag presente en >15% del corpus es un hub genérico
+        (conecta todo con todo); expandir por él es expansión
+        vacía. El ratio se calcula contra este total.
+
+        Args:
+            rama: Línea de universo (None = todas).
+
+        Returns:
+            Número de eventos evocables del workspace visible.
+        """
+        filtros = self._filtros_evocables()
+        if rama is not None:
+            filtros.append(EventoModel.rama == rama)
+        stmt = select(func.count(EventoModel.id)).where(*filtros)
+        resultado = await self._session.execute(stmt)
+        return int(resultado.scalar() or 0)
 
     async def buscar_chunks_por_vector(
         self, vector: list[float], limite: int = 20, rama: str | None = None
@@ -901,9 +974,7 @@ class EventoRepository:
             for fila in resultado.mappings().all()
         ]
 
-    async def existe_mencion(
-        self, termino: str, excluir_id: uuid.UUID | None = None
-    ) -> bool:
+    async def existe_mencion(self, termino: str, excluir_id: uuid.UUID | None = None) -> bool:
         """Indica si algún evento previo menciona el término dado.
 
         Usa el tsvector en español para detectar antecedentes de una
@@ -927,9 +998,7 @@ class EventoRepository:
         resultado = await self._session.execute(stmt.limit(1))
         return resultado.scalar_one_or_none() is not None
 
-    async def reforzar(
-        self, eventos_ids: list[uuid.UUID], labil_hasta: int | None = None
-    ) -> int:
+    async def reforzar(self, eventos_ids: list[uuid.UUID], labil_hasta: int | None = None) -> int:
         """Incrementa el contador de consolidación de los eventos evocados.
 
         Cada evocación fortalece la huella (reconsolidación): los
@@ -953,17 +1022,11 @@ class EventoRepository:
         }
         if labil_hasta is not None:
             valores["labil_hasta"] = labil_hasta
-        stmt = (
-            update(EventoModel)
-            .where(EventoModel.id.in_(eventos_ids))
-            .values(**valores)
-        )
+        stmt = update(EventoModel).where(EventoModel.id.in_(eventos_ids)).values(**valores)
         resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
         return resultado.rowcount
 
-    async def obtener_muchos(
-        self, eventos_ids: list[uuid.UUID]
-    ) -> Sequence[EventoModel]:
+    async def obtener_muchos(self, eventos_ids: list[uuid.UUID]) -> Sequence[EventoModel]:
         """Carga varios eventos por id en una sola query."""
         if not eventos_ids:
             return []
@@ -971,9 +1034,7 @@ class EventoRepository:
         resultado = await self._session.execute(stmt)
         return resultado.scalars().all()
 
-    async def pendientes_revision(
-        self, ahora: int, limite: int = 20
-    ) -> Sequence[EventoModel]:
+    async def pendientes_revision(self, ahora: int, limite: int = 20) -> Sequence[EventoModel]:
         """Memorias cuyo repaso óptimo (SRS) ya venció.
 
         ``proxima_revision`` la fija la capa core desde la curva de
@@ -996,9 +1057,7 @@ class EventoRepository:
         resultado = await self._session.execute(stmt)
         return resultado.scalars().all()
 
-    async def fijar_proximas_revisiones(
-        self, revisiones: dict[uuid.UUID, int]
-    ) -> int:
+    async def fijar_proximas_revisiones(self, revisiones: dict[uuid.UUID, int]) -> int:
         """Fija ``proxima_revision`` por lote (UPDATE/CASE, no N+1).
 
         Args:
@@ -1006,52 +1065,38 @@ class EventoRepository:
         """
         if not revisiones:
             return 0
-        whens = [
-            (EventoModel.id == eid, ts) for eid, ts in revisiones.items()
-        ]
+        whens = [(EventoModel.id == eid, ts) for eid, ts in revisiones.items()]
         stmt = (
             update(EventoModel)
             .where(EventoModel.id.in_(list(revisiones)))
             .values(proxima_revision=case(*whens))
         )
-        resultado = cast(
-            CursorResult[EventoModel], await self._session.execute(stmt)
-        )
+        resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
         return resultado.rowcount
 
-    async def marcar_olvido_dirigido(
-        self, evento_id: uuid.UUID, dirigido: bool
-    ) -> bool:
+    async def marcar_olvido_dirigido(self, evento_id: uuid.UUID, dirigido: bool) -> bool:
         """Marca/desmarca el olvido dirigido de un evento."""
         stmt = (
             update(EventoModel)
             .where(EventoModel.id == evento_id, *self._vis())
             .values(olvido_dirigido=dirigido)
         )
-        resultado = cast(
-            CursorResult[EventoModel], await self._session.execute(stmt)
-        )
+        resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
         return resultado.rowcount > 0
 
     async def marcar_cuarentena(self, evento_id: uuid.UUID) -> None:
         """Pone el evento en cuarentena (fuente no confiable)."""
         await self._session.execute(
-            update(EventoModel)
-            .where(EventoModel.id == evento_id)
-            .values(cuarentena=True)
+            update(EventoModel).where(EventoModel.id == evento_id).values(cuarentena=True)
         )
 
     async def marcar_inaugura_epoca(self, evento_id: uuid.UUID) -> None:
         """Marca el evento como frontera de época (sorpresa)."""
         await self._session.execute(
-            update(EventoModel)
-            .where(EventoModel.id == evento_id)
-            .values(inaugura_epoca=True)
+            update(EventoModel).where(EventoModel.id == evento_id).values(inaugura_epoca=True)
         )
 
-    async def listar_cuarentena(
-        self, limite: int = 50
-    ) -> Sequence[EventoModel]:
+    async def listar_cuarentena(self, limite: int = 50) -> Sequence[EventoModel]:
         """Eventos en cuarentena del workspace (auditoría inmune)."""
         stmt = (
             select(EventoModel)
@@ -1073,9 +1118,7 @@ class EventoRepository:
             )
             .values(cuarentena=False)
         )
-        resultado = cast(
-            CursorResult[EventoModel], await self._session.execute(stmt)
-        )
+        resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
         return resultado.rowcount
 
     # ── Neuro-5: write-approval, censores y presupuesto curado ──
@@ -1109,9 +1152,7 @@ class EventoRepository:
             )
             .values(staged=False, parametrica=False)
         )
-        resultado = cast(
-            CursorResult[EventoModel], await self._session.execute(stmt)
-        )
+        resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
         return resultado.rowcount
 
     async def rechazar_staged(self, evento_ids: list[uuid.UUID]) -> int:
@@ -1123,9 +1164,7 @@ class EventoRepository:
             EventoModel.staged.is_(True),
             *self._vis(),
         )
-        resultado = cast(
-            CursorResult[EventoModel], await self._session.execute(stmt)
-        )
+        resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
         return resultado.rowcount
 
     async def listar_censores(self) -> Sequence[EventoModel]:
@@ -1167,9 +1206,9 @@ class EventoRepository:
 
     async def chars_curados(self) -> int:
         """Caracteres ocupados por el tier curado — su presupuesto."""
-        stmt = select(
-            func.coalesce(func.sum(func.char_length(EventoModel.contenido)), 0)
-        ).where(EventoModel.curado.is_(True), *self._vis())
+        stmt = select(func.coalesce(func.sum(func.char_length(EventoModel.contenido)), 0)).where(
+            EventoModel.curado.is_(True), *self._vis()
+        )
         return int((await self._session.execute(stmt)).scalar_one())
 
     async def debilitar_lote(
@@ -1207,14 +1246,10 @@ class EventoRepository:
                 debilitados=EventoModel.debilitados + 1,
             )
         )
-        resultado = cast(
-            CursorResult[EventoModel], await self._session.execute(stmt)
-        )
+        resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
         return resultado.rowcount
 
-    async def ids_compromisos_abiertos(
-        self, evento_ids: Sequence[uuid.UUID]
-    ) -> set[uuid.UUID]:
+    async def ids_compromisos_abiertos(self, evento_ids: Sequence[uuid.UUID]) -> set[uuid.UUID]:
         """Subconjunto de ``evento_ids`` que son compromisos abiertos.
 
         Un compromiso está abierto si ninguna relación ``cierra`` lo
@@ -1248,9 +1283,7 @@ class EventoRepository:
         usuario, y debe poder auditarse como todo lo demás.
         """
         stmt = select(EventoModel).where(EventoModel.id == evento_id)
-        modelo = (
-            await self._session.execute(stmt)
-        ).scalar_one_or_none()
+        modelo = (await self._session.execute(stmt)).scalar_one_or_none()
         if modelo is None:
             return
         modelo.weight = min(modelo.weight * 1.5, 3.0)
@@ -1259,9 +1292,7 @@ class EventoRepository:
             tags.append("flashbulb")
             modelo.tags = tags
 
-    async def episodios_de_gist(
-        self, gist_id: uuid.UUID, limite: int = 3
-    ) -> Sequence[EventoModel]:
+    async def episodios_de_gist(self, gist_id: uuid.UUID, limite: int = 3) -> Sequence[EventoModel]:
         """Episodios miembros de un gist semántico (aristas ``gist``).
 
         La relación es no dirigida: el gist puede ser origen o destino
@@ -1495,24 +1526,16 @@ class EventoRepository:
             solo rellena huecos, nunca sobrescribe.
         """
         valores: dict[str, Any] = {
-            "tipo_memoria": func.coalesce(
-                EventoModel.tipo_memoria, tipo_memoria
-            )
+            "tipo_memoria": func.coalesce(EventoModel.tipo_memoria, tipo_memoria)
         }
         if estado_emocional is not None:
             valores["estado_emocional"] = func.coalesce(
                 EventoModel.estado_emocional, estado_emocional
             )
-        stmt = (
-            update(EventoModel)
-            .where(EventoModel.id == evento_id)
-            .values(**valores)
-        )
+        stmt = update(EventoModel).where(EventoModel.id == evento_id).values(**valores)
         await self._session.execute(stmt)
 
-    async def listar_para_consolidacion(
-        self, limite: int = 5000
-    ) -> Sequence[EventoModel]:
+    async def listar_para_consolidacion(self, limite: int = 5000) -> Sequence[EventoModel]:
         """Candidatos de la corrida de sueño: no archivados aún.
 
         La consolidación decide en core qué hacer; el repo solo trae
@@ -1549,17 +1572,10 @@ class EventoRepository:
             ahora_unix: timestamp de la corrida.
         """
         if fortalecer:
-            whens = [
-                (EventoModel.id == uuid.UUID(eid), peso)
-                for eid, peso in fortalecer.items()
-            ]
+            whens = [(EventoModel.id == uuid.UUID(eid), peso) for eid, peso in fortalecer.items()]
             await self._session.execute(
                 update(EventoModel)
-                .where(
-                    EventoModel.id.in_(
-                        [uuid.UUID(i) for i in fortalecer]
-                    )
-                )
+                .where(EventoModel.id.in_([uuid.UUID(i) for i in fortalecer]))
                 .values(weight=case(*whens))
             )
         if promover:
@@ -1570,14 +1586,11 @@ class EventoRepository:
             )
         if archivar:
             whens_razon = [
-                (EventoModel.id == uuid.UUID(eid), razon)
-                for eid, razon in archivar.items()
+                (EventoModel.id == uuid.UUID(eid), razon) for eid, razon in archivar.items()
             ]
             await self._session.execute(
                 update(EventoModel)
-                .where(
-                    EventoModel.id.in_([uuid.UUID(i) for i in archivar])
-                )
+                .where(EventoModel.id.in_([uuid.UUID(i) for i in archivar]))
                 .values(
                     archivado=True,
                     archivado_en=ahora_unix,
@@ -1631,11 +1644,7 @@ class EventoRepository:
 
     async def actualizar_amplitud(self, evento_id: uuid.UUID, amplitud: float) -> None:
         """Actualiza la amplitud de un evento (boost de novedad post-index)."""
-        stmt = (
-            update(EventoModel)
-            .where(EventoModel.id == evento_id)
-            .values(amplitud=amplitud)
-        )
+        stmt = update(EventoModel).where(EventoModel.id == evento_id).values(amplitud=amplitud)
         await self._session.execute(stmt)
 
     async def atenuar_valencias(self, pares: list[tuple[uuid.UUID, float]]) -> int:
@@ -1655,20 +1664,13 @@ class EventoRepository:
             update(EventoModel)
             .where(EventoModel.id.in_([eid for eid, _ in pares]))
             .values(
-                estado_emocional=case(
-                    *[
-                        (EventoModel.id == eid, nueva)
-                        for eid, nueva in pares
-                    ]
-                )
+                estado_emocional=case(*[(EventoModel.id == eid, nueva) for eid, nueva in pares])
             )
         )
         resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
         return resultado.rowcount
 
-    async def embeddings_recientes(
-        self, limite: int = 20
-    ) -> Sequence[EventoModel]:
+    async def embeddings_recientes(self, limite: int = 20) -> Sequence[EventoModel]:
         """Eventos recientes con embedding — la trayectoria esperada.
 
         La sorpresa del evento entrante se mide contra esta ventana,
@@ -1693,9 +1695,7 @@ class EventoRepository:
         resultado = await self._session.execute(stmt)
         return resultado.scalars().all()
 
-    async def episodicas_con_embedding(
-        self, limite: int = 400
-    ) -> Sequence[EventoModel]:
+    async def episodicas_con_embedding(self, limite: int = 400) -> Sequence[EventoModel]:
         """Episodios activos con embedding — materia prima del gist.
 
         La semanticización (sueño) agrupa estos por similitud y
@@ -1762,14 +1762,10 @@ class EventoRepository:
                 weight=1.0,
             )
         )
-        resultado = cast(
-            CursorResult[EventoModel], await self._session.execute(stmt)
-        )
+        resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
         return resultado.rowcount > 0
 
-    async def marcar_curado(
-        self, evento_id: uuid.UUID, curado: bool = True
-    ) -> bool:
+    async def marcar_curado(self, evento_id: uuid.UUID, curado: bool = True) -> bool:
         """Marca o desmarca un evento como curado (inmune al olvido).
 
         El tier curado es el MEMORY.md vivo (ADR-003): ni decay ni
@@ -1787,18 +1783,14 @@ class EventoRepository:
             .where(EventoModel.id == evento_id, *self._vis())
             .values(curado=curado)
         )
-        resultado = cast(
-            CursorResult[EventoModel], await self._session.execute(stmt)
-        )
+        resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
         return resultado.rowcount > 0
 
 
 class RelacionRepository:
     """Acceso a datos de los vínculos entre eventos."""
 
-    def __init__(
-        self, session: AsyncSession, ctx: Contexto | None = None
-    ) -> None:
+    def __init__(self, session: AsyncSession, ctx: Contexto | None = None) -> None:
         """Inicializa el repositorio con una sesión async.
 
         Args:
@@ -1900,17 +1892,13 @@ class RelacionRepository:
                 .on_conflict_do_update(
                     constraint="uq_relaciones_par_tipo",
                     set_={
-                        "peso": func.least(
-                            RelacionModel.peso + delta, peso_max
-                        ),
+                        "peso": func.least(RelacionModel.peso + delta, peso_max),
                         "ultima_coactiva": ahora_unix,
                     },
                 )
             )
             resultado = await self._session.execute(stmt)
-            tocadas += cast(
-                CursorResult[RelacionModel], resultado
-            ).rowcount
+            tocadas += cast(CursorResult[RelacionModel], resultado).rowcount
         return tocadas
 
     async def vecinos_coactivos(
@@ -2044,9 +2032,7 @@ class RelacionRepository:
 class FuenteRepository:
     """Acceso a datos de las fuentes administrables."""
 
-    def __init__(
-        self, session: AsyncSession, ctx: Contexto | None = None
-    ) -> None:
+    def __init__(self, session: AsyncSession, ctx: Contexto | None = None) -> None:
         """Inicializa el repositorio con una sesión async.
 
         Args:
@@ -2057,9 +2043,7 @@ class FuenteRepository:
         self._session = session
         self._ws = ctx.workspace_id if ctx is not None else WORKSPACE_PERSONAL_ID
 
-    async def listar(
-        self, incluir_archivadas: bool = True
-    ) -> Sequence[tuple[FuenteModel, int]]:
+    async def listar(self, incluir_archivadas: bool = True) -> Sequence[tuple[FuenteModel, int]]:
         """Lista las fuentes con su conteo de eventos real.
 
         Args:
@@ -2083,10 +2067,7 @@ class FuenteRepository:
         if not incluir_archivadas:
             stmt = stmt.where(FuenteModel.estado == "activa")
         resultado = await self._session.execute(stmt)
-        return [
-            (fila["FuenteModel"], int(fila["n"]))
-            for fila in resultado.mappings().all()
-        ]
+        return [(fila["FuenteModel"], int(fila["n"])) for fila in resultado.mappings().all()]
 
     async def es_confiable(self, nombre: str) -> bool:
         """True si la fuente está aprobada (default: confiable).
@@ -2103,9 +2084,7 @@ class FuenteRepository:
         valor = resultado.scalar_one_or_none()
         return True if valor is None else bool(valor)
 
-    async def fuentes_confiables(
-        self, nombres: Sequence[str]
-    ) -> dict[str, bool]:
+    async def fuentes_confiables(self, nombres: Sequence[str]) -> dict[str, bool]:
         """Mapa nombre → confiable para un lote de fuentes.
 
         Las no registradas no aparecen en el mapa — el llamante
@@ -2130,9 +2109,7 @@ class FuenteRepository:
             )
             .values(confiable=confiable)
         )
-        resultado = cast(
-            CursorResult[FuenteModel], await self._session.execute(stmt)
-        )
+        resultado = cast(CursorResult[FuenteModel], await self._session.execute(stmt))
         return resultado.rowcount > 0
 
     async def crear(
@@ -2168,17 +2145,13 @@ class FuenteRepository:
             .on_conflict_do_nothing()
         )
         await self._session.execute(stmt)
-        existente = await self._session.get(
-            FuenteModel, (nombre, self._ws)
-        )
+        existente = await self._session.get(FuenteModel, (nombre, self._ws))
         assert existente is not None
         return existente
 
     async def obtener(self, nombre: str) -> FuenteModel | None:
         """Retorna la fuente por nombre o None."""
-        return await self._session.get(
-            FuenteModel, (nombre, self._ws)
-        )
+        return await self._session.get(FuenteModel, (nombre, self._ws))
 
     async def cambiar_estado(self, nombre: str, estado: str) -> bool:
         """Activa o archiva una fuente.
@@ -2265,9 +2238,7 @@ class BenchmarkRepository:
 class ConfiguracionRepository:
     """Acceso a datos del almacén clave-valor de preferencias."""
 
-    def __init__(
-        self, session: AsyncSession, ctx: Contexto | None = None
-    ) -> None:
+    def __init__(self, session: AsyncSession, ctx: Contexto | None = None) -> None:
         """Inicializa el repositorio con una sesión async.
 
         Args:
@@ -2326,9 +2297,7 @@ class ConfiguracionRepository:
 class ProyeccionRepository:
     """Acceso a datos de las proyecciones persistidas."""
 
-    def __init__(
-        self, session: AsyncSession, ctx: Contexto | None = None
-    ) -> None:
+    def __init__(self, session: AsyncSession, ctx: Contexto | None = None) -> None:
         """Inicializa el repositorio con una sesión async.
 
         Args:
@@ -2381,9 +2350,7 @@ class ObjetivoRepository:
     cumplido/abandonado son transiciones persistidas, no borrados.
     """
 
-    def __init__(
-        self, session: AsyncSession, ctx: Contexto | None = None
-    ) -> None:
+    def __init__(self, session: AsyncSession, ctx: Contexto | None = None) -> None:
         """Inicializa el repositorio con una sesión async.
 
         Args:
@@ -2433,19 +2400,13 @@ class ObjetivoRepository:
         ]
         if estado is not None:
             filtros.append(ObjetivoModel.estado == estado)
-        stmt = (
-            select(ObjetivoModel)
-            .where(*filtros)
-            .order_by(ObjetivoModel.fecha_objetivo)
-        )
+        stmt = select(ObjetivoModel).where(*filtros).order_by(ObjetivoModel.fecha_objetivo)
         resultado = await self._session.execute(stmt)
         return resultado.scalars().all()
 
     async def obtener(self, objetivo_id: uuid.UUID) -> ObjetivoModel | None:
         """Retorna el objetivo por id, o None si no existe."""
-        stmt = select(ObjetivoModel).where(
-            ObjetivoModel.id == objetivo_id, *self._vis()
-        )
+        stmt = select(ObjetivoModel).where(ObjetivoModel.id == objetivo_id, *self._vis())
         resultado = await self._session.execute(stmt)
         return resultado.scalars().first()
 
@@ -2512,9 +2473,7 @@ class CifradoRepository:
         Returns:
             Ciphertext codificado en base64, apto para guardar en JSONB.
         """
-        stmt = select(
-            func.encode(func.pgp_sym_encrypt(texto, passphrase), "base64")
-        )
+        stmt = select(func.encode(func.pgp_sym_encrypt(texto, passphrase), "base64"))
         return str((await self._session.execute(stmt)).scalar_one())
 
     async def descifrar(self, b64: str, passphrase: str) -> str:
@@ -2527,9 +2486,7 @@ class CifradoRepository:
         Returns:
             El texto original en claro.
         """
-        stmt = select(
-            func.pgp_sym_decrypt(func.decode(b64, "base64"), passphrase)
-        )
+        stmt = select(func.pgp_sym_decrypt(func.decode(b64, "base64"), passphrase))
         return str((await self._session.execute(stmt)).scalar_one())
 
 
@@ -2559,9 +2516,7 @@ class LlamadaRepository:
         await self._session.execute(pg_insert(LlamadaModel).values(filas))
         return len(filas)
 
-    async def listar(
-        self, limite: int = 200, ruta: str | None = None
-    ) -> Sequence[LlamadaModel]:
+    async def listar(self, limite: int = 200, ruta: str | None = None) -> Sequence[LlamadaModel]:
         """Lista llamadas recientes primero, con filtro opcional de ruta.
 
         Args:
@@ -2590,9 +2545,7 @@ class LlamadaRepository:
         """
         total = int(
             (
-                await self._session.execute(
-                    select(func.count()).select_from(LlamadaModel)
-                )
+                await self._session.execute(select(func.count()).select_from(LlamadaModel))
             ).scalar_one()
         )
         por_ruta_rows = (
@@ -2600,9 +2553,7 @@ class LlamadaRepository:
                 select(
                     LlamadaModel.ruta,
                     func.count().label("n"),
-                    func.round(func.avg(LlamadaModel.latencia_ms)).label(
-                        "latencia_media"
-                    ),
+                    func.round(func.avg(LlamadaModel.latencia_ms)).label("latencia_media"),
                 )
                 .where(LlamadaModel.es_ping.is_(False))
                 .group_by(LlamadaModel.ruta)
@@ -2640,8 +2591,7 @@ class LlamadaRepository:
                 for r in por_ruta_rows
             ],
             "por_origen": [
-                {"origen": r.origen or "desconocido", "llamadas": r.n}
-                for r in por_origen_rows
+                {"origen": r.origen or "desconocido", "llamadas": r.n} for r in por_origen_rows
             ],
             "pings": {"total": ping_rows.n, "ultimo": ping_rows.ultimo},
         }
@@ -2650,9 +2600,7 @@ class LlamadaRepository:
 class IntencionProspectivaRepository:
     """Acceso a datos de las intenciones prospectivas (ADR-003)."""
 
-    def __init__(
-        self, session: AsyncSession, ctx: Contexto | None = None
-    ) -> None:
+    def __init__(self, session: AsyncSession, ctx: Contexto | None = None) -> None:
         """Inicializa el repositorio con una sesión async.
 
         Args:
@@ -2673,19 +2621,15 @@ class IntencionProspectivaRepository:
             return []
         return [
             and_(
-                IntencionProspectivaModel.workspace_id
-                == self._ctx.workspace_id,
+                IntencionProspectivaModel.workspace_id == self._ctx.workspace_id,
                 or_(
-                    IntencionProspectivaModel.autor_id
-                    == self._ctx.usuario_id,
+                    IntencionProspectivaModel.autor_id == self._ctx.usuario_id,
                     IntencionProspectivaModel.autor_id.is_(None),
                 ),
             )
         ]
 
-    async def crear(
-        self, intencion: IntencionProspectivaModel
-    ) -> IntencionProspectivaModel:
+    async def crear(self, intencion: IntencionProspectivaModel) -> IntencionProspectivaModel:
         """Persiste una intención prospectiva.
 
         Args:
@@ -2728,9 +2672,7 @@ class IntencionProspectivaRepository:
         resultado = await self._session.execute(stmt)
         return resultado.scalars().all()
 
-    async def pendientes_temporales(
-        self, ahora_unix: int
-    ) -> Sequence[IntencionProspectivaModel]:
+    async def pendientes_temporales(self, ahora_unix: int) -> Sequence[IntencionProspectivaModel]:
         """Intenciones time-based cuyo trigger ya venció.
 
         Args:
@@ -2750,18 +2692,13 @@ class IntencionProspectivaRepository:
                 IntencionProspectivaModel.aplazada_hasta.is_(None),
                 IntencionProspectivaModel.aplazada_hasta <= ahora_unix,
             ),
-            IntencionProspectivaModel.trigger_valor["ts"].astext.cast(
-                BigInteger
-            )
-            <= ahora_unix,
+            IntencionProspectivaModel.trigger_valor["ts"].astext.cast(BigInteger) <= ahora_unix,
             *self._vis(),
         )
         resultado = await self._session.execute(stmt)
         return resultado.scalars().all()
 
-    async def pendientes_por_evento(
-        self, ahora_unix: int
-    ) -> Sequence[IntencionProspectivaModel]:
+    async def pendientes_por_evento(self, ahora_unix: int) -> Sequence[IntencionProspectivaModel]:
         """Intenciones event-based pendientes — candidatas de evaluación.
 
         Args:
@@ -2785,9 +2722,7 @@ class IntencionProspectivaRepository:
         resultado = await self._session.execute(stmt)
         return resultado.scalars().all()
 
-    async def marcar_ejecutada(
-        self, intencion_id: uuid.UUID, ahora_unix: int
-    ) -> bool:
+    async def marcar_ejecutada(self, intencion_id: uuid.UUID, ahora_unix: int) -> bool:
         """Marca una intención como disparada.
 
         Args:
@@ -2812,9 +2747,7 @@ class IntencionProspectivaRepository:
         )
         return resultado.rowcount > 0
 
-    async def cancelar(
-        self, intencion_id: uuid.UUID, ahora_unix: int
-    ) -> bool:
+    async def cancelar(self, intencion_id: uuid.UUID, ahora_unix: int) -> bool:
         """Cancela una intención pendiente.
 
         Args:
@@ -2839,9 +2772,7 @@ class IntencionProspectivaRepository:
         )
         return resultado.rowcount > 0
 
-    async def aplazar(
-        self, intencion_id: uuid.UUID, hasta_unix: int
-    ) -> bool:
+    async def aplazar(self, intencion_id: uuid.UUID, hasta_unix: int) -> bool:
         """Pospone el disparo de una intención pendiente (snooze).
 
         La intención sigue viva — ni ejecutada ni cancelada — pero
@@ -2865,9 +2796,7 @@ class IntencionProspectivaRepository:
         )
         return resultado.rowcount > 0
 
-    async def fijar_preparacion(
-        self, intencion_id: uuid.UUID, pack: list[dict[str, Any]]
-    ) -> None:
+    async def fijar_preparacion(self, intencion_id: uuid.UUID, pack: list[dict[str, Any]]) -> None:
         """Adjunta el prep pack calculado al disparar la intención."""
         await self._session.execute(
             update(IntencionProspectivaModel)
@@ -2879,9 +2808,7 @@ class IntencionProspectivaRepository:
 class ScriptRepository:
     """Acceso a datos de los scripts/patrones minados (ADR-003)."""
 
-    def __init__(
-        self, session: AsyncSession, ctx: Contexto | None = None
-    ) -> None:
+    def __init__(self, session: AsyncSession, ctx: Contexto | None = None) -> None:
         """Inicializa el repositorio con una sesión async."""
         self._session = session
         self._ctx = ctx
@@ -2895,13 +2822,9 @@ class ScriptRepository:
         """
         if self._ctx is None:
             return []
-        return [
-            ScriptDetectadoModel.workspace_id == self._ctx.workspace_id
-        ]
+        return [ScriptDetectadoModel.workspace_id == self._ctx.workspace_id]
 
-    async def guardar(
-        self, script: ScriptDetectadoModel
-    ) -> ScriptDetectadoModel:
+    async def guardar(self, script: ScriptDetectadoModel) -> ScriptDetectadoModel:
         """Persiste un script detectado (o actualiza si ya hay par).
 
         El upsert se hace por ``(workspace_id, nombre)``: minar dos
@@ -2917,8 +2840,7 @@ class ScriptRepository:
         existente = (
             await self._session.execute(
                 select(ScriptDetectadoModel).where(
-                    ScriptDetectadoModel.workspace_id
-                    == script.workspace_id,
+                    ScriptDetectadoModel.workspace_id == script.workspace_id,
                     ScriptDetectadoModel.nombre == script.nombre,
                 )
             )
@@ -2934,9 +2856,7 @@ class ScriptRepository:
         await self._session.flush()
         return script
 
-    async def listar(
-        self, limite: int = 50
-    ) -> Sequence[ScriptDetectadoModel]:
+    async def listar(self, limite: int = 50) -> Sequence[ScriptDetectadoModel]:
         """Lista los scripts detectados por confianza descendente.
 
         Args:
@@ -2958,9 +2878,7 @@ class ScriptRepository:
 class ReporteConsolidacionRepository:
     """Acceso a datos de los reportes de consolidación (dream diary)."""
 
-    def __init__(
-        self, session: AsyncSession, ctx: Contexto | None = None
-    ) -> None:
+    def __init__(self, session: AsyncSession, ctx: Contexto | None = None) -> None:
         """Inicializa el repositorio con una sesión async."""
         self._session = session
         self._ctx = ctx
@@ -2969,13 +2887,9 @@ class ReporteConsolidacionRepository:
         """Filtros de visibilidad sobre ``reportes_consolidacion``."""
         if self._ctx is None:
             return []
-        return [
-            ReporteConsolidacionModel.workspace_id == self._ctx.workspace_id
-        ]
+        return [ReporteConsolidacionModel.workspace_id == self._ctx.workspace_id]
 
-    async def crear(
-        self, reporte: ReporteConsolidacionModel
-    ) -> ReporteConsolidacionModel:
+    async def crear(self, reporte: ReporteConsolidacionModel) -> ReporteConsolidacionModel:
         """Persiste el reporte de una corrida de consolidación.
 
         Args:
@@ -2988,9 +2902,7 @@ class ReporteConsolidacionRepository:
         await self._session.flush()
         return reporte
 
-    async def listar(
-        self, limite: int = 20
-    ) -> Sequence[ReporteConsolidacionModel]:
+    async def listar(self, limite: int = 20) -> Sequence[ReporteConsolidacionModel]:
         """Lista reportes recientes primero.
 
         Args:
@@ -3017,9 +2929,7 @@ class BorradorRepository:
     por naturaleza y siempre personal de quien lo escribió.
     """
 
-    def __init__(
-        self, session: AsyncSession, ctx: Contexto | None = None
-    ) -> None:
+    def __init__(self, session: AsyncSession, ctx: Contexto | None = None) -> None:
         """Inicializa con sesión y contexto de visibilidad opcional."""
         self._session = session
         self._ctx = ctx
@@ -3045,14 +2955,10 @@ class BorradorRepository:
 
     async def obtener(self, borrador_id: uuid.UUID) -> BorradorModel | None:
         """Retorna el borrador por id si es visible."""
-        stmt = select(BorradorModel).where(
-            BorradorModel.id == borrador_id, *self._vis()
-        )
+        stmt = select(BorradorModel).where(BorradorModel.id == borrador_id, *self._vis())
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
-    async def listar_vigentes(
-        self, ahora: int, limite: int = 50
-    ) -> Sequence[BorradorModel]:
+    async def listar_vigentes(self, ahora: int, limite: int = 50) -> Sequence[BorradorModel]:
         """Borradores no expirados — el contenido vivo del buffer.
 
         Args:
@@ -3094,21 +3000,15 @@ class BorradorRepository:
 
     async def descartar(self, borrador_id: uuid.UUID) -> bool:
         """Saca el borrador del buffer (promovido o descartado)."""
-        stmt = delete(BorradorModel).where(
-            BorradorModel.id == borrador_id, *self._vis()
-        )
-        resultado = cast(
-            CursorResult[BorradorModel], await self._session.execute(stmt)
-        )
+        stmt = delete(BorradorModel).where(BorradorModel.id == borrador_id, *self._vis())
+        resultado = cast(CursorResult[BorradorModel], await self._session.execute(stmt))
         return resultado.rowcount > 0
 
 
 class PrediccionRepository:
     """Afirmaciones con confianza declarada — la materia del Brier."""
 
-    def __init__(
-        self, session: AsyncSession, ctx: Contexto | None = None
-    ) -> None:
+    def __init__(self, session: AsyncSession, ctx: Contexto | None = None) -> None:
         """Inicializa con sesión y contexto de visibilidad."""
         self._session = session
         self._ctx = ctx
@@ -3125,18 +3025,12 @@ class PrediccionRepository:
         await self._session.flush()
         return prediccion
 
-    async def obtener(
-        self, prediccion_id: uuid.UUID
-    ) -> PrediccionModel | None:
+    async def obtener(self, prediccion_id: uuid.UUID) -> PrediccionModel | None:
         """Retorna la predicción por id si es visible."""
-        stmt = select(PrediccionModel).where(
-            PrediccionModel.id == prediccion_id, *self._vis()
-        )
+        stmt = select(PrediccionModel).where(PrediccionModel.id == prediccion_id, *self._vis())
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
-    async def resolver(
-        self, prediccion_id: uuid.UUID, acierto: bool, resuelto_en: int
-    ) -> bool:
+    async def resolver(self, prediccion_id: uuid.UUID, acierto: bool, resuelto_en: int) -> bool:
         """Fija el resultado — el loop de calibración se cierra."""
         stmt = (
             update(PrediccionModel)
@@ -3175,9 +3069,7 @@ class PrediccionRepository:
 class SesionRepository:
     """Límites de sesión — bootstrap que abre, handoff que cierra."""
 
-    def __init__(
-        self, session: AsyncSession, ctx: Contexto | None = None
-    ) -> None:
+    def __init__(self, session: AsyncSession, ctx: Contexto | None = None) -> None:
         """Inicializa con sesión y contexto de visibilidad."""
         self._session = session
         self._ctx = ctx
@@ -3196,9 +3088,7 @@ class SesionRepository:
 
     async def obtener(self, sesion_id: uuid.UUID) -> SesionModel | None:
         """Retorna la sesión por id si es visible."""
-        stmt = select(SesionModel).where(
-            SesionModel.id == sesion_id, *self._vis()
-        )
+        stmt = select(SesionModel).where(SesionModel.id == sesion_id, *self._vis())
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
     async def ultima_abierta(self) -> SesionModel | None:

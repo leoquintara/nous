@@ -31,9 +31,7 @@ class Settings(BaseSettings):
     Local-first por defecto: embeddings locales y transporte stdio.
     """
 
-    model_config = SettingsConfigDict(
-        env_file=_ENV_FILE, env_prefix="NOUS_", extra="ignore"
-    )
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, env_prefix="NOUS_", extra="ignore")
 
     database_url: str = "postgresql+asyncpg://nous:nous@localhost:5432/nous"
     commit_sincrono: bool = False
@@ -106,15 +104,22 @@ class Settings(BaseSettings):
     # huella en ``staged`` (invisible al recall) hasta aprobar_evento.
     # La memoria propone, el humano dispone.
     escritura_aprobacion: bool = False
+    # Neuro-7 — reformulación interna: cuando el recall sale débil
+    # (pocos hits o ganador de score bajo) una segunda pasada con
+    # el léxico relajado rescata lo que la forma exacta perdió.
+    # Determinista, sin LLM — el ESampling de dsh sin provider.
+    reformulacion_recall: bool = True
+    # Neuro-7 — cache de recall: consultas idénticas repetidas en
+    # ráfaga (mismo workspace+rama+query) saltan el pipeline; el
+    # TTL corto lo hace seguro ante escrituras concurrentes.
+    recall_cache_ttl: int = 25
 
     @field_validator("api_token")
     @classmethod
     def _validar_prefijo_token(cls, valor: str | None) -> str | None:
         """Exige el prefijo ``ns_`` en el token configurado."""
         if valor is not None and not valor.startswith(PREFIXO_TOKEN):
-            raise ValueError(
-                f"NOUS_API_TOKEN debe iniciar con el prefijo '{PREFIXO_TOKEN}'"
-            )
+            raise ValueError(f"NOUS_API_TOKEN debe iniciar con el prefijo '{PREFIXO_TOKEN}'")
         return valor
 
 

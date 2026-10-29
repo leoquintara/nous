@@ -12,6 +12,7 @@ import math
 import time
 from collections.abc import Sequence
 from dataclasses import replace
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,9 +20,18 @@ from src.config import get_settings
 from src.core.embeddings import GeneradorEmbeddings
 from src.core.identidad import Contexto
 from src.core.memoria.diversidad import diversificar
+from src.core.memoria.operaciones import (
+    certeza_op,
+    conflictos_empate,
+    consulta_relajada,
+    es_recall_debil,
+    primacia_fuente,
+    span_duracion,
+)
 from src.core.memoria.retrieval import competidores_rif
 from src.core.modelos import Contexto4D, Evento, ResultadoBusqueda
 from src.core.reranker import ReordenadorLocal
+from src.core.routing import OpTemporal, consulta_nucleo
 from src.storage.models import EventoModel
 from src.storage.repositories import EventoRepository
 
@@ -33,6 +43,9 @@ BOOST_AMPLITUD = 0.25
 BOOST_PRIMING = 0.15
 BOOST_CURADO = 0.2
 BOOST_TITULO = 1.0
+# Op ``provenance``: la fuente más primaria pesa — un mensaje
+# capturado vale más que la nota derivada que lo resumió.
+BOOST_FUENTE = 0.3
 # La posición en la línea ES la respuesta cuando la pregunta
 # pide «primero/último» — término aditivo del blend (no factor):
 # un extremo real con coseno bajo no puede perder contra hits
@@ -79,9 +92,7 @@ def fusion_rrf(
     representantes: dict[str, ResultadoBusqueda] = {}
     for peso, lista in zip(pesos_reales, listas_resultados, strict=True):
         for rank, resultado in enumerate(lista, start=1):
-            scores[resultado.evento_id] = (
-                scores.get(resultado.evento_id, 0.0) + peso / (k + rank)
-            )
+            scores[resultado.evento_id] = scores.get(resultado.evento_id, 0.0) + peso / (k + rank)
             representantes.setdefault(resultado.evento_id, resultado)
 
     ordenados = sorted(scores.items(), key=lambda item: item[1], reverse=True)
@@ -102,6 +113,7 @@ class BusquedaHibrida4D:
         vida_media_dias: float = 30.0,
         priming_segundos: int | None = None,
         rerank_candidatos: int | None = None,
+        reformulacion: bool | None = None,
     ) -> None:
         """Inicializa el orquestador de búsqueda.
 
@@ -115,20 +127,21 @@ class BusquedaHibrida4D:
                 ``settings.priming_segundos``, 0 = apagado).
             rerank_candidatos: Profundidad del cross-encoder (None =
                 ``settings.reranker_candidatos``).
+            reformulacion: Segunda pasada léxica cuando el recall
+                sale débil (None = ``settings.reformulacion_recall``).
         """
         self._embeddings = embeddings
         self._reordenador = reordenador
         self._cantidad_contexto = cantidad_contexto
         self._vida_media_dias = vida_media_dias
         self._priming_ttl = (
-            get_settings().priming_segundos
-            if priming_segundos is None
-            else priming_segundos
+            get_settings().priming_segundos if priming_segundos is None else priming_segundos
         )
         self._rerank_candidatos = (
-            get_settings().reranker_candidatos
-            if rerank_candidatos is None
-            else rerank_candidatos
+            get_settings().reranker_candidatos if rerank_candidatos is None else rerank_candidatos
+        )
+        self._reformulacion = (
+            get_settings().reformulacion_recall if reformulacion is None else reformulacion
         )
         self._primados: dict[str, tuple[float, float]] = {}
 
@@ -142,6 +155,9 @@ class BusquedaHibrida4D:
         competidores: list[str] | None = None,
         orden_temporal: str | None = None,
         query_temporal: str | None = None,
+        op_temporal: OpTemporal | None = None,
+        asof_unix: int | None = None,
+        verificacion: dict[str, Any] | None = None,
     ) -> list[ResultadoBusqueda]:
         """Ejecuta la búsqueda híbrida completa con contexto 4D.
 
@@ -164,6 +180,15 @@ class BusquedaHibrida4D:
             query_temporal: Lexemas de evidencia para la pata temporal
                 (``consulta_nucleo`` del router — la consulta sin el
                 andamiaje interrogativo). None = usar ``query`` cruda.
+            op_temporal: Operación tipada del router (Neuro-7):
+                ``asof`` acota la pata al corte pedido, ``change``
+                busca la cabeza de la cadena ``reemplazado_por``,
+                ``duration`` calcula el span primero→último y
+                ``provenance`` pondera por fuente primaria.
+            asof_unix: Corte superior (epoch) de la op ``asof``.
+            verificacion: Dict out opcional — recibe el veredicto
+                de la op (ganador, certeza, falsado, conflictos,
+                duración y si hubo reformulación interna).
 
         Returns:
             Resultados ordenados por score_final con contexto temporal.
@@ -177,12 +202,8 @@ class BusquedaHibrida4D:
         # del documento entero (paridad con los content_chunks de
         # gbrain). El padre de cada chunk se filtra igual que un
         # evento: sin archivados, cuarentena, staged ni reemplazados.
-        hits_chunks_texto = await repo.buscar_chunks_por_texto(
-            query, rama=rama
-        )
-        hits_chunks_vector = await repo.buscar_chunks_por_vector(
-            vector_query, rama=rama
-        )
+        hits_chunks_texto = await repo.buscar_chunks_por_texto(query, rama=rama)
+        hits_chunks_vector = await repo.buscar_chunks_por_vector(vector_query, rama=rama)
         # Patas léxicas OR: plainto_tsquery une con & — exige TODOS
         # los términos y una pregunta natural («quién es X y cuánto
         # tiempo tiene») devuelve cero filas. La OR deja entrar al
@@ -190,29 +211,40 @@ class BusquedaHibrida4D:
         # detrás de quien cubre más términos. Son inputs RRF
         # separados: el AND sigue mandando cuando existe.
         hits_texto_or = await repo.buscar_por_texto_or(query, rama=rama)
-        hits_chunks_texto_or = await repo.buscar_chunks_por_texto_or(
-            query, rama=rama
-        )
+        hits_chunks_texto_or = await repo.buscar_chunks_por_texto_or(query, rama=rama)
         # Patas de título: «quién es X» se responde por el nombre de
         # la entidad, que vive en la primera línea («# Carlos»,
         # «## Sección») — no en la densidad del cuerpo. Es la
         # equivalencia del entity-card lookup de gbrain.
         hits_titulo = await repo.buscar_por_titulo(query, rama=rama)
-        hits_chunks_titulo = await repo.buscar_chunks_por_titulo(
-            query, rama=rama
-        )
+        hits_chunks_titulo = await repo.buscar_chunks_por_titulo(query, rama=rama)
         # Pata temporal: «primero/último/más reciente» pide posición
         # en la línea de universo. Los eventos del extremo pedido
         # entran como una lista RRF más — si el RAG normal es flojo
         # la pata temporal sostiene la respuesta; si ambos son
         # fuertes la fusión los reconcilia.
         hits_temporal: list[tuple[EventoModel, float]] = []
-        if orden_temporal in ("asc", "desc"):
+        hasta_hits: list[tuple[EventoModel, float]] = []
+        nucleo = query_temporal or query
+        if op_temporal == OpTemporal.ASOF and asof_unix is not None:
+            # Estado EN el corte: última evidencia en o antes de T,
+            # no la más reciente de la línea.
+            hits_temporal = list(await repo.buscar_antes_de(nucleo, asof_unix, rama=rama))
+        elif op_temporal == OpTemporal.CHANGE:
+            # «Cuándo cambió X» = la cabeza más vieja de la cadena
+            # de reemplazos sobre el tema; sin cadena, la primera
+            # aparición es la mejor cota disponible.
+            hits_temporal = list(await repo.reemplazos_de(nucleo, rama=rama))
+            if not hits_temporal and orden_temporal == "asc":
+                hits_temporal = list(await repo.buscar_linea_temporal(nucleo, "asc", rama=rama))
+        elif orden_temporal in ("asc", "desc"):
             hits_temporal = list(
-                await repo.buscar_linea_temporal(
-                    query_temporal or query, orden_temporal, rama=rama
-                )
+                await repo.buscar_linea_temporal(nucleo, orden_temporal, rama=rama)
             )
+        if op_temporal == OpTemporal.DURATION and hits_temporal:
+            # El span necesita ambos extremos: el asc ya está en
+            # hits_temporal; el desc (limite=1) cierra «hasta».
+            hasta_hits = list(await repo.buscar_linea_temporal(nucleo, "desc", limite=1, rama=rama))
 
         modelos = _indice_modelos(
             hits_texto,
@@ -224,6 +256,7 @@ class BusquedaHibrida4D:
             hits_titulo,
             hits_chunks_titulo,
             hits_temporal,
+            hasta_hits,
         )
         fusionados = _fusionar(
             hits_texto,
@@ -257,18 +290,19 @@ class BusquedaHibrida4D:
         for hits in (hits_titulo, hits_chunks_titulo):
             for m, score in hits:
                 eid = str(m.id)
-                titulo_scores[eid] = max(
-                    titulo_scores.get(eid, 0.0), score
-                )
+                titulo_scores[eid] = max(titulo_scores.get(eid, 0.0), score)
         # Match temporal: la pata ordenada por timestamp ya dio
         # a cada candidato su posición en la ventana (1.0 el
         # extremo pedido). El boost es proporcional a esa
         # posición — «primer mensaje de samay» debe coronar al
         # evento más viejo que menciona a samay, no al más fresco
         # con mejor coseno.
-        temporal_scores = {
-            str(m.id): score for m, score in hits_temporal
-        }
+        temporal_scores = {str(m.id): score for m, score in hits_temporal}
+        # Op provenance: el boost de fuente primaria ordena por
+        # cercanía al hecho (captura > derivado > import).
+        fuente_boosts: dict[str, float] | None = None
+        if op_temporal == OpTemporal.PROVENANCE:
+            fuente_boosts = {eid: primacia_fuente(m.fuente) for eid, m in modelos.items()}
 
         ahora = int(time.time())
         resultados = _re_scored(
@@ -280,18 +314,64 @@ class BusquedaHibrida4D:
             self._activaciones(ahora),
             titulo_scores,
             temporal_scores,
+            fuente_boosts,
         )
         resultados = _deduplicar(resultados)
         # Fan effect: dos páginas casi idénticas no deberían ocupar
         # dos slots del top — el casi-duplicado conserva su puesto en
         # la cola pero con score penalizado (memoria/diversidad).
         resultados = _diversificar(resultados)
-        if self._reordenador is not None:
-            finales = await self._rerank_con_contexto(
-                repo, query, resultados, top_n
+        # Reformulación interna (Neuro-7): si la primera pasada no
+        # cubrió el tema — pocos hits o un ganador débil — una
+        # segunda pasada con el léxico relajado (tildes plegadas,
+        # singular/plural) rescata lo que la forma exacta perdió.
+        # Determinista, sin LLM, como el ESampling de dsh pero
+        # sin depender de ningún proveedor.
+        reformulada = False
+        nucleo_re = consulta_relajada(
+            query_temporal
+            or consulta_nucleo(query, descartar_fechas=op_temporal == OpTemporal.ASOF)
+            or query
+        )
+        if (
+            self._reformulacion
+            and nucleo_re
+            and nucleo_re != query
+            and es_recall_debil(
+                len(resultados),
+                resultados[0].score_final if resultados else 0.0,
+                top_n,
             )
+        ):
+            (
+                fusionados,
+                modelos,
+                temporal_scores,
+                resultados,
+            ) = await self._segunda_pasada(
+                repo,
+                nucleo_re,
+                fusionados,
+                modelos,
+                temporal_scores,
+                titulo_scores,
+                vector_query,
+                ahora,
+                rama=rama,
+                orden_temporal=orden_temporal,
+                op_temporal=op_temporal,
+                asof_unix=asof_unix,
+                fuente_boosts=fuente_boosts,
+            )
+            reformulada = True
+        if self._reordenador is not None:
+            finales = await self._rerank_con_contexto(repo, query, resultados, top_n)
         else:
             finales = await self._contextualizar(repo, resultados[:top_n])
+        # Falsación: si la sonda temporal corrige la cabeza que el
+        # ranking de relevancia proponía, la respuesta se declara
+        # falsada — el verificador dsh reportaba igual.
+        cabeza_previa = finales[0].evento_id if finales else None
         finales = await self._anclar_extremo(
             repo,
             orden_temporal,
@@ -301,6 +381,20 @@ class BusquedaHibrida4D:
             top_n=top_n,
         )
         self._primar(finales, ahora)
+        if verificacion is not None:
+            verificacion.update(
+                _veredicto(
+                    op_temporal,
+                    orden_temporal,
+                    hits_temporal,
+                    hasta_hits,
+                    finales=finales,
+                    modelos=modelos,
+                    cabeza_previa=cabeza_previa,
+                    asof_unix=asof_unix,
+                    reformulada=reformulada,
+                )
+            )
         if competidores is not None:
             elegidos = {r.evento_id for r in finales}
             vistos: set[str] = set(elegidos)
@@ -361,26 +455,92 @@ class BusquedaHibrida4D:
         ancla_id = str(modelo_ancla.id)
         if finales and finales[0].evento_id == ancla_id:
             return finales
-        previo = next(
-            (r for r in resultados if r.evento_id == ancla_id), None
-        )
+        previo = next((r for r in resultados if r.evento_id == ancla_id), None)
         if previo is not None:
             ancla = previo
         else:
-            ancla = ResultadoBusqueda(
-                evento_id=ancla_id, evento=_a_evento(modelo_ancla)
-            )
+            ancla = ResultadoBusqueda(evento_id=ancla_id, evento=_a_evento(modelo_ancla))
         cima = finales[0].score_final if finales else 1.0
         ancla = replace(ancla, score_final=cima + 0.001)
-        mapa = await repo.adyacentes_lote(
-            [modelo_ancla.timestamp_unix], self._cantidad_contexto
-        )
-        ancla = replace(
-            ancla, contexto=_contexto_de(mapa.get(0, ([], [])))
-        )
-        return [ancla, *[r for r in finales if r.evento_id != ancla_id]][
-            :top_n
+        mapa = await repo.adyacentes_lote([modelo_ancla.timestamp_unix], self._cantidad_contexto)
+        ancla = replace(ancla, contexto=_contexto_de(mapa.get(0, ([], []))))
+        return [ancla, *[r for r in finales if r.evento_id != ancla_id]][:top_n]
+
+    async def _segunda_pasada(
+        self,
+        repo: EventoRepository,
+        nucleo_re: str,
+        fusionados: list[ResultadoBusqueda],
+        modelos: dict[str, EventoModel],
+        temporal_scores: dict[str, float],
+        titulo_scores: dict[str, float],
+        vector_query: list[float],
+        ahora: int,
+        *,
+        rama: str | None,
+        orden_temporal: str | None,
+        op_temporal: OpTemporal | None,
+        asof_unix: int | None,
+        fuente_boosts: dict[str, float] | None,
+    ) -> tuple[
+        list[ResultadoBusqueda],
+        dict[str, EventoModel],
+        dict[str, float],
+        list[ResultadoBusqueda],
+    ]:
+        """Segunda pasada de recall con el léxico relajado.
+
+        El ESampling de dsh resampleaba el prompt con LLM; aquí la
+        reformulación es determinista — mismas patas OR/temporal
+        con la query morfológicamente relajada (tildes plegadas,
+        singular/plural ingenuo). Los rescatados entran al
+        candidato-set y todo se re-evalúa: un rescate bueno sube
+        por coseno/recencia aunque llegue sin RRF previo.
+
+        Returns:
+            ``(fusionados, modelos, temporal_scores, resultados)``
+            actualizados tras la re-evaluación.
+        """
+        hits_re_or = await repo.buscar_por_texto_or(nucleo_re, rama=rama)
+        hits_re_chunks = await repo.buscar_chunks_por_texto_or(nucleo_re, rama=rama)
+        hits_re_temporal: list[tuple[EventoModel, float]] = []
+        if op_temporal == OpTemporal.ASOF and asof_unix is not None:
+            hits_re_temporal = list(await repo.buscar_antes_de(nucleo_re, asof_unix, rama=rama))
+        elif orden_temporal in ("asc", "desc"):
+            hits_re_temporal = list(
+                await repo.buscar_linea_temporal(nucleo_re, orden_temporal, rama=rama)
+            )
+        for m, _ in (*hits_re_or, *hits_re_chunks, *hits_re_temporal):
+            modelos.setdefault(str(m.id), m)
+        for m, score in hits_re_temporal:
+            eid = str(m.id)
+            temporal_scores[eid] = max(score, temporal_scores.get(eid, 0.0))
+        presentes = {r.evento_id for r in fusionados}
+        fusionados += [
+            ResultadoBusqueda(evento_id=str(m.id))
+            for m, _ in (*hits_re_or, *hits_re_chunks)
+            if str(m.id) not in presentes
         ]
+        if op_temporal == OpTemporal.PROVENANCE and fuente_boosts is not None:
+            for eid, m in modelos.items():
+                fuente_boosts.setdefault(eid, primacia_fuente(m.fuente))
+        resultados = _re_scored(
+            fusionados,
+            modelos,
+            vector_query,
+            ahora,
+            self._vida_media_dias,
+            self._activaciones(ahora),
+            titulo_scores,
+            temporal_scores,
+            fuente_boosts,
+        )
+        return (
+            fusionados,
+            modelos,
+            temporal_scores,
+            _diversificar(_deduplicar(resultados)),
+        )
 
     def _activaciones(self, ahora: float) -> dict[str, float]:
         """Devuelve las activaciones vivas y purga las expiradas.
@@ -390,9 +550,7 @@ class BusquedaHibrida4D:
         """
         if self._priming_ttl <= 0:
             return {}
-        expirados = [
-            eid for eid, (expira, _) in self._primados.items() if expira <= ahora
-        ]
+        expirados = [eid for eid, (expira, _) in self._primados.items() if expira <= ahora]
         for eid in expirados:
             del self._primados[eid]
         return {eid: fuerza for eid, (_, fuerza) in self._primados.items()}
@@ -451,9 +609,7 @@ class BusquedaHibrida4D:
         el reorden.
         """
         elegibles = [
-            r
-            for r in resultados[: max(top_n, self._rerank_candidatos)]
-            if r.evento is not None
+            r for r in resultados[: max(top_n, self._rerank_candidatos)] if r.evento is not None
         ]
         marcas = []
         for r in elegibles:
@@ -469,9 +625,7 @@ class BusquedaHibrida4D:
         return [
             replace(
                 resultado,
-                contexto=_contexto_de(
-                    mapa.get(indice[resultado.evento_id], ([], []))
-                ),
+                contexto=_contexto_de(mapa.get(indice[resultado.evento_id], ([], []))),
             )
             for resultado in reordenados[:top_n]
             if resultado.evento_id in indice
@@ -504,11 +658,7 @@ def _indice_modelos(
     *listas_hits: Sequence[tuple[EventoModel, float]],
 ) -> dict[str, EventoModel]:
     """Indexa los modelos ORM recuperados por id para el re-score."""
-    return {
-        str(m.id): m
-        for hits in listas_hits
-        for m, _ in hits
-    }
+    return {str(m.id): m for hits in listas_hits for m, _ in hits}
 
 
 def _fusionar(
@@ -559,6 +709,7 @@ def _re_scored(
     activaciones: dict[str, float] | None = None,
     titulo_scores: dict[str, float] | None = None,
     temporal_scores: dict[str, float] | None = None,
+    fuente_boosts: dict[str, float] | None = None,
 ) -> list[ResultadoBusqueda]:
     """Mezcla RRF con coseno y recencia; aplica amplitud y priming."""
     rrf_max = max(r.score_rrf for r in fusionados)
@@ -568,14 +719,8 @@ def _re_scored(
         modelo = modelos[r.evento_id]
         coseno = _similitud(vector_query, modelo.embedding)
         vida_efectiva = vida_media_dias * (1.0 + math.log1p(modelo.refuerzos))
-        recencia = _decaimiento(
-            ahora - modelo.timestamp_unix, vida_efectiva
-        )
-        blend = (
-            PESO_RRF * (r.score_rrf / rrf_max)
-            + PESO_COSENO * coseno
-            + PESO_RECENCIA * recencia
-        )
+        recencia = _decaimiento(ahora - modelo.timestamp_unix, vida_efectiva)
+        blend = PESO_RRF * (r.score_rrf / rrf_max) + PESO_COSENO * coseno + PESO_RECENCIA * recencia
         score_final = blend * (1.0 + BOOST_AMPLITUD * modelo.amplitud)
         # Lo curado es verdad avalada (nunca decae, nunca se archiva):
         # el mismo voto de confianza pesa también en el recall.
@@ -585,20 +730,19 @@ def _re_scored(
         # documento ES sobre esa entidad («# Carlos» para «quién
         # es carlos»). Normalizado contra el idf máximo visto.
         if titulo_scores and titulo_max > 0:
-            score_final *= 1.0 + BOOST_TITULO * (
-                titulo_scores.get(r.evento_id, 0.0) / titulo_max
-            )
+            score_final *= 1.0 + BOOST_TITULO * (titulo_scores.get(r.evento_id, 0.0) / titulo_max)
         # La posición temporal suma sobre el blend: 1.0 en el
         # extremo pedido añade BOOST_TEMPORAL completo; los
         # eventos a mitad de ventana reciben un empuje marginal.
         if temporal_scores:
-            score_final += BOOST_TEMPORAL * temporal_scores.get(
-                r.evento_id, 0.0
-            )
+            score_final += BOOST_TEMPORAL * temporal_scores.get(r.evento_id, 0.0)
         if activaciones:
-            score_final *= 1.0 + BOOST_PRIMING * activaciones.get(
-                r.evento_id, 0.0
-            )
+            score_final *= 1.0 + BOOST_PRIMING * activaciones.get(r.evento_id, 0.0)
+        # Op provenance: primacía de fuente multiplicativa — la
+        # captura directa ordena por encima del documento derivado
+        # a igualdad de señal.
+        if fuente_boosts:
+            score_final *= 1.0 + BOOST_FUENTE * fuente_boosts.get(r.evento_id, 0.0)
         resultados.append(
             replace(
                 r,
@@ -639,10 +783,79 @@ def _diversificar(
         ]
     )
     indice = {r.evento_id: r for r in resultados}
-    return [
-        replace(indice[id_], score_final=score)
-        for id_, _, score in pares
-    ]
+    return [replace(indice[id_], score_final=score) for id_, _, score in pares]
+
+
+def _veredicto(
+    op_temporal: OpTemporal | None,
+    orden_temporal: str | None,
+    hits_temporal: list[tuple[EventoModel, float]],
+    hasta_hits: list[tuple[EventoModel, float]],
+    *,
+    finales: list[ResultadoBusqueda],
+    modelos: dict[str, EventoModel],
+    cabeza_previa: str | None,
+    asof_unix: int | None,
+    reformulada: bool,
+) -> dict[str, Any]:
+    """Arma el veredicto declarado de la op ejecutada.
+
+    Neuro-7: la respuesta dice su propia solidez — qué evento
+    coronó, con qué certeza, si la sonda temporal falsó al
+    ranking de relevancia y si hubo empates de posición. La
+    pregunta de superficie nunca sale como verdad tácita.
+    """
+    ganador = finales[0].evento_id if finales else None
+    op = (
+        op_temporal.value
+        if op_temporal is not None
+        else "earliest"
+        if orden_temporal == "asc"
+        else "latest"
+        if orden_temporal == "desc"
+        else "tema"
+    )
+    falsado = (
+        bool(hits_temporal) and ganador is not None and str(hits_temporal[0][0].id) != cabeza_previa
+    )
+    conflictos: list[str] = []
+    if hits_temporal and ganador is not None:
+        base = modelos.get(ganador)
+        ts_ganador = base.timestamp_unix if base is not None else hits_temporal[0][0].timestamp_unix
+        conflictos = [
+            str(m.id)
+            for m, _ in hits_temporal[1:6]
+            if conflictos_empate(ts_ganador, [m.timestamp_unix])
+        ]
+    if op_temporal == OpTemporal.PROVENANCE:
+        # La certeza del provenance la da la primacía del ganador:
+        # una captura directa sostiene la afirmación; un import
+        # derivado solo sugiere.
+        base_f = modelos.get(ganador) if ganador is not None else None
+        primacia = primacia_fuente(base_f.fuente) if base_f else 0.0
+        certeza = "alta" if finales and primacia >= 0.8 else "media" if finales else "nula"
+    elif orden_temporal in ("asc", "desc") or op_temporal is not None:
+        certeza = certeza_op(bool(hits_temporal), bool(finales), len(conflictos))
+    else:
+        certeza = "alta" if finales else "nula"
+    veredicto: dict[str, Any] = {
+        "op": op,
+        "ganador": ganador,
+        "certeza": certeza,
+        "falsado": falsado,
+        "conflictos": conflictos,
+        "reformulada": reformulada,
+    }
+    if op_temporal == OpTemporal.DURATION and hits_temporal and hasta_hits:
+        veredicto["duracion"] = span_duracion(
+            hits_temporal[0][0].timestamp_unix,
+            hasta_hits[0][0].timestamp_unix,
+        )
+    if op_temporal == OpTemporal.ASOF and asof_unix is not None:
+        veredicto["estado_en"] = asof_unix
+    if op_temporal == OpTemporal.PROVENANCE and ganador is not None and ganador in modelos:
+        veredicto["fuente"] = modelos[ganador].fuente
+    return veredicto
 
 
 def _decaimiento(edad_segundos: int, vida_media_dias: float) -> float:
@@ -661,10 +874,7 @@ def _similitud(vector_query: list[float], embedding: list[float] | None) -> floa
     """Calcula la similitud coseno (vectores ya normalizados → producto punto)."""
     if embedding is None or len(embedding) == 0:
         return 0.0
-    producto = sum(
-        float(q) * float(e)
-        for q, e in zip(vector_query, embedding, strict=True)
-    )
+    producto = sum(float(q) * float(e) for q, e in zip(vector_query, embedding, strict=True))
     return max(-1.0, min(1.0, producto))
 
 

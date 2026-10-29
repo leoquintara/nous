@@ -6,12 +6,13 @@ el modelo que la invoque no confunda sus responsabilidades.
 
 import asyncio
 import gc
+import json
 import logging
 import queue
 import threading
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
@@ -64,6 +65,7 @@ from src.core.memoria.novedad import (
     marca_frontera,
     sorpresa,
 )
+from src.core.memoria.operaciones import sugerir_clarificacion
 from src.core.memoria.prospectiva import (
     Intencion,
     TriggerTipo,
@@ -134,10 +136,14 @@ from src.core.persona import (
 )
 from src.core.reranker import ReordenadorLocal
 from src.core.routing import (
+    ORDEN_POR_OP,
     IntencionConsulta,
+    OpTemporal,
     clasificar_intencion,
+    clasificar_op_temporal,
     consulta_nucleo,
     direccion_temporal,
+    fecha_asof,
 )
 from src.core.temporal import detectar_trayectorias, proyectar
 from src.mcp.server import mcp_server
@@ -271,9 +277,7 @@ async def _ctx_escritura(workspace: str | None = None) -> Contexto:
     """Contexto con permiso de escritura; rechaza viewers."""
     ctx = await _ctx(workspace)
     if not ctx.puede_escribir:
-        raise PermisoDenegadoError(
-            "rol de solo lectura: sin permiso de escritura"
-        )
+        raise PermisoDenegadoError("rol de solo lectura: sin permiso de escritura")
     return ctx
 
 
@@ -354,9 +358,7 @@ async def _ejecutar_lote(engine: AsyncEngine, items: list[_ItemFondo]) -> None:
     for item in items:
         if isinstance(item, _ItemIndexacion):
             await _indexar_luego(engine, item)
-    consolidaciones = [
-        item for item in items if isinstance(item, _ItemConsolidacion)
-    ]
+    consolidaciones = [item for item in items if isinstance(item, _ItemConsolidacion)]
     if consolidaciones:
         await _consolidar_luego(engine, consolidaciones)
 
@@ -457,9 +459,7 @@ def _modelo_a_dict(modelo: EventoModel) -> dict[str, Any]:
         "rama": modelo.rama,
         "tipo": modelo.tipo,
         "expira_en": modelo.expira_en,
-        "reemplazado_por": (
-            str(modelo.reemplazado_por) if modelo.reemplazado_por else None
-        ),
+        "reemplazado_por": (str(modelo.reemplazado_por) if modelo.reemplazado_por else None),
         "con_quien": modelo.con_quien,
         "tipo_memoria": modelo.tipo_memoria,
         "estado_emocional": modelo.estado_emocional,
@@ -501,9 +501,7 @@ def _evento_a_dict(evento: Evento) -> dict[str, Any]:
     }
 
 
-def _resultado_a_dict(
-    r: ResultadoBusqueda, confiable: bool | None = True
-) -> dict[str, Any]:
+def _resultado_a_dict(r: ResultadoBusqueda, confiable: bool | None = True) -> dict[str, Any]:
     """Serializa un resultado de búsqueda con su contexto temporal."""
     assert r.evento is not None
     ahora = int(time.time())
@@ -597,9 +595,7 @@ async def _recordar(
     if frecuencia is not None and frecuencia <= 0.0:
         raise ErrorValidacion("frecuencia debe ser positiva (Hz)")
     if tipo not in TIPOS_EVENTO:
-        raise ErrorValidacion(
-            f"tipo debe ser uno de {', '.join(TIPOS_EVENTO)}"
-        )
+        raise ErrorValidacion(f"tipo debe ser uno de {', '.join(TIPOS_EVENTO)}")
     if estado_emocional is not None and not -1.0 <= estado_emocional <= 1.0:
         raise ErrorValidacion("estado_emocional debe estar entre -1.0 y 1.0")
     ts = timestamp_unix if timestamp_unix is not None else int(time.time())
@@ -675,14 +671,10 @@ async def _recordar(
             try:
                 viejo_id = uuid.UUID(str(reemplaza_id))
             except (ValueError, AttributeError) as e:
-                raise ErrorValidacion(
-                    f"reemplaza_id no es un UUID válido: {reemplaza_id!r}"
-                ) from e
+                raise ErrorValidacion(f"reemplaza_id no es un UUID válido: {reemplaza_id!r}") from e
             viejo = await repo.obtener(viejo_id)
             if viejo is None:
-                raise ErrorValidacion(
-                    f"el evento a reemplazar no existe: {reemplaza_id}"
-                )
+                raise ErrorValidacion(f"el evento a reemplazar no existe: {reemplaza_id}")
             await repo.marcar_reemplazado(viejo_id, evento.id)
             if await relaciones.vincular(viejo_id, evento.id, "reemplaza"):
                 respuesta["reemplaza"] = str(viejo_id)
@@ -690,9 +682,7 @@ async def _recordar(
             # hace poco — este supersede dentro de la ventana cuenta
             # como reescritura de la huella viva, no solo versión.
             if esta_labil(viejo.labil_hasta, int(time.time())):
-                await relaciones.vincular(
-                    viejo_id, evento.id, "reconsolida"
-                )
+                await relaciones.vincular(viejo_id, evento.id, "reconsolida")
                 respuesta["reconsolida"] = True
         if relaciona_ids:
             for texto_id in relaciona_ids[:20]:
@@ -755,9 +745,7 @@ async def _indexar_luego(engine: AsyncEngine, item: _ItemIndexacion) -> None:
         settings = get_settings()
         async with get_session(engine) as session:
             repo = EventoRepository(session)
-            similar = await repo.buscar_por_vector(
-                vector, limite=settings.relacion_max + 2
-            )
+            similar = await repo.buscar_por_vector(vector, limite=settings.relacion_max + 2)
             duplicado = (
                 similar
                 and similar[0][0].id != item.evento_id
@@ -785,13 +773,9 @@ async def _indexar_luego(engine: AsyncEngine, item: _ItemIndexacion) -> None:
                         break
                     if (
                         vecino.id != item.evento_id
-                        and settings.relacion_umbral
-                        <= sim
-                        < settings.dedup_umbral
+                        and settings.relacion_umbral <= sim < settings.dedup_umbral
                     ):
-                        if await relaciones.vincular(
-                            item.evento_id, vecino.id, "semantica", sim
-                        ):
+                        if await relaciones.vincular(item.evento_id, vecino.id, "semantica", sim):
                             creados += 1
                 # Interferencia proactiva (Neuro-4): los vecinos
                 # similar-pero-distintos compiten por el mismo slot
@@ -805,9 +789,7 @@ async def _indexar_luego(engine: AsyncEngine, item: _ItemIndexacion) -> None:
                     and es_competidor_proactivo(sim, settings.dedup_umbral)
                 ]
                 if proactivos:
-                    await repo.debilitar_lote(
-                        proactivos, INTERFERENCIA_FACTOR
-                    )
+                    await repo.debilitar_lote(proactivos, INTERFERENCIA_FACTOR)
             if sobrevive:
                 # Retrieval a nivel fragmento: los documentos largos
                 # también se indexan por secciones (evento_chunks).
@@ -844,15 +826,12 @@ async def _indexar_luego(engine: AsyncEngine, item: _ItemIndexacion) -> None:
                     [
                         r.embedding
                         for r in recientes
-                        if r.embedding is not None
-                        and r.id != item.evento_id
+                        if r.embedding is not None and r.id != item.evento_id
                     ],
                 )
                 nueva_amplitud = amplitud_con_sorpresa(item.amplitud, s)
                 if nueva_amplitud > item.amplitud:
-                    await repo.actualizar_amplitud(
-                        item.evento_id, nueva_amplitud
-                    )
+                    await repo.actualizar_amplitud(item.evento_id, nueva_amplitud)
                 # Frontera por sorpresa (Neuro-3): un pico de novedad
                 # marca época — los periodos se delimitan solos por
                 # lo inesperado, no solo por calendario.
@@ -871,18 +850,12 @@ async def _indexar_luego(engine: AsyncEngine, item: _ItemIndexacion) -> None:
                     item.fuente, item.ts, _VENTANA_ENCADENA_SEG
                 )
                 if anterior is not None and anterior.id != item.evento_id:
-                    await relaciones.vincular(
-                        item.evento_id, anterior.id, "encadena"
-                    )
+                    await relaciones.vincular(item.evento_id, anterior.id, "encadena")
                 # ADR-003: interferencia — marcador de superación +
                 # vecino semántico cercano = contradicción probable.
                 conflictos = detectar_conflicto(
                     item.contenido,
-                    [
-                        (str(v.id), s)
-                        for v, s in similar
-                        if v.id != item.evento_id
-                    ],
+                    [(str(v.id), s) for v, s in similar if v.id != item.evento_id],
                 )
                 if conflictos:
                     relaciones = RelacionRepository(session)
@@ -937,9 +910,7 @@ async def _disparar_intencion(
     # listo, no solo con el "qué". El query del trigger es la mejor
     # clave de búsqueda: corto y focal; la intención completa lleva
     # palabras que el full-text AND exigiría en vano.
-    consulta_pack = str(
-        (modelo.trigger_valor or {}).get("query") or modelo.intencion
-    )
+    consulta_pack = str((modelo.trigger_valor or {}).get("query") or modelo.intencion)
     pack_rows = await EventoRepository(
         session,
         Contexto(
@@ -948,10 +919,7 @@ async def _disparar_intencion(
             rol="member",
         ),
     ).buscar_por_texto(consulta_pack, limite=3)
-    pack = [
-        {"id": str(e.id), "contenido": e.contenido[:200]}
-        for e, _ in pack_rows
-    ]
+    pack = [{"id": str(e.id), "contenido": e.contenido[:200]} for e, _ in pack_rows]
     if pack:
         await repo.fijar_preparacion(modelo.id, pack)
     recordatorio = EventoModel(
@@ -983,9 +951,7 @@ async def _disparar_intencion(
     return recordatorio
 
 
-async def _evaluar_intenciones_evento(
-    session: Any, item: _ItemIndexacion
-) -> None:
+async def _evaluar_intenciones_evento(session: Any, item: _ItemIndexacion) -> None:
     """Dispara intenciones event-based contra el evento entrante.
 
     Args:
@@ -1016,9 +982,7 @@ async def _evaluar_intenciones_evento(
             await _disparar_intencion(session, repo, modelo)
 
 
-async def _disparar_intenciones_temporales(
-    session: Any, ctx: Contexto
-) -> list[dict[str, Any]]:
+async def _disparar_intenciones_temporales(session: Any, ctx: Contexto) -> list[dict[str, Any]]:
     """Dispara las intenciones time-based ya vencidas del workspace.
 
     Se llama desde el camino de consulta — cada evocación es la
@@ -1045,9 +1009,7 @@ async def _disparar_intenciones_temporales(
     return recordatorios
 
 
-async def _consolidar_luego(
-    engine: AsyncEngine, items: list[_ItemConsolidacion]
-) -> None:
+async def _consolidar_luego(engine: AsyncEngine, items: list[_ItemConsolidacion]) -> None:
     """Persiste los efectos post-evocación fuera del camino caliente.
 
     Por lote de consultas: refuerzo + ventana lábil (reconsolidación),
@@ -1060,9 +1022,7 @@ async def _consolidar_luego(
             return
         async with get_session(engine) as session:
             ahora = int(time.time())
-            await EventoRepository(session).reforzar(
-                ids, labil_hasta=ventana_labil(ahora)
-            )
+            await EventoRepository(session).reforzar(ids, labil_hasta=ventana_labil(ahora))
             relaciones = RelacionRepository(session)
             # Ids realmente existentes: un dedup-merge o un evento
             # eliminado entre el recall y esta consolidación no debe
@@ -1076,11 +1036,8 @@ async def _consolidar_luego(
             for item in items:
                 pares = [
                     par
-                    for par in pares_coactivos(
-                        [str(e) for e in item.eventos_ids]
-                    )
-                    if uuid.UUID(par[0]) in existentes
-                    and uuid.UUID(par[1]) in existentes
+                    for par in pares_coactivos([str(e) for e in item.eventos_ids])
+                    if uuid.UUID(par[0]) in existentes and uuid.UUID(par[1]) in existentes
                 ]
                 if pares:
                     await relaciones.reforzar_coactivas(
@@ -1128,19 +1085,79 @@ async def _consolidar_luego(
                 await repo_ev.fijar_proximas_revisiones(revisiones)
             # RIF (Neuro-4): los competidores no elegidos se suprimen
             # — evocar al ganador debilita a los perdedores un poco.
-            perdedores = [
-                eid
-                for item in items
-                for eid in item.debilitar_ids
-                if eid in existentes
-            ]
+            perdedores = [eid for item in items for eid in item.debilitar_ids if eid in existentes]
             if perdedores:
-                await repo_ev.debilitar_lote(
-                    perdedores, RIF_FACTOR, piso=RIF_PISO_WEIGHT
-                )
+                await repo_ev.debilitar_lote(perdedores, RIF_FACTOR, piso=RIF_PISO_WEIGHT)
             await session.commit()
     except Exception:  # noqa: BLE001 — el fallo no debe propagarse al loop
         logger.exception("no se pudieron consolidar efectos de evocación")
+
+
+# Cache de recall (Neuro-7): consultas idénticas en ráfaga
+# (mismo usuario+workspace+rama+query) saltan el pipeline — el
+# TTL corto lo hace seguro ante escrituras concurrentes y la
+# clave aísla por tenant para que jamás se filtre entre
+# workspaces. OrderedDict = LRU con tope acotado.
+_RECALL_CACHE: OrderedDict[tuple[Any, ...], tuple[float, list[dict[str, Any]]]] = OrderedDict()
+_RECALL_CACHE_MAX = 64
+
+
+def _cache_key(
+    ctx: Contexto,
+    consulta: str,
+    top_n: int,
+    rama: str | None,
+    max_tokens: int | None,
+) -> tuple[Any, ...]:
+    """Clave de cache por tenant — nunca mezcla workspaces."""
+    return (
+        ctx.usuario_id,
+        ctx.workspace_id,
+        rama,
+        consulta.strip().lower(),
+        top_n,
+        max_tokens,
+    )
+
+
+def _estimar_tokens(item: dict[str, Any]) -> int:
+    """Estimación de tokens de un item serializado (~4 chars/tok)."""
+    return max(1, len(json.dumps(item, ensure_ascii=False, default=str)) // 4)
+
+
+def _recortar_por_tokens(items: list[dict[str, Any]], max_tokens: int) -> list[dict[str, Any]]:
+    """Recorta la respuesta al presupuesto de tokens pedido.
+
+    Los recordatorios se preservan siempre — son la señal
+    prospectiva que el turno exige; el recorte cae sobre la cola
+    de resultados (la evidencia de menor rango se sacrifica
+    primero). Los items omitidos se declaran con su conteo.
+    """
+    salida: list[dict[str, Any]] = []
+    usados = 0
+    omitidos = 0
+    for item in items:
+        if item.get("recordatorio"):
+            usados += _estimar_tokens(item)
+            salida.append(item)
+            continue
+        costo = _estimar_tokens(item)
+        if usados + costo > max_tokens:
+            omitidos += 1
+            continue
+        usados += costo
+        salida.append(item)
+    if omitidos:
+        salida.append(
+            {
+                "truncado": {
+                    "por": "max_tokens",
+                    "presupuesto": max_tokens,
+                    "omitidos": omitidos,
+                }
+            }
+        )
+    return salida
 
 
 async def _consultar(
@@ -1148,9 +1165,18 @@ async def _consultar(
     top_n: int,
     rama: str | None = None,
     workspace: str | None = None,
+    max_tokens: int | None = None,
 ) -> list[dict[str, Any]]:
     """Ejecuta la búsqueda híbrida 4D y serializa los resultados."""
     ctx = await _ctx(workspace)
+    ttl = get_settings().recall_cache_ttl
+    clave = _cache_key(ctx, consulta, top_n, rama, max_tokens)
+    if ttl > 0 and (hit := _RECALL_CACHE.get(clave)) is not None:
+        expira, salida = hit
+        if expira > time.time():
+            _RECALL_CACHE.move_to_end(clave)
+            return [dict(item) for item in salida]
+        del _RECALL_CACHE[clave]
     recordatorios: list[dict[str, Any]] = []
     async with get_session(obtener_engine()) as session:
         # ADR-003: cada consulta es la oportunidad natural de
@@ -1165,10 +1191,7 @@ async def _consultar(
                         "id": v["id"],
                         "timestamp_unix": int(time.time()),
                         "dimension": "conductual",
-                        "contenido": (
-                            "Intención prospectiva disparada: "
-                            + v["intencion"]
-                        ),
+                        "contenido": ("Intención prospectiva disparada: " + v["intencion"]),
                         "amplitud": 0.7,
                         "refuerzos": 0,
                     },
@@ -1189,20 +1212,32 @@ async def _consultar(
         # timestamp_unix fusionada con el RAG normal (la temporal
         # sostiene la respuesta cuando el RAG es flojo).
         intencion, nombre_entidad = clasificar_intencion(consulta)
+        # Neuro-7: la pregunta temporal se clasifica en su
+        # operación de memoria — earliest/latest siguen la pata
+        # ordenada; duration/asof/change/provenance tienen pata
+        # y veredicto propios (span, estado-en-T, punto de
+        # cambio, fuente primaria).
+        op = clasificar_op_temporal(consulta) if intencion == IntencionConsulta.TEMPORAL else None
         orden = (
-            direccion_temporal(consulta)
+            ORDEN_POR_OP[op]
+            if op is not None
+            else direccion_temporal(consulta)
             if intencion == IntencionConsulta.TEMPORAL
             else None
         )
+        asof_unix = fecha_asof(consulta) if op == OpTemporal.ASOF else None
         # La pata temporal filtra por la evidencia, no por el
         # andamiaje de la pregunta («primer mensaje de samay» se
         # resuelve ordenando los eventos de samay, no buscando la
-        # palabra «mensaje» en cualquier parte).
+        # palabra «mensaje» en cualquier parte). En las ops con
+        # fecha explícita la fecha es el corte, no evidencia del
+        # contenido.
         nucleo = (
-            consulta_nucleo(consulta)
+            consulta_nucleo(consulta, descartar_fechas=op == OpTemporal.ASOF)
             if intencion == IntencionConsulta.TEMPORAL
             else None
         )
+        verificacion: dict[str, Any] = {}
         resultados = await _obtener_busqueda().buscar(
             session,
             consulta,
@@ -1212,18 +1247,22 @@ async def _consultar(
             competidores=competidores,
             orden_temporal=orden,
             query_temporal=nucleo or None,
+            op_temporal=op,
+            asof_unix=asof_unix,
+            verificacion=verificacion,
         )
         estado_actual: float | None = None
         episodios_por_gist: dict[str, list[dict[str, Any]]] = {}
         confianza_fuentes: dict[str, bool] = {}
         asociados: list[tuple[EventoModel, float]] = []
+        # Vecinos por tag 1-hop: id → tags compartidos que los
+        # trajeron (via = "tags", nunca confundidos con los hits).
+        tags_vecinos: dict[uuid.UUID, tuple[str, ...]] = {}
         if resultados:
             # ADR-003 patrón 6 — memoria dependiente de contexto/estado:
             # recuerdos codificados en una hora/fuente/estado parecidos
             # al actual suben de rango. Solo premia, nunca excluye.
-            estado_actual = await EventoRepository(
-                session, ctx
-            ).ultimo_estado_somatico()
+            estado_actual = await EventoRepository(session, ctx).ultimo_estado_somatico()
             actual = ContextoActual(
                 hora_dia=time.localtime().tm_hour,
                 fuente="mcp",
@@ -1261,8 +1300,7 @@ async def _consultar(
                 (
                     replace(r, score_final=ajuste[r.evento_id])
                     if r.evento is not None
-                    and ajuste.get(r.evento_id, r.score_final)
-                    != r.score_final
+                    and ajuste.get(r.evento_id, r.score_final) != r.score_final
                     else r
                 )
                 for r in resultados
@@ -1277,9 +1315,7 @@ async def _consultar(
                 if r.evento is not None and r.evento.tipo == "compromiso"
             ]
             if posibles:
-                abiertos = await EventoRepository(
-                    session, ctx
-                ).ids_compromisos_abiertos(
+                abiertos = await EventoRepository(session, ctx).ids_compromisos_abiertos(
                     [uuid.UUID(e) for e in posibles]
                 )
                 if abiertos:
@@ -1298,31 +1334,24 @@ async def _consultar(
                         )
                         for r in resultados
                     ]
-                    resultados.sort(
-                        key=lambda r: r.score_final, reverse=True
-                    )
+                    resultados.sort(key=lambda r: r.score_final, reverse=True)
             # Expansión de gist (Neuro-3): un resultado semántico
             # trae sus episodios miembros — la abstracción llega
             # con la evidencia que la sostiene.
             gist_ids = [
                 uuid.UUID(r.evento_id)
                 for r in resultados
-                if r.evento is not None
-                and "gist" in (r.evento.tags or [])
+                if r.evento is not None and "gist" in (r.evento.tags or [])
             ]
             for gid in gist_ids:
-                miembros = await EventoRepository(
-                    session, ctx
-                ).episodios_de_gist(gid, limite=3)
+                miembros = await EventoRepository(session, ctx).episodios_de_gist(gid, limite=3)
                 episodios_por_gist[str(gid)] = [
                     _evento_a_dict(Evento.desde_modelo(m)) for m in miembros
                 ]
             # Amnesia de fuente (Neuro-4): la confianza pesa el
             # origen — un solo query por lote para todas las fuentes
             # presentes en los resultados.
-            confianza_fuentes = await FuenteRepository(
-                session, ctx
-            ).fuentes_confiables(
+            confianza_fuentes = await FuenteRepository(session, ctx).fuentes_confiables(
                 list(
                     {
                         r.evento.fuente
@@ -1337,19 +1366,15 @@ async def _consultar(
             # STP pondera la recencia del último co-encendido.
             ahora_consulta = int(time.time())
             ganadores = {
-                uuid.UUID(r.evento_id)
-                for r in resultados[:COACTIVA_TOP_K]
-                if r.evento is not None
+                uuid.UUID(r.evento_id) for r in resultados[:COACTIVA_TOP_K] if r.evento is not None
             }
             if ganadores:
-                aristas = await RelacionRepository(
-                    session, ctx
-                ).vecinos_coactivos(list(ganadores), limite=24)
+                aristas = await RelacionRepository(session, ctx).vecinos_coactivos(
+                    list(ganadores), limite=24
+                )
                 mejores: dict[uuid.UUID, float] = {}
                 for ar in aristas:
-                    peso_e = peso_efectivo_coactiva(
-                        ar.peso, ar.ultima_coactiva, ahora_consulta
-                    )
+                    peso_e = peso_efectivo_coactiva(ar.peso, ar.ultima_coactiva, ahora_consulta)
                     for extremo in (ar.origen_id, ar.destino_id):
                         if extremo in ganadores or str(extremo) in {
                             r.evento_id for r in resultados
@@ -1357,13 +1382,11 @@ async def _consultar(
                             continue
                         if peso_e > mejores.get(extremo, 0.0):
                             mejores[extremo] = peso_e
-                top_vecinos = sorted(
-                    mejores.items(), key=lambda kv: kv[1], reverse=True
-                )[:4]
+                top_vecinos = sorted(mejores.items(), key=lambda kv: kv[1], reverse=True)[:4]
                 if top_vecinos:
-                    modelos = await EventoRepository(
-                        session, ctx
-                    ).obtener_muchos([e for e, _ in top_vecinos])
+                    modelos = await EventoRepository(session, ctx).obtener_muchos(
+                        [e for e, _ in top_vecinos]
+                    )
                     pesos = dict(top_vecinos)
                     asociados = [
                         (m, pesos[m.id])
@@ -1373,6 +1396,41 @@ async def _consultar(
                         and not m.cuarentena
                         and m.reemplazado_por is None
                     ]
+            # Expansión asociativa 1-hop por tags (Neuro-7): solo
+            # cuando el recall vino corto y solo por tags raros —
+            # un tag en >15% del corpus es un hub genérico que
+            # conecta todo con todo; expandir por él no asocia,
+            # solo inunda. Regla fingerprint: un tag raro y
+            # específico basta; el resto exige ≥2 compartidos.
+            repo_ev = EventoRepository(session, ctx)
+            if resultados and len(resultados) < top_n:
+                tags_ganadores = {
+                    t
+                    for r in resultados[:3]
+                    if r.evento is not None and r.evento.tags
+                    for t in r.evento.tags
+                }
+                if tags_ganadores:
+                    total = await repo_ev.total_evocables(rama)
+                    tope_hub = max(3, int(total * 0.15))
+                    conteos = dict(await repo_ev.listar_tags(500))
+                    raros = {t for t in tags_ganadores if conteos.get(t, 0) <= tope_hub}
+                    if raros:
+                        vecinos = await repo_ev.buscar_por_tags(
+                            list(raros),
+                            [uuid.UUID(r.evento_id) for r in resultados],
+                            limite=6,
+                            rama=rama,
+                        )
+                        for m in vecinos:
+                            compartidos = set(m.tags or []) & raros
+                            fingerprint = (
+                                len(compartidos) == 1 and len(next(iter(compartidos))) >= 6
+                            )
+                            if len(compartidos) < 2 and not fingerprint:
+                                continue
+                            asociados.append((m, 0.0))
+                            tags_vecinos[m.id] = tuple(sorted(compartidos))
     _encolar_fondo(
         _ItemConsolidacion(
             tuple(uuid.UUID(r.evento_id) for r in resultados),
@@ -1405,26 +1463,30 @@ async def _consultar(
         if r.evento_id in episodios_por_gist:
             d["episodios"] = episodios_por_gist[r.evento_id]
         serializados.append(d)
-    # Vecinos hebbianos — llegan marcados como asociados, nunca se
-    # confunden con resultados de la consulta.
+    # Vecinos hebbianos y por tag — llegan marcados como
+    # asociados, nunca se confunden con resultados de la
+    # consulta. Los de tag declaran los tags que los trajeron.
     for modelo, peso_e in asociados:
         ev = Evento.desde_modelo(modelo)
-        serializados.append(
-            {
-                "evento": _evento_a_dict(ev),
-                "via": "coactiva",
-                "peso_efectivo": round(peso_e, 3),
-                "confianza": confianza_de_evento(
-                    ev.refuerzos,
-                    ev.weight,
-                    ev.amplitud,
-                    ev.timestamp_unix,
-                    int(time.time()),
-                    archivado=ev.archivado,
-                    parametrica=ev.parametrica,
-                ),
-            }
-        )
+        via_tags = tags_vecinos.get(modelo.id)
+        item: dict[str, Any] = {
+            "evento": _evento_a_dict(ev),
+            "via": "tags" if via_tags else "coactiva",
+            "confianza": confianza_de_evento(
+                ev.refuerzos,
+                ev.weight,
+                ev.amplitud,
+                ev.timestamp_unix,
+                int(time.time()),
+                archivado=ev.archivado,
+                parametrica=ev.parametrica,
+            ),
+        }
+        if via_tags:
+            item["tags_compartidos"] = list(via_tags)
+        else:
+            item["peso_efectivo"] = round(peso_e, 3)
+        serializados.append(item)
     # Intención entidad: la ficha encabeza la respuesta — card,
     # grafo, backlinks, compromisos y span temporal en un bloque;
     # los resultados difusos quedan detrás como contexto.
@@ -1432,12 +1494,43 @@ async def _consultar(
         ficha = await _entidad(nombre_entidad, top_n, workspace)
         if ficha.get("encontrado"):
             serializados = [
-                s
-                for s in serializados
-                if s.get("evento", {}).get("id") != ficha["card"]["id"]
+                s for s in serializados if s.get("evento", {}).get("id") != ficha["card"]["id"]
             ]
             serializados.insert(0, {"entidad": ficha})
-    return recordatorios + serializados
+    # Veredicto de la op + clarificación estructurada (Neuro-7):
+    # la respuesta declara su solidez (certeza, falsado, empates
+    # de posición) y, solo cuando amerita, sugiere la pregunta
+    # exacta que cierra la ambigüedad — conflicto rival o
+    # evidencia totalmente ausente. Las lagunas de cobertura
+    # jamás disparan: el usuario no puede aportar lo que nadie
+    # capturó.
+    n_hits = sum(1 for s in serializados if isinstance(s.get("evento"), dict) and "via" not in s)
+    rival = verificacion["conflictos"][0] if verificacion.get("conflictos") else None
+    clarif = sugerir_clarificacion(
+        n_resultados=n_hits,
+        conflicto_rival=rival,
+        tema=nucleo or consulta,
+    )
+    if verificacion or clarif is not None:
+        meta: dict[str, Any] = {}
+        if verificacion:
+            meta["verificacion"] = verificacion
+        if clarif is not None:
+            meta["clarificacion"] = {
+                "razon": clarif.razon,
+                "accion": clarif.accion,
+                "pregunta": clarif.pregunta,
+                "opciones": clarif.opciones,
+            }
+        serializados.append(meta)
+    salida = recordatorios + serializados
+    if max_tokens is not None and max_tokens > 0:
+        salida = _recortar_por_tokens(salida, max_tokens)
+    if ttl > 0:
+        _RECALL_CACHE[clave] = (time.time() + ttl, salida)
+        if len(_RECALL_CACHE) > _RECALL_CACHE_MAX:
+            _RECALL_CACHE.popitem(last=False)
+    return salida
 
 
 async def _tags(limite: int, workspace: str | None = None) -> list[dict[str, Any]]:
@@ -1502,8 +1595,11 @@ async def _crear_fuente(
     ctx = await _ctx_escritura(workspace)
     async with get_session(obtener_engine()) as session:
         fuente = await FuenteRepository(session, ctx).crear(
-            nombre, tipo=tipo, namespace=namespace,
-            rama_origen=rama_origen, extra=metadata,
+            nombre,
+            tipo=tipo,
+            namespace=namespace,
+            rama_origen=rama_origen,
+            extra=metadata,
         )
         fuente.autor_id = ctx.usuario_id
         await session.commit()
@@ -1534,9 +1630,7 @@ async def _eliminar_fuente(nombre: str, workspace: str | None = None) -> bool:
     return ok
 
 
-async def _ramificar_fuente(
-    nombre: str, rama: str, namespace: str
-) -> dict[str, Any] | None:
+async def _ramificar_fuente(nombre: str, rama: str, namespace: str) -> dict[str, Any] | None:
     """Crea una línea de universo alterna derivada de una fuente.
 
     La rama nace como sub-fuente ``{nombre}:{rama}``: los eventos que
@@ -1570,9 +1664,7 @@ async def _relaciones(limite: int, workspace: str | None = None) -> list[dict[st
     """Lista los vínculos entre eventos (explícitos y semánticos)."""
     ctx = await _ctx(workspace)
     async with get_session(obtener_engine()) as session:
-        filas = await RelacionRepository(session, ctx).listar(
-            min(max(limite, 1), 5000)
-        )
+        filas = await RelacionRepository(session, ctx).listar(min(max(limite, 1), 5000))
     return [
         {
             "origen_id": str(r.origen_id),
@@ -1638,16 +1730,10 @@ async def _entidad(
         # títulos puntúan igual — la card es el título MÁS CORTO que
         # lleva el nombre («# Oscar Lopez» es una ficha; la primera
         # línea de un fact es su texto completo, ~150 chars).
-        card, score_card = min(
-            candidatos, key=lambda c: len(_titulo_de(c[0]))
-        )
+        card, score_card = min(candidatos, key=lambda c: len(_titulo_de(c[0])))
         excluir = [e.id for e, _ in candidatos]
-        vinculos = await RelacionRepository(session, ctx).vinculos_de(
-            card.id
-        )
-        menciones = await repo.menciones_de(
-            nombre, excluir, max(1, min(limite_menciones, 24))
-        )
+        vinculos = await RelacionRepository(session, ctx).vinculos_de(card.id)
+        menciones = await repo.menciones_de(nombre, excluir, max(1, min(limite_menciones, 24)))
         compromisos = [
             c
             for c in await repo.listar_compromisos_abiertos("main")
@@ -1711,9 +1797,7 @@ async def _cerrar_loop(
     try:
         cid = uuid.UUID(str(compromiso_id))
     except (ValueError, AttributeError) as e:
-        raise ErrorValidacion(
-            f"compromiso_id no es un UUID válido: {compromiso_id!r}"
-        ) from e
+        raise ErrorValidacion(f"compromiso_id no es un UUID válido: {compromiso_id!r}") from e
     async with get_session(obtener_engine()) as session:
         repo = EventoRepository(session, ctx)
         compromiso = await repo.obtener(cid)
@@ -1721,8 +1805,7 @@ async def _cerrar_loop(
             raise ErrorValidacion(f"compromiso no encontrado: {compromiso_id}")
         if compromiso.tipo != "compromiso":
             raise ErrorValidacion(
-                f"el evento {compromiso_id} es tipo '{compromiso.tipo}', "
-                "no 'compromiso'"
+                f"el evento {compromiso_id} es tipo '{compromiso.tipo}', " "no 'compromiso'"
             )
     cierre = await _recordar(
         resolucion,
@@ -1755,9 +1838,7 @@ async def _olvidar(evento_id: str) -> dict[str, Any]:
     try:
         eid = uuid.UUID(str(evento_id))
     except (ValueError, AttributeError) as e:
-        raise ErrorValidacion(
-            f"evento_id no es un UUID válido: {evento_id!r}"
-        ) from e
+        raise ErrorValidacion(f"evento_id no es un UUID válido: {evento_id!r}") from e
     async with get_session(obtener_engine()) as session:
         # Borrado ajeno solo para owners: un member puede olvidar
         # sus propias memorias, no las del resto del workspace.
@@ -1769,9 +1850,7 @@ async def _olvidar(evento_id: str) -> dict[str, Any]:
             and objetivo_borrar.autor_id is not None
             and objetivo_borrar.autor_id != ctx.usuario_id
         ):
-            raise PermisoDenegadoError(
-                "solo el owner puede borrar memorias de otros miembros"
-            )
+            raise PermisoDenegadoError("solo el owner puede borrar memorias de otros miembros")
         vinculos = await RelacionRepository(session).eliminar_de(eid)
         ok = await repo.eliminar(eid)
         await session.commit()
@@ -1792,9 +1871,7 @@ def _objetivo_a_dict(o: ObjetivoModel) -> dict[str, Any]:
         "fecha_objetivo": o.fecha_objetivo,
         "estado": o.estado,
         "rama": o.rama,
-        "evento_cierre_id": (
-            str(o.evento_cierre_id) if o.evento_cierre_id else None
-        ),
+        "evento_cierre_id": (str(o.evento_cierre_id) if o.evento_cierre_id else None),
     }
 
 
@@ -1824,11 +1901,12 @@ async def _crear_objetivo(
     if not titulo:
         raise ErrorValidacion("el titulo del objetivo no puede estar vacío")
     if dimension is not None and dimension not in (
-        "cognitiva", "somatica", "conductual",
+        "cognitiva",
+        "somatica",
+        "conductual",
     ):
         raise ErrorValidacion(
-            f"dimension inválida: {dimension!r} "
-            "(cognitiva|somatica|conductual)"
+            f"dimension inválida: {dimension!r} " "(cognitiva|somatica|conductual)"
         )
     ctx = await _ctx_escritura(workspace)
     async with get_session(obtener_engine()) as session:
@@ -1848,17 +1926,13 @@ async def _crear_objetivo(
     return _objetivo_a_dict(objetivo)
 
 
-async def _actualizar_objetivo(
-    objetivo_id: str, cambios: dict[str, Any]
-) -> dict[str, Any]:
+async def _actualizar_objetivo(objetivo_id: str, cambios: dict[str, Any]) -> dict[str, Any]:
     """Aplica cambios parciales a un objetivo existente."""
     ctx = await _ctx_escritura()
     try:
         oid = uuid.UUID(str(objetivo_id))
     except (ValueError, AttributeError) as e:
-        raise ErrorValidacion(
-            f"objetivo_id no es un UUID válido: {objetivo_id!r}"
-        ) from e
+        raise ErrorValidacion(f"objetivo_id no es un UUID válido: {objetivo_id!r}") from e
     async with get_session(obtener_engine()) as session:
         objetivo = await ObjetivoRepository(session, ctx).actualizar(oid, cambios)
         if objetivo is None:
@@ -1877,9 +1951,7 @@ async def _cumplir_objetivo(
     persistida, nunca borrado.
     """
     if estado not in ("cumplido", "abandonado"):
-        raise ErrorValidacion(
-            f"estado de cierre inválido: {estado!r} (cumplido|abandonado)"
-        )
+        raise ErrorValidacion(f"estado de cierre inválido: {estado!r} (cumplido|abandonado)")
     cambios: dict[str, Any] = {"estado": estado}
     if resolucion:
         cierre = await _recordar(
@@ -1932,21 +2004,11 @@ async def _contexto_inicial(
         censores = await repo.listar_censores()
         vis = repo._vis()
         total = int(
-            (
-                await session.execute(
-                    select(func.count(EventoModel.id)).where(*vis)
-                )
-            ).scalar_one()
+            (await session.execute(select(func.count(EventoModel.id)).where(*vis))).scalar_one()
         )
-    vigentes = [
-        e
-        for e in recientes
-        if e.expira_en is None or e.expira_en > ahora
-    ]
+    vigentes = [e for e in recientes if e.expira_en is None or e.expira_en > ahora]
     nucleo = sorted(vigentes, key=lambda e: (-e.amplitud, -e.refuerzos))[:n]
-    calientes = sorted(vigentes, key=lambda e: (-e.refuerzos, -e.timestamp_unix))[
-        :n
-    ]
+    calientes = sorted(vigentes, key=lambda e: (-e.refuerzos, -e.timestamp_unix))[:n]
     loops_dicts = [
         {
             **_modelo_a_dict(e),
@@ -1973,18 +2035,13 @@ async def _contexto_inicial(
                 "censores",
                 "Guardrails",
                 tuple(
-                    f"[{parsear_censor(e.contexto)[0].upper()}] "
-                    f"{e.contenido}"
-                    for e in censores
+                    f"[{parsear_censor(e.contexto)[0].upper()}] " f"{e.contenido}" for e in censores
                 ),
             ),
             SeccionBootstrap(
                 "loops",
                 "Compromisos abiertos",
-                tuple(
-                    f"{loop['contenido']} ({loop['dias_abierto']}d)"
-                    for loop in loops_dicts
-                ),
+                tuple(f"{loop['contenido']} ({loop['dias_abierto']}d)" for loop in loops_dicts),
             ),
             SeccionBootstrap(
                 "curado",
@@ -2069,9 +2126,7 @@ async def recordar_evento(
     con_quien: str | None = None,
     scope: Literal["personal", "workspace"] = "personal",
     workspace: str | None = None,
-    tipo_memoria: (
-        Literal["episodica", "semantica", "procedimental"] | None
-    ) = None,
+    tipo_memoria: (Literal["episodica", "semantica", "procedimental"] | None) = None,
     estado_emocional: float | None = None,
     parametrica: bool = False,
 ) -> dict[str, Any]:
@@ -2353,6 +2408,7 @@ async def consultar_memoria(
     top_n: int = 10,
     rama: str = "main",
     workspace: str | None = None,
+    max_tokens: int | None = None,
 ) -> list[dict[str, Any]]:
     """Busca memorias del usuario por TEMA con búsqueda híbrida 4D.
 
@@ -2372,14 +2428,24 @@ async def consultar_memoria(
             recuerdo de la línea real. Usa "*" para todas las ramas.
         workspace: Slug o UUID del workspace a consultar (override del
             default de la key). Requiere membresía.
+        max_tokens: Presupuesto de tokens de la respuesta — la cola
+            de resultados se sacrifica primero y los omitidos se
+            declaran. None = sin recorte.
 
     Returns:
         Resultados ordenados por relevancia; cada uno trae el "evento"
         completo, sus scores y "contexto_temporal": los eventos que
-        ocurrieron justo antes y después en la línea de tiempo.
+        ocurrieron justo antes y después en la línea de tiempo. Las
+        consultas temporales/entidad declaran además su veredicto
+        (op, certeza, falsado, conflictos) y, cuando amerita, una
+        clarificación sugerida.
     """
     return await _consultar(
-        consulta, top_n, None if rama == "*" else rama, workspace
+        consulta,
+        top_n,
+        None if rama == "*" else rama,
+        workspace,
+        max_tokens,
     )
 
 
@@ -2394,13 +2460,9 @@ async def _mapa_lagunas(
     lagunas = detectar_lagunas(
         n_resultados=len(ev_items),
         top_n=max(1, top_n),
-        dimensiones=[
-            str(i["evento"].get("dimension", "")) for i in ev_items
-        ],
+        dimensiones=[str(i["evento"].get("dimension", "")) for i in ev_items],
         confianzas=[float(i.get("confianza", 0.0)) for i in ev_items],
-        n_parametricas=sum(
-            1 for i in ev_items if i["evento"].get("parametrica")
-        ),
+        n_parametricas=sum(1 for i in ev_items if i["evento"].get("parametrica")),
     )
     return {
         "consulta": consulta,
@@ -2472,7 +2534,10 @@ async def obtener_linea_de_universo(
         "amplitud","frecuencia"} ordenados cronológicamente.
     """
     return await _linea(
-        desde_unix, hasta_unix, limite, None if rama == "*" else rama,
+        desde_unix,
+        hasta_unix,
+        limite,
+        None if rama == "*" else rama,
         workspace=workspace,
     )
 
@@ -2736,9 +2801,7 @@ async def leer_preferencia(clave: str) -> dict[str, Any]:
 
 
 @mcp_server.tool()
-async def guardar_preferencia(
-    clave: str, valor: dict[str, Any]
-) -> dict[str, Any]:
+async def guardar_preferencia(clave: str, valor: dict[str, Any]) -> dict[str, Any]:
     """Persiste una preferencia duradera del usuario (upsert por clave).
 
     USAR CUANDO: el usuario declare una preferencia estable de
@@ -2789,14 +2852,11 @@ async def render_persona(
     for a in objetivos:
         if a not in ARCHIVOS:
             raise ErrorValidacion(
-                f"archivo de identidad desconocido: {a!r} — "
-                f"válidos: {', '.join(ARCHIVOS)}"
+                f"archivo de identidad desconocido: {a!r} — " f"válidos: {', '.join(ARCHIVOS)}"
             )
     faltan = {a: list(faltantes(a, banco)) for a in objetivos}
     faltan = {a: f for a, f in faltan.items() if f}
-    contenidos = {
-        a: render(a, banco) for a in objetivos if a not in faltan
-    }
+    contenidos = {a: render(a, banco) for a in objetivos if a not in faltan}
     return {
         "hash": hash_banco(banco),
         "archivos": contenidos,
@@ -2829,15 +2889,11 @@ async def _ctx_owner_en(workspace: str | None) -> Contexto:
     """
     ctx = await _ctx(workspace)
     if ctx.rol != "owner":
-        raise PermisoDenegadoError(
-            "se requiere rol owner en el workspace"
-        )
+        raise PermisoDenegadoError("se requiere rol owner en el workspace")
     return ctx
 
 
-async def _miembro_por_handle(
-    ctx: Contexto, handle: str
-) -> uuid.UUID:
+async def _miembro_por_handle(ctx: Contexto, handle: str) -> uuid.UUID:
     """Resuelve un handle de usuario a su UUID dentro del workspace."""
     engine = obtener_engine()
     miembros = await idn.listar_miembros(engine, ctx.workspace_id)
@@ -2884,12 +2940,8 @@ async def crear_workspace(slug: str, nombre: str) -> dict[str, Any]:
     """
     ctx = await _ctx()
     if ctx.usuario_id is None:
-        raise PermisoDenegadoError(
-            "sin identidad de usuario (modo desarrollo)"
-        )
-    ws = await idn.crear_workspace(
-        obtener_engine(), slug, nombre, ctx.usuario_id
-    )
+        raise PermisoDenegadoError("sin identidad de usuario (modo desarrollo)")
+    ws = await idn.crear_workspace(obtener_engine(), slug, nombre, ctx.usuario_id)
     return {
         "id": str(ws.id),
         "slug": ws.slug,
@@ -2918,9 +2970,7 @@ async def listar_miembros(
             "nombre": m.nombre,
             "rol": m.rol,
         }
-        for m in await idn.listar_miembros(
-            obtener_engine(), ctx.workspace_id
-        )
+        for m in await idn.listar_miembros(obtener_engine(), ctx.workspace_id)
     ]
 
 
@@ -2947,7 +2997,10 @@ async def invitar_miembro(
     """
     ctx = await _ctx_owner_en(workspace)
     token = await idn.crear_invitacion(
-        obtener_engine(), ctx.workspace_id, rol, dias=dias,
+        obtener_engine(),
+        ctx.workspace_id,
+        rol,
+        dias=dias,
         creada_por=ctx.usuario_id,
     )
     return {
@@ -3020,9 +3073,7 @@ async def _crear_intencion(
     if not intencion.strip():
         raise ErrorValidacion("intencion no puede estar vacía")
     if (en is None) == (cuando is None):
-        raise ErrorValidacion(
-            "declara exactamente un trigger: 'en' (fecha) o 'cuando' (evento)"
-        )
+        raise ErrorValidacion("declara exactamente un trigger: 'en' (fecha) o 'cuando' (evento)")
     if not 0.0 < umbral <= 1.0:
         raise ErrorValidacion("umbral debe estar en (0, 1]")
     ctx = await _ctx_escritura(workspace)
@@ -3070,9 +3121,7 @@ async def _listar_intenciones(
     """Lista las intenciones prospectivas del workspace."""
     ctx = await _ctx(workspace)
     async with get_session(obtener_engine()) as session:
-        filas = await IntencionProspectivaRepository(session, ctx).listar(
-            ejecutadas=ejecutadas
-        )
+        filas = await IntencionProspectivaRepository(session, ctx).listar(ejecutadas=ejecutadas)
     return [
         {
             "id": str(m.id),
@@ -3088,26 +3137,18 @@ async def _listar_intenciones(
     ]
 
 
-async def _cancelar_intencion(
-    intencion_id: str, workspace: str | None = None
-) -> dict[str, Any]:
+async def _cancelar_intencion(intencion_id: str, workspace: str | None = None) -> dict[str, Any]:
     """Cancela una intención prospectiva pendiente."""
     ctx = await _ctx_escritura(workspace)
     try:
         iid = uuid.UUID(str(intencion_id))
     except (ValueError, AttributeError) as e:
-        raise ErrorValidacion(
-            f"intencion_id no es un UUID válido: {intencion_id!r}"
-        ) from e
+        raise ErrorValidacion(f"intencion_id no es un UUID válido: {intencion_id!r}") from e
     async with get_session(obtener_engine()) as session:
-        ok = await IntencionProspectivaRepository(session, ctx).cancelar(
-            iid, int(time.time())
-        )
+        ok = await IntencionProspectivaRepository(session, ctx).cancelar(iid, int(time.time()))
         await session.commit()
     if not ok:
-        raise ErrorValidacion(
-            f"la intención no existe o ya está resuelta: {intencion_id}"
-        )
+        raise ErrorValidacion(f"la intención no existe o ya está resuelta: {intencion_id}")
     return {"id": str(iid), "cancelada": True}
 
 
@@ -3121,9 +3162,7 @@ def _a_consolidable(modelo: EventoModel) -> EventoConsolidable:
         amplitud=modelo.amplitud,
         refuerzos=modelo.refuerzos,
         weight=modelo.weight,
-        tipo_memoria=(
-            TipoMemoria(modelo.tipo_memoria) if modelo.tipo_memoria else None
-        ),
+        tipo_memoria=(TipoMemoria(modelo.tipo_memoria) if modelo.tipo_memoria else None),
         ultimo_acceso=modelo.ultimo_acceso,
         archivado=modelo.archivado,
         curado=modelo.curado,
@@ -3202,9 +3241,7 @@ async def _consolidar(workspace: str | None = None) -> dict[str, Any]:
             )
             await repo.crear(evento_gist)
             for miembro in gist.miembros:
-                await relaciones.vincular(
-                    evento_gist.id, uuid.UUID(miembro), "gist"
-                )
+                await relaciones.vincular(evento_gist.id, uuid.UUID(miembro), "gist")
             gist_ids.append(str(evento_gist.id))
         # Fase REM (Neuro-3): pares de similitud media — distantes pero
         # relacionados — reciben aristas ``rem``. Es la recombinación
@@ -3222,9 +3259,7 @@ async def _consolidar(workspace: str | None = None) -> dict[str, Any]:
         )
         rem_ids: list[tuple[str, str]] = []
         for id_a, id_b in pares_soñados:
-            if await relaciones.vincular(
-                uuid.UUID(id_a), uuid.UUID(id_b), "rem"
-            ):
+            if await relaciones.vincular(uuid.UUID(id_a), uuid.UUID(id_b), "rem"):
                 rem_ids.append((id_a, id_b))
         reporte = ReporteConsolidacionModel(
             workspace_id=ctx.workspace_id,
@@ -3246,9 +3281,7 @@ async def _consolidar(workspace: str | None = None) -> dict[str, Any]:
         await session.commit()
     # Ritmo circadiano: sugiere la ventana más quieta — recomendación,
     # nunca un scheduler (el sueño de Nous lo decide el operador).
-    ventana = ventana_optima_sueno(
-        [e.timestamp_unix for e in eventos]
-    )
+    ventana = ventana_optima_sueno([e.timestamp_unix for e in eventos])
     return {
         "ejecutado_en": plan.ejecutado_en,
         "evaluados": len(eventos),
@@ -3349,24 +3382,18 @@ async def _listar_archivados(workspace: str | None = None) -> list[dict[str, Any
     ]
 
 
-async def _restaurar_evento(
-    evento_id: str, workspace: str | None = None
-) -> dict[str, Any]:
+async def _restaurar_evento(evento_id: str, workspace: str | None = None) -> dict[str, Any]:
     """Restaura una memoria archivada — deshace el olvido."""
     ctx = await _ctx_escritura(workspace)
     try:
         eid = uuid.UUID(str(evento_id))
     except (ValueError, AttributeError) as e:
-        raise ErrorValidacion(
-            f"evento_id no es un UUID válido: {evento_id!r}"
-        ) from e
+        raise ErrorValidacion(f"evento_id no es un UUID válido: {evento_id!r}") from e
     async with get_session(obtener_engine()) as session:
         ok = await EventoRepository(session, ctx).restaurar(eid)
         await session.commit()
     if not ok:
-        raise ErrorValidacion(
-            f"el evento no existe o no está archivado: {evento_id}"
-        )
+        raise ErrorValidacion(f"el evento no existe o no está archivado: {evento_id}")
     return {"id": str(eid), "restaurado": True}
 
 
@@ -3380,9 +3407,7 @@ async def _marcar_curado(
     try:
         eid = uuid.UUID(str(evento_id))
     except (ValueError, AttributeError) as e:
-        raise ErrorValidacion(
-            f"evento_id no es un UUID válido: {evento_id!r}"
-        ) from e
+        raise ErrorValidacion(f"evento_id no es un UUID válido: {evento_id!r}") from e
     async with get_session(obtener_engine()) as session:
         repo = EventoRepository(session, ctx)
         if curado:
@@ -3402,9 +3427,7 @@ async def _marcar_curado(
         ok = await repo.marcar_curado(eid, curado)
         await session.commit()
     if not ok:
-        raise ErrorValidacion(
-            f"el evento no existe en tu visibilidad: {evento_id}"
-        )
+        raise ErrorValidacion(f"el evento no existe en tu visibilidad: {evento_id}")
     return {"id": str(eid), "curado": curado}
 
 
@@ -3633,18 +3656,13 @@ def _serializar_state_decision(
     recientes = sorted(eventos, key=lambda e: e.amplitud, reverse=True)[:12]
     if recientes:
         lineas.append("Historia reciente (mayor amplitud primero):")
-        lineas += [
-            f"- [{e.dimension}] {e.contenido[:120]}" for e in recientes
-        ]
+        lineas += [f"- [{e.dimension}] {e.contenido[:120]}" for e in recientes]
     if objetivos:
         lineas.append("Metas activas:")
         lineas += [f"- {o.titulo}" for o in objetivos[:8]]
     if loops:
         lineas.append("Loops abiertos:")
-        lineas += [
-            f"- {e.contenido[:100]} (con {e.con_quien or '?'})"
-            for e in loops[:6]
-        ]
+        lineas += [f"- {e.contenido[:100]} (con {e.con_quien or '?'})" for e in loops[:6]]
     return "\n".join(lineas)
 
 
@@ -3662,21 +3680,15 @@ async def _consultar_decision(
     opciones = opciones or ["sí", "no"]
     opciones = [o.strip() for o in opciones if o and o.strip()]
     if len(opciones) < 2:
-        raise ErrorValidacion(
-            "se requieren al menos 2 opciones distintas"
-        )
+        raise ErrorValidacion("se requieren al menos 2 opciones distintas")
     ctx = await _ctx(workspace)
     ahora = int(time.time())
     async with get_session(obtener_engine()) as session:
         eventos = await EventoRepository(session, ctx).listar_por_rango(
             ahora - 30 * 86400, ahora, limite=40, rama="main"
         )
-        objetivos = await ObjetivoRepository(session, ctx).listar(
-            estado="activo"
-        )
-        loops = await EventoRepository(
-            session, ctx
-        ).listar_compromisos_abiertos("main", ahora)
+        objetivos = await ObjetivoRepository(session, ctx).listar(estado="activo")
+        loops = await EventoRepository(session, ctx).listar_compromisos_abiertos("main", ahora)
     state = _serializar_state_decision(dilema, eventos, objetivos, loops)
     provider = _obtener_provider_decision()
     if provider is None:
@@ -3828,13 +3840,9 @@ async def _ensayar_borrador(
         repo = BorradorRepository(session, ctx)
         ensayos = await repo.ensayar(uuid.UUID(str(borrador_id)))
         if ensayos is None:
-            raise ErrorValidacion(
-                f"borrador no existe o no es visible: {borrador_id}"
-            )
+            raise ErrorValidacion(f"borrador no existe o no es visible: {borrador_id}")
         b = await repo.obtener(uuid.UUID(str(borrador_id)))
-        if b is None or esta_expirado(
-            b.creado_en, ahora, b.expira_en - b.creado_en
-        ):
+        if b is None or esta_expirado(b.creado_en, ahora, b.expira_en - b.creado_en):
             raise ErrorValidacion("borrador ya expiró — se perdió")
         respuesta: dict[str, Any] = {"id": borrador_id, "ensayos": ensayos}
         if debe_promover(ensayos):
@@ -3866,9 +3874,7 @@ async def _descartar_borrador(
     """Saca el borrador del buffer sin promoverlo."""
     ctx = await _ctx_escritura(workspace)
     async with get_session(obtener_engine()) as session:
-        ok = await BorradorRepository(session, ctx).descartar(
-            uuid.UUID(str(borrador_id))
-        )
+        ok = await BorradorRepository(session, ctx).descartar(uuid.UUID(str(borrador_id)))
         await session.commit()
     return {"id": borrador_id, "descartado": ok}
 
@@ -3961,9 +3967,7 @@ async def _olvidar_gradual(
     try:
         eid = uuid.UUID(str(evento_id))
     except (ValueError, AttributeError) as e:
-        raise ErrorValidacion(
-            f"evento_id no es un UUID válido: {evento_id!r}"
-        ) from e
+        raise ErrorValidacion(f"evento_id no es un UUID válido: {evento_id!r}") from e
     async with get_session(obtener_engine()) as session:
         repo = EventoRepository(session, ctx)
         if await repo.obtener(eid) is None:
@@ -4007,9 +4011,9 @@ async def _repasos_pendientes(
     """Lista las memorias cuyo repaso óptimo (SRS) ya venció."""
     ctx = await _ctx(workspace)
     async with get_session(obtener_engine()) as session:
-        pendientes = await EventoRepository(
-            session, ctx
-        ).pendientes_revision(int(time.time()), limite=limite)
+        pendientes = await EventoRepository(session, ctx).pendientes_revision(
+            int(time.time()), limite=limite
+        )
         return [
             {
                 "id": str(m.id),
@@ -4017,8 +4021,7 @@ async def _repasos_pendientes(
                 "timestamp_unix": m.timestamp_unix,
                 "proxima_revision": m.proxima_revision,
                 "dias_atraso": round(
-                    (int(time.time()) - (m.proxima_revision or 0))
-                    / 86400.0,
+                    (int(time.time()) - (m.proxima_revision or 0)) / 86400.0,
                     2,
                 ),
                 "dimension": m.dimension,
@@ -4061,16 +4064,12 @@ async def _aplazar_intencion(
     try:
         iid = uuid.UUID(str(intencion_id))
     except (ValueError, AttributeError) as e:
-        raise ErrorValidacion(
-            f"intencion_id no es un UUID válido: {intencion_id!r}"
-        ) from e
+        raise ErrorValidacion(f"intencion_id no es un UUID válido: {intencion_id!r}") from e
     hasta = int(time.time()) + max(0, segundos)
     async with get_session(obtener_engine()) as session:
         repo = IntencionProspectivaRepository(session, ctx)
         if not await repo.aplazar(iid, hasta):
-            raise ErrorValidacion(
-                f"la intención no está pendiente o no existe: {intencion_id}"
-            )
+            raise ErrorValidacion(f"la intención no está pendiente o no existe: {intencion_id}")
         await session.commit()
     return {"id": str(iid), "aplazada_hasta": hasta, "segundos": segundos}
 
@@ -4118,9 +4117,7 @@ async def _confiar_fuente(
         if confiable:
             # Aprobar la fuente saca del aislamiento a sus eventos —
             # ya indexados, ahora también evocables.
-            liberados = await EventoRepository(
-                session, ctx
-            ).aprobar_cuarentena_fuente(nombre)
+            liberados = await EventoRepository(session, ctx).aprobar_cuarentena_fuente(nombre)
         await session.commit()
     return {"fuente": nombre, "confiable": confiable, "liberados": liberados}
 
@@ -4158,9 +4155,7 @@ async def _listar_cuarentena(
     """Lista los eventos retenidos en cuarentena del workspace."""
     ctx = await _ctx(workspace)
     async with get_session(obtener_engine()) as session:
-        cuarentena = await EventoRepository(
-            session, ctx
-        ).listar_cuarentena(limite=limite)
+        cuarentena = await EventoRepository(session, ctx).listar_cuarentena(limite=limite)
         return [
             {
                 "id": str(m.id),
@@ -4219,16 +4214,11 @@ async def _iniciar_sesion(
             )
         )
         await session.commit()
-    pack = await _contexto_inicial(
-        top_n=8, presupuesto=presupuesto, workspace=workspace
-    )
+    pack = await _contexto_inicial(top_n=8, presupuesto=presupuesto, workspace=workspace)
     pack["sesion_id"] = str(sesion.id)
     pack["inicio"] = ahora
     if vencidas:
-        pack["recordatorios"] = [
-            {"id": v["id"], "intencion": v["intencion"]}
-            for v in vencidas
-        ]
+        pack["recordatorios"] = [{"id": v["id"], "intencion": v["intencion"]} for v in vencidas]
     return pack
 
 
@@ -4280,21 +4270,16 @@ async def _cerrar_sesion(
             try:
                 sid = uuid.UUID(str(sesion_id))
             except (ValueError, AttributeError) as e:
-                raise ErrorValidacion(
-                    f"sesion_id no es un UUID válido: {sesion_id!r}"
-                ) from e
+                raise ErrorValidacion(f"sesion_id no es un UUID válido: {sesion_id!r}") from e
             sesion = await repo_s.obtener(sid)
         else:
             sesion = await repo_s.ultima_abierta()
         if sesion is None or sesion.fin is not None:
             raise ErrorValidacion(
-                "no hay sesión abierta para cerrar"
-                + (f" ({sesion_id})" if sesion_id else "")
+                "no hay sesión abierta para cerrar" + (f" ({sesion_id})" if sesion_id else "")
             )
         repo_e = EventoRepository(session, ctx)
-        escritos = await repo_e.listar_por_rango(
-            sesion.inicio, ahora, limite=40
-        )
+        escritos = await repo_e.listar_por_rango(sesion.inicio, ahora, limite=40)
         loops = await repo_e.listar_compromisos_abiertos("main", ahora)
         curados = await repo_e.listar_curados(limite=16)
         censores = await repo_e.listar_censores()
@@ -4303,10 +4288,7 @@ async def _cerrar_sesion(
             inicio=sesion.inicio,
             fin=ahora,
             resumen=resumen,
-            escritos=[
-                {"contenido": e.contenido, "tipo": e.tipo}
-                for e in escritos
-            ],
+            escritos=[{"contenido": e.contenido, "tipo": e.tipo} for e in escritos],
             loops=[
                 {
                     "contenido": e.contenido,
@@ -4373,9 +4355,7 @@ async def _obtener_handoff(
             try:
                 sid = uuid.UUID(str(sesion_id))
             except (ValueError, AttributeError) as e:
-                raise ErrorValidacion(
-                    f"sesion_id no es un UUID válido: {sesion_id!r}"
-                ) from e
+                raise ErrorValidacion(f"sesion_id no es un UUID válido: {sesion_id!r}") from e
             sesion = await repo_s.obtener(sid)
         else:
             sesion = await repo_s.ultima_cerrada()
@@ -4452,9 +4432,7 @@ async def _crear_censor(
 ) -> dict[str, Any]:
     """Registra un censor — una corrección madura a regla de conducta."""
     if severidad not in ("bloquear", "advertir"):
-        raise ErrorValidacion(
-            "severidad debe ser 'bloquear' o 'advertir'"
-        )
+        raise ErrorValidacion("severidad debe ser 'bloquear' o 'advertir'")
     respuesta = await _recordar(
         contenido=regla,
         dimension="conductual",
@@ -4580,9 +4558,7 @@ async def _verificar_accion(
             # Sin embedding disponible cae a cobertura léxica: ¿qué
             # fracción de los términos de la acción aparece en la
             # regla? — parafrasea mejor que la contención literal.
-            terminos = {
-                t for t in accion.lower().split() if len(t) > 2
-            }
+            terminos = {t for t in accion.lower().split() if len(t) > 2}
             if terminos:
                 contenido = c.contenido.lower()
                 cubiertos = sum(1 for t in terminos if t in contenido)
@@ -4662,9 +4638,7 @@ async def _registrar_prediccion(
         try:
             eid = uuid.UUID(str(evento_id))
         except (ValueError, AttributeError) as e:
-            raise ErrorValidacion(
-                f"evento_id no es un UUID válido: {evento_id!r}"
-            ) from e
+            raise ErrorValidacion(f"evento_id no es un UUID válido: {evento_id!r}") from e
     async with get_session(obtener_engine()) as session:
         prediccion = await PrediccionRepository(session, ctx).crear(
             PrediccionModel(
@@ -4709,9 +4683,7 @@ async def registrar_prediccion(
     Returns:
         {id, afirmacion, confianza, creado_en}.
     """
-    return await _registrar_prediccion(
-        afirmacion, confianza, evento_id, workspace
-    )
+    return await _registrar_prediccion(afirmacion, confianza, evento_id, workspace)
 
 
 async def _resolver_prediccion(
@@ -4724,20 +4696,13 @@ async def _resolver_prediccion(
     try:
         pid = uuid.UUID(str(prediccion_id))
     except (ValueError, AttributeError) as e:
-        raise ErrorValidacion(
-            f"prediccion_id no es un UUID válido: {prediccion_id!r}"
-        ) from e
+        raise ErrorValidacion(f"prediccion_id no es un UUID válido: {prediccion_id!r}") from e
     ahora = int(time.time())
     async with get_session(obtener_engine()) as session:
-        ok = await PrediccionRepository(session, ctx).resolver(
-            pid, acierto, ahora
-        )
+        ok = await PrediccionRepository(session, ctx).resolver(pid, acierto, ahora)
         await session.commit()
     if not ok:
-        raise ErrorValidacion(
-            "la predicción no existe o ya está resuelta: "
-            f"{prediccion_id}"
-        )
+        raise ErrorValidacion("la predicción no existe o ya está resuelta: " f"{prediccion_id}")
     return {"id": str(pid), "acierto": acierto, "resuelto_en": ahora}
 
 
@@ -4818,10 +4783,7 @@ async def _reporte_calibracion(
         resueltas = await repo.listar(pendientes=False, limite=10_000)
         pendientes = await repo.listar(pendientes=True, limite=10_000)
     reporte = _reporte_calibracion_core(
-        [
-            PrediccionResuelta(confianza=p.confianza, acierto=bool(p.acierto))
-            for p in resueltas
-        ],
+        [PrediccionResuelta(confianza=p.confianza, acierto=bool(p.acierto)) for p in resueltas],
         n_pendientes=len(pendientes),
     )
     return {
@@ -4903,16 +4865,12 @@ async def _aprobar_evento(
     try:
         eid = uuid.UUID(str(evento_id))
     except (ValueError, AttributeError) as e:
-        raise ErrorValidacion(
-            f"evento_id no es un UUID válido: {evento_id!r}"
-        ) from e
+        raise ErrorValidacion(f"evento_id no es un UUID válido: {evento_id!r}") from e
     async with get_session(obtener_engine()) as session:
         aprobados = await EventoRepository(session, ctx).aprobar_staged([eid])
         await session.commit()
     if not aprobados:
-        raise ErrorValidacion(
-            f"no hay propuesta staged con ese id: {evento_id}"
-        )
+        raise ErrorValidacion(f"no hay propuesta staged con ese id: {evento_id}")
     return {"id": str(eid), "aprobado": True}
 
 
@@ -4942,18 +4900,12 @@ async def _rechazar_evento(
     try:
         eid = uuid.UUID(str(evento_id))
     except (ValueError, AttributeError) as e:
-        raise ErrorValidacion(
-            f"evento_id no es un UUID válido: {evento_id!r}"
-        ) from e
+        raise ErrorValidacion(f"evento_id no es un UUID válido: {evento_id!r}") from e
     async with get_session(obtener_engine()) as session:
-        rechazados = await EventoRepository(
-            session, ctx
-        ).rechazar_staged([eid])
+        rechazados = await EventoRepository(session, ctx).rechazar_staged([eid])
         await session.commit()
     if not rechazados:
-        raise ErrorValidacion(
-            f"no hay propuesta staged con ese id: {evento_id}"
-        )
+        raise ErrorValidacion(f"no hay propuesta staged con ese id: {evento_id}")
     return {"id": str(eid), "rechazado": True}
 
 
