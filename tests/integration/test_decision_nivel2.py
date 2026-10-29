@@ -62,7 +62,7 @@ async def test_sin_provider_devuelve_contexto_ensamblado(
         fuente=FUENTE_TEST,
         timestamp_unix=ahora,
     )
-    respuesta = await tools.consultar_decision(
+    respuesta = await tools._consultar_decision(
         "¿acepto el proyecto de migración?", ["sí", "no"]
     )
     assert respuesta["disponible"] is False
@@ -118,7 +118,7 @@ async def test_con_provider_falso_devuelve_veredicto(
     monkeypatch.setattr(
         tools, "_obtener_provider_decision", lambda: Falso()
     )
-    respuesta = await tools.consultar_decision(
+    respuesta = await tools._consultar_decision(
         "¿acepto el proyecto?", ["aceptar", "rechazar"]
     )
     assert respuesta["disponible"] is True
@@ -130,5 +130,5 @@ async def test_con_provider_falso_devuelve_veredicto(
 
 async def test_opciones_invalidas_rechaza(motor: AsyncEngine) -> None:
     """Menos de 2 opciones útiles → error de validación, no veredicto."""
-    with pytest.raises(Exception, match="opciones"):
-        await tools.consultar_decision("¿X?", ["solouna"])
+    with pytest.raises(Exception, match="options"):
+        await tools._consultar_decision("¿X?", ["solouna"])

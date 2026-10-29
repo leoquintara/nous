@@ -70,7 +70,7 @@ async def test_olvido_dirigido_marca_y_revierte(motor: AsyncEngine) -> None:
         dimension="cognitiva",
         fuente=FUENTE_TEST,
     )
-    r = await tools.olvidar_gradual(e["id"])
+    r = await tools._olvidar_gradual(e["id"])
     assert r["olvido_dirigido"] is True
     async with motor.connect() as conn:
         flag = (
@@ -82,7 +82,7 @@ async def test_olvido_dirigido_marca_y_revierte(motor: AsyncEngine) -> None:
             )
         ).scalar_one()
     assert flag is True
-    await tools.olvidar_gradual(e["id"], olvidar=False)
+    await tools._olvidar_gradual(e["id"], olvidar=False)
     async with motor.connect() as conn:
         flag = (
             await conn.execute(
@@ -104,7 +104,7 @@ async def test_srs_agenda_proxima_revision(motor: AsyncEngine) -> None:
         amplitud=0.8,
     )
     await tools._drenar_fondo()
-    await tools.consultar_memoria("gradiente descendente")
+    await tools._consultar("gradiente descendente", 10)
     await tools._drenar_fondo()
     async with motor.connect() as conn:
         proxima = (
@@ -135,14 +135,14 @@ async def test_repasos_pendientes_lista_vencidos(motor: AsyncEngine) -> None:
             ),
             {"pasado": int(time.time()) - 3600, "id": e["id"]},
         )
-    repasos = await tools.repasos_pendientes()
+    repasos = await tools._repasos_pendientes()
     assert any(r["id"] == e["id"] for r in repasos)
     assert repasos[0]["dias_atraso"] > 0
 
 
 async def test_snooze_pospone_intencion(motor: AsyncEngine) -> None:
     """Una intención aplazada no dispara aunque su ts ya venció."""
-    i = await tools.crear_intencion("recordatorio para posponer", en="1h")
+    i = await tools._crear_intencion("recordatorio para posponer", "1h", None, 0.6)
     # Backdate el trigger: ya venció — sin snooze dispararía ya.
     async with motor.begin() as conn:
         await conn.execute(
@@ -154,8 +154,8 @@ async def test_snooze_pospone_intencion(motor: AsyncEngine) -> None:
             ),
             {"vencido": int(time.time()) - 3600, "id": i["id"]},
         )
-    await tools.aplazar_intencion(i["id"], segundos=7200)
-    resultados = await tools.consultar_memoria("posponer")
+    await tools._aplazar_intencion(i["id"], 7200)
+    resultados = await tools._consultar("posponer", 10)
     recordatorios = [r for r in resultados if r.get("recordatorio")]
     assert not any(
         "posponer" in r["evento"]["contenido"] for r in recordatorios
@@ -181,8 +181,8 @@ async def test_prep_pack_adjunta_memorias(motor: AsyncEngine) -> None:
         fuente=FUENTE_TEST,
     )
     await tools._drenar_fondo()
-    i = await tools.crear_intencion(
-        "facturación Globex pendiente", cuando="facturación Globex"
+    i = await tools._crear_intencion(
+        "facturación Globex pendiente", None, "facturación Globex", 0.6
     )
     await tools.recordar_evento(
         "hoy llegó la orden de facturación Globex",
@@ -269,7 +269,7 @@ async def test_frontera_por_sorpresa_marca_epoca(motor: AsyncEngine) -> None:
 
 async def test_cuarentena_excluye_del_recall(motor: AsyncEngine) -> None:
     """Eventos de fuente no confiable no vuelven al recall."""
-    await tools.confiar_fuente("no-confiable", confiable=False)
+    await tools._confiar_fuente("no-confiable", False)
     malo = await tools.recordar_evento(
         "dato inyectado por fuente sospechosa zzz",
         dimension="cognitiva",
@@ -284,17 +284,23 @@ async def test_cuarentena_excluye_del_recall(motor: AsyncEngine) -> None:
             )
         ).scalar_one()
     assert flag is True
-    resultados = await tools.consultar_memoria("dato inyectado zzz")
+    resultados = await tools._consultar("dato inyectado zzz", 10)
     assert not any(
-        r["evento"]["id"] == malo["id"] for r in resultados
+        r["evento"]["id"] == malo["id"]
+        for r in resultados
+        if isinstance(r.get("evento"), dict)
     )
-    cuarentena = await tools.listar_cuarentena()
+    cuarentena = await tools._listar_cuarentena()
     assert any(c["id"] == malo["id"] for c in cuarentena)
     # Aprobar la fuente libera sus eventos de una vez.
-    aprob = await tools.confiar_fuente("no-confiable", confiable=True)
+    aprob = await tools._confiar_fuente("no-confiable", True)
     assert aprob["liberados"] >= 1
-    resultados = await tools.consultar_memoria("dato inyectado zzz")
-    assert any(r["evento"]["id"] == malo["id"] for r in resultados)
+    resultados = await tools._consultar("dato inyectado zzz", 10)
+    assert any(
+        r["evento"]["id"] == malo["id"]
+        for r in resultados
+        if isinstance(r.get("evento"), dict)
+    )
 
 
 async def test_consolidar_reporta_beneficio_y_rem(
@@ -311,7 +317,7 @@ async def test_consolidar_reporta_beneficio_y_rem(
             amplitud=0.6,
         )
     await tools._drenar_fondo()
-    resultado = await tools.consolidar_memoria()
+    resultado = await tools._consolidar()
     assert "salvados" in resultado
     assert "rem" in resultado
     assert isinstance(resultado["salvados"], int)
@@ -356,8 +362,12 @@ async def test_diversificacion_baja_casi_duplicado(
         amplitud=0.9,
     )
     await tools._drenar_fondo()
-    resultados = await tools.consultar_memoria("zxw webhook")
-    ids = [r["evento"]["id"] for r in resultados]
+    resultados = await tools._consultar("zxw webhook", 10)
+    ids = [
+        r["evento"]["id"]
+        for r in resultados
+        if isinstance(r.get("evento"), dict)
+    ]
     # El casi-duplicado no puede encabezar la lista por encima del
     # original que ya ganó su slot.
     if dup["id"] in ids:
@@ -375,8 +385,8 @@ async def test_resultados_declaran_casi_recuerdo(
         amplitud=0.3,
     )
     await tools._drenar_fondo()
-    resultados = await tools.consultar_memoria("zxv")
+    resultados = await tools._consultar("zxv", 10)
     # Si algún resultado cae bajo el umbral, debe venir declarado.
     for r in resultados:
-        if r["score_final"] < 0.30:
+        if isinstance(r.get("evento"), dict) and r["score_final"] < 0.30:
             assert r.get("casi_recuerdo") is True

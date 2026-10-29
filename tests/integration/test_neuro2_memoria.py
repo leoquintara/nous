@@ -119,7 +119,7 @@ async def test_consultar_devuelve_confianza_y_estado(
         amplitud=0.9,
     )
     await tools._drenar_fondo()
-    resultados = await tools.consultar_memoria("pgvector postgres")
+    resultados = await tools._consultar("pgvector postgres", 10)
     assert resultados
     r = resultados[0]
     assert 0.0 <= r["confianza"] <= 1.0
@@ -135,7 +135,7 @@ async def test_recall_abre_ventana_labil(motor: AsyncEngine) -> None:
         fuente=FUENTE_TEST,
     )
     await tools._drenar_fondo()
-    await tools.consultar_memoria("ventana labil")
+    await tools._consultar("ventana labil", 10)
     await tools._drenar_fondo()
     async with motor.connect() as conn:
         hasta = (
@@ -155,7 +155,7 @@ async def test_supersede_en_ventana_es_reconsolida(motor: AsyncEngine) -> None:
         fuente=FUENTE_TEST,
     )
     await tools._drenar_fondo()
-    await tools.consultar_memoria("dato original corrige")
+    await tools._consultar("dato original corrige", 10)
     await tools._drenar_fondo()
     nuevo = await tools.recordar_evento(
         "dato corregido tras releerlo",
@@ -163,7 +163,7 @@ async def test_supersede_en_ventana_es_reconsolida(motor: AsyncEngine) -> None:
         fuente=FUENTE_TEST,
         reemplaza_id=viejo["id"],
     )
-    assert nuevo.get("reconsolida") is True
+    assert nuevo.get("reconsolidated") is True
     async with motor.connect() as conn:
         n = (
             await conn.execute(
@@ -193,7 +193,7 @@ async def test_co_recall_crea_arista_coactiva(motor: AsyncEngine) -> None:
         amplitud=0.9,
     )
     await tools._drenar_fondo()
-    await tools.consultar_memoria("zxq marcador")
+    await tools._consultar("zxq marcador", 10)
     await tools._drenar_fondo()
     async with motor.connect() as conn:
         fila = (
@@ -212,21 +212,22 @@ async def test_borrador_ciclo_completo_promocion(
     motor: AsyncEngine,
 ) -> None:
     """Borrador → ensayos → se gradúa a evento de la línea."""
-    b = await tools.recordar_borrador(
+    b = await tools._recordar_borrador(
         "hipótesis: el bug es un race condition",
-        dimension="cognitiva",
+        "cognitiva",
+        None,
     )
     assert b["capacidad"].endswith("/15")
-    vivos = await tools.listar_borrador()
+    vivos = await tools._listar_borrador(None)
     assert any(v["id"] == b["id"] for v in vivos)
 
-    r1 = await tools.ensayar_borrador(b["id"])
+    r1 = await tools._ensayar_borrador(b["id"], None)
     assert r1["promovido"] is False
-    r2 = await tools.ensayar_borrador(b["id"])
+    r2 = await tools._ensayar_borrador(b["id"], None)
     assert r2["promovido"] is True
     assert r2["evento_id"]
     # Salió del buffer.
-    assert not any(v["id"] == b["id"] for v in await tools.listar_borrador())
+    assert not any(v["id"] == b["id"] for v in await tools._listar_borrador(None))
     async with motor.connect() as conn:
         n = (
             await conn.execute(
@@ -241,15 +242,15 @@ async def test_borrador_ciclo_completo_promocion(
 
 async def test_borrador_descartado_desaparece(motor: AsyncEngine) -> None:
     """Descartar saca el pensamiento sin promoverlo."""
-    b = await tools.recordar_borrador("pensamiento desechable")
-    out = await tools.descartar_borrador(b["id"])
+    b = await tools._recordar_borrador("pensamiento desechable", "cognitiva", None)
+    out = await tools._descartar_borrador(b["id"], None)
     assert out["descartado"] is True
-    assert not any(v["id"] == b["id"] for v in await tools.listar_borrador())
+    assert not any(v["id"] == b["id"] for v in await tools._listar_borrador(None))
 
 
 async def test_borrador_expirado_no_se_ensaya(motor: AsyncEngine) -> None:
     """Un borrador vencido ya no admite repaso — se perdió."""
-    b = await tools.recordar_borrador("idea que se va a perder")
+    b = await tools._recordar_borrador("idea que se va a perder", "cognitiva", None)
     async with motor.begin() as conn:
         await conn.execute(
             text(
@@ -261,8 +262,8 @@ async def test_borrador_expirado_no_se_ensaya(motor: AsyncEngine) -> None:
                 "id": b["id"],
             },
         )
-    with pytest.raises(Exception, match="expiró"):
-        await tools.ensayar_borrador(b["id"])
+    with pytest.raises(Exception, match="expired"):
+        await tools._ensayar_borrador(b["id"], None)
 
 
 async def test_extincion_atenua_valencia_en_recall_neutro(
@@ -279,7 +280,7 @@ async def test_extincion_atenua_valencia_en_recall_neutro(
         estado_emocional=-0.9,
     )
     await tools._drenar_fondo()
-    await tools.consultar_memoria("discusión tensa cliente")
+    await tools._consultar("discusión tensa cliente", 10)
     await tools._drenar_fondo()
     async with motor.connect() as conn:
         valencia = (
@@ -321,7 +322,7 @@ async def test_sueno_semanticiza_episodios_afines(
                     "ws": ws,
                 },
             )
-    reporte = await tools.consolidar_memoria()
+    reporte = await tools._consolidar()
     assert reporte["semanticos"] >= 1
     assert reporte["ventana_sugerida"]["hora_inicio"] >= 0
     async with motor.connect() as conn:

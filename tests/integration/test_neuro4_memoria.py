@@ -70,23 +70,28 @@ async def test_zeigarnik_compromiso_abierto_sube(motor: AsyncEngine) -> None:
         tipo="compromiso",
     )
     await tools._drenar_fondo()
-    abierto = await tools.consultar_memoria("contrato zyx")
+    abierto = await tools._consultar("contrato zyx", 10)
     score_abierto = next(
         r["score_final"]
         for r in abierto
-        if "Ingrid" in r["evento"]["contenido"]
+        if isinstance(r.get("evento"), dict)
+        and "Ingrid" in r["evento"]["contenido"]
     )
     # Cerrar el compromiso → el boost Zeigarnik desaparece.
     compromiso = next(
-        r for r in abierto if "Ingrid" in r["evento"]["contenido"]
+        r
+        for r in abierto
+        if isinstance(r.get("evento"), dict)
+        and "Ingrid" in r["evento"]["contenido"]
     )
-    await tools.cerrar_compromiso(compromiso["evento"]["id"], "respondido")
+    await tools._cerrar_loop(compromiso["evento"]["id"], "respondido", FUENTE_TEST)
     await tools._drenar_fondo()
-    cerrado = await tools.consultar_memoria("contrato zyx")
+    cerrado = await tools._consultar("contrato zyx", 10)
     score_cerrado = next(
         r["score_final"]
         for r in cerrado
-        if "Ingrid" in r["evento"]["contenido"]
+        if isinstance(r.get("evento"), dict)
+        and "Ingrid" in r["evento"]["contenido"]
     )
     assert score_cerrado < score_abierto
 
@@ -113,7 +118,7 @@ async def test_rif_perdedores_se_debilitan(motor: AsyncEngine) -> None:
             timestamp_unix=ahora - (len(temas) - i) * 7200,
         )
     await tools._drenar_fondo()
-    await tools.consultar_memoria("protocolo zq9", top_n=4)
+    await tools._consultar("protocolo zq9", 4)
     await tools._drenar_fondo()
     async with motor.connect() as conn:
         debilitados = (
@@ -286,9 +291,13 @@ async def test_amnesia_de_fuente_baja_confianza(motor: AsyncEngine) -> None:
     await tools._drenar_fondo()
     # El evento YA indexado no va a cuarentena (esa regla es para
     # eventos nuevos) — queda visible pero con procedencia dudosa.
-    await tools.confiar_fuente(FUENTE_DUDOSA, confiable=False)
-    resultados = await tools.consultar_memoria("dato zq3")
-    por_id = {r["evento"]["id"]: r for r in resultados}
+    await tools._confiar_fuente(FUENTE_DUDOSA, False)
+    resultados = await tools._consultar("dato zq3", 10)
+    por_id = {
+        r["evento"]["id"]: r
+        for r in resultados
+        if isinstance(r.get("evento"), dict)
+    }
     if e1["id"] in por_id and e2["id"] in por_id:
         assert (
             por_id[e1["id"]]["confianza"]
@@ -304,9 +313,15 @@ async def test_amnesia_fuente_sin_registrar(motor: AsyncEngine) -> None:
         fuente=FUENTE_TEST,
     )
     await tools._drenar_fondo()
-    resultados = await tools.consultar_memoria("apunte zq2")
+    resultados = await tools._consultar("apunte zq2", 10)
     hit = next(
-        (r for r in resultados if r["evento"]["id"] == e["id"]), None
+        (
+            r
+            for r in resultados
+            if isinstance(r.get("evento"), dict)
+            and r["evento"]["id"] == e["id"]
+        ),
+        None,
     )
     assert hit is not None
     # La fuente de test nunca se registró → confianza con descuento.
@@ -323,7 +338,7 @@ async def test_serializacion_expone_campos_neuro4(
         fuente=FUENTE_TEST,
     )
     await tools._drenar_fondo()
-    resultados = await tools.consultar_memoria("zq1 serialización")
+    resultados = await tools._consultar("zq1 serialización", 10)
     assert resultados
     ev = resultados[0]["evento"]
     assert "tipo" in ev

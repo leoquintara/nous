@@ -85,7 +85,11 @@ async def test_consultar_incrementa_refuerzos_en_segundo_plano(
     assert resultados
     await tools._drenar_fondo()
 
-    ids = [uuid.UUID(r["evento"]["id"]) for r in resultados]
+    ids = [
+        uuid.UUID(r["evento"]["id"])
+        for r in resultados
+        if isinstance(r.get("evento"), dict)
+    ]
     async with motor.connect() as conn:
         filas = (
             await conn.execute(

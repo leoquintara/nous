@@ -124,7 +124,7 @@ async def test_recordar_indexa_el_embedding_en_segundo_plano(
         dimension="cognitiva",
         fuente=FUENTE_TEST,
     )
-    assert respuesta["indexado"] is False
+    assert respuesta["indexed"] is False
 
     await tools._drenar_fondo()
     async with motor.connect() as conn:

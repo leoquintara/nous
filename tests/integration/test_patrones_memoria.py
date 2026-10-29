@@ -50,12 +50,10 @@ async def motor(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[AsyncEngine]:
 
 async def test_crear_intencion_temporal(motor: AsyncEngine) -> None:
     """Una intención time-based persiste con su trigger futuro."""
-    respuesta = await tools.crear_intencion(
-        "regar las plantas", en="3d"
-    )
+    respuesta = await tools._crear_intencion("regar las plantas", "3d", None, 0.6)
     assert respuesta["trigger_tipo"] == "time"
     assert respuesta["dispara_en"] > int(time.time())
-    pendientes = await tools.listar_intenciones(ejecutadas=False)
+    pendientes = await tools._listar_intenciones(ejecutadas=False)
     assert any(p["id"] == respuesta["id"] for p in pendientes)
 
 
@@ -64,16 +62,16 @@ async def test_crear_intencion_exige_un_solo_trigger(
 ) -> None:
     """Sin trigger o con los dos, la validación rechaza."""
     with pytest.raises(Exception, match="trigger"):
-        await tools.crear_intencion("sin trigger")
+        await tools._crear_intencion("sin trigger", None, None, 0.6)
     with pytest.raises(Exception, match="trigger"):
-        await tools.crear_intencion("doble", en="1d", cuando="x")
+        await tools._crear_intencion("doble", "1d", "x", 0.6)
 
 
 async def test_intencion_vencida_dispara_en_consulta(
     motor: AsyncEngine,
 ) -> None:
     """Una intención temporal madura y aparece como recordatorio."""
-    creada = await tools.crear_intencion("pagar el servidor", en="1d")
+    creada = await tools._crear_intencion("pagar el servidor", "1d", None, 0.6)
     # Maduración forzada: el trigger vence "ayer" para el test.
     async with motor.begin() as conn:
         await conn.execute(
@@ -85,11 +83,11 @@ async def test_intencion_vencida_dispara_en_consulta(
             ),
             {"ts": int(time.time()) - 10, "id": str(creada["id"])},
         )
-    resultados = await tools.consultar_memoria("estado del servidor")
+    resultados = await tools._consultar("estado del servidor", 10)
     assert resultados
     assert resultados[0].get("recordatorio") is True
     assert "pagar el servidor" in resultados[0]["evento"]["contenido"]
-    ejecutadas = await tools.listar_intenciones(ejecutadas=True)
+    ejecutadas = await tools._listar_intenciones(ejecutadas=True)
     assert any(e["id"] == creada["id"] for e in ejecutadas)
 
 
@@ -97,8 +95,8 @@ async def test_intencion_evento_dispara_al_registrar(
     motor: AsyncEngine,
 ) -> None:
     """Un evento entrante que calza dispara la intención pendiente."""
-    creada = await tools.crear_intencion(
-        "avisar del bug crítico", cuando="bug crítico producción"
+    creada = await tools._crear_intencion(
+        "avisar del bug crítico", None, "bug crítico producción", 0.6
     )
     await tools.recordar_evento(
         "llegó reporte del bug crítico de producción del cliente",
@@ -106,7 +104,7 @@ async def test_intencion_evento_dispara_al_registrar(
         fuente=FUENTE_TEST,
     )
     await tools._drenar_fondo()
-    ejecutadas = await tools.listar_intenciones(ejecutadas=True)
+    ejecutadas = await tools._listar_intenciones(ejecutadas=True)
     assert any(e["id"] == creada["id"] for e in ejecutadas)
     async with motor.connect() as conn:
         n = (
@@ -141,10 +139,10 @@ async def test_consolidar_archiva_debil_y_promueve_fuerte(
     )
     await tools._drenar_fondo()
 
-    reporte = await tools.consolidar_memoria()
+    reporte = await tools._consolidar()
 
     assert reporte["evaluados"] >= 2
-    archivados = await tools.listar_archivados()
+    archivados = await tools._listar_archivados()
     assert any(a["id"] == debil["id"] for a in archivados)
     async with motor.connect() as conn:
         fila = (
@@ -167,15 +165,15 @@ async def test_restaurar_deshace_el_archivado(motor: AsyncEngine) -> None:
         timestamp_unix=viejo,
     )
     await tools._drenar_fondo()
-    await tools.consolidar_memoria()
+    await tools._consolidar()
     assert any(
-        a["id"] == evento["id"] for a in await tools.listar_archivados()
+        a["id"] == evento["id"] for a in await tools._listar_archivados()
     )
 
-    restaurado = await tools.restaurar_evento(evento["id"])
+    restaurado = await tools._restaurar_evento(evento["id"])
     assert restaurado["restaurado"] is True
     assert not any(
-        a["id"] == evento["id"] for a in await tools.listar_archivados()
+        a["id"] == evento["id"] for a in await tools._listar_archivados()
     )
 
 
@@ -196,9 +194,9 @@ async def test_minar_y_listar_scripts(motor: AsyncEngine) -> None:
             fuente=FUENTE_TEST,
             timestamp_unix=t + 600,
         )
-    reporte = await tools.minar_scripts()
+    reporte = await tools._minar_scripts()
     assert reporte["detectados"] >= 1
-    scripts = await tools.listar_scripts()
+    scripts = await tools._listar_scripts()
     assert scripts
     assert "confianza" in scripts[0]
 

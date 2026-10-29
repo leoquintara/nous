@@ -296,6 +296,7 @@ async def _preferencia_guardar(clave: str, valor: dict[str, Any]) -> None:
     async with get_session(obtener_engine()) as session:
         await ConfiguracionRepository(session, ctx).guardar(clave, valor)
         await session.commit()
+        _invalidar_recall()
 
 
 def _encolar_fondo(item: _ItemFondo) -> None:
@@ -698,6 +699,7 @@ async def _recordar(
         if vinculos:
             respuesta["vinculos_creados"] = vinculos
         await session.commit()
+        _invalidar_recall()
     _encolar_fondo(
         _ItemIndexacion(
             evento.id,
@@ -884,6 +886,7 @@ async def _indexar_luego(engine: AsyncEngine, item: _ItemIndexacion) -> None:
             # huella se haya fusionado (la mención ocurrió igual).
             await _evaluar_intenciones_evento(session, item)
             await session.commit()
+            _invalidar_recall()
     except Exception:  # noqa: BLE001 — el fallo no debe propagarse al loop
         logger.exception("indexacion en segundo plano fallo para %s", item.evento_id)
 
@@ -1090,6 +1093,7 @@ async def _consolidar_luego(engine: AsyncEngine, items: list[_ItemConsolidacion]
             if perdedores:
                 await repo_ev.debilitar_lote(perdedores, RIF_FACTOR, piso=RIF_PISO_WEIGHT)
             await session.commit()
+            _invalidar_recall()
     except Exception:  # noqa: BLE001 — el fallo no debe propagarse al loop
         logger.exception("no se pudieron consolidar efectos de evocación")
 
@@ -1101,6 +1105,16 @@ async def _consolidar_luego(engine: AsyncEngine, items: list[_ItemConsolidacion]
 # workspaces. OrderedDict = LRU con tope acotado.
 _RECALL_CACHE: OrderedDict[tuple[Any, ...], tuple[float, list[dict[str, Any]]]] = OrderedDict()
 _RECALL_CACHE_MAX = 64
+
+
+def _invalidar_recall() -> None:
+    """Descarta resultados cacheados tras una escritura.
+
+    Toda mutación que cambie qué es evocable (insertar, archivar,
+    restaurar, aprobar, cuarentena, olvido, dedup) debe invalidar:
+    el TTL solo acota la vida de una entrada, no da coherencia.
+    """
+    _RECALL_CACHE.clear()
 
 
 def _cache_key(
@@ -1186,6 +1200,7 @@ async def _consultar(
         vencidas = await _disparar_intenciones_temporales(session, ctx)
         if vencidas:
             await session.commit()
+            _invalidar_recall()
             recordatorios = [
                 {
                     "evento": {
@@ -1604,6 +1619,7 @@ async def _crear_fuente(
         )
         fuente.autor_id = ctx.usuario_id
         await session.commit()
+        _invalidar_recall()
     return {
         "nombre": fuente.nombre,
         "tipo": fuente.tipo,
@@ -1619,6 +1635,7 @@ async def _estado_fuente(nombre: str, estado: str, workspace: str | None = None)
     async with get_session(obtener_engine()) as session:
         ok = await FuenteRepository(session, ctx).cambiar_estado(nombre, estado)
         await session.commit()
+        _invalidar_recall()
     return ok
 
 
@@ -1628,6 +1645,7 @@ async def _eliminar_fuente(nombre: str, workspace: str | None = None) -> bool:
     async with get_session(obtener_engine()) as session:
         ok = await FuenteRepository(session, ctx).eliminar(nombre)
         await session.commit()
+        _invalidar_recall()
     return ok
 
 
@@ -1652,6 +1670,7 @@ async def _ramificar_fuente(nombre: str, rama: str, namespace: str) -> dict[str,
             extra={"derivada_de": nombre},
         )
         await session.commit()
+        _invalidar_recall()
     return {
         "nombre": derivada.nombre,
         "tipo": derivada.tipo,
@@ -1821,6 +1840,7 @@ async def _cerrar_loop(
     async with get_session(obtener_engine()) as session:
         await RelacionRepository(session).vincular(cid, cierre_id, "cierra")
         await session.commit()
+        _invalidar_recall()
     return {
         "compromiso_id": str(cid),
         "cierre_id": str(cierre_id),
@@ -1855,6 +1875,7 @@ async def _olvidar(evento_id: str, workspace: str | None = None) -> dict[str, An
         vinculos = await RelacionRepository(session).eliminar_de(eid)
         ok = await repo.eliminar(eid)
         await session.commit()
+        _invalidar_recall()
     return {
         "id": str(eid),
         "eliminado": ok,
@@ -1924,6 +1945,7 @@ async def _crear_objetivo(
             )
         )
         await session.commit()
+        _invalidar_recall()
     return _objetivo_a_dict(objetivo)
 
 
@@ -1939,6 +1961,7 @@ async def _actualizar_objetivo(objetivo_id: str, cambios: dict[str, Any]) -> dic
         if objetivo is None:
             raise ErrorValidacion(f"goal not found: {objetivo_id}")
         await session.commit()
+        _invalidar_recall()
     return _objetivo_a_dict(objetivo)
 
 
@@ -2099,6 +2122,7 @@ async def _proyectar(
             )
         )
         await session.commit()
+        _invalidar_recall()
     return {
         "id": str(persistida.id),
         "horizonte_dias": horizonte,
@@ -2655,6 +2679,7 @@ async def _crear_intencion(
         )
         await IntencionProspectivaRepository(session, ctx).crear(modelo)
         await session.commit()
+        _invalidar_recall()
     respuesta: dict[str, Any] = {
         "id": str(modelo.id),
         "intencion": modelo.intencion,
@@ -2701,6 +2726,7 @@ async def _cancelar_intencion(intencion_id: str, workspace: str | None = None) -
     async with get_session(obtener_engine()) as session:
         ok = await IntencionProspectivaRepository(session, ctx).cancelar(iid, int(time.time()))
         await session.commit()
+        _invalidar_recall()
     if not ok:
         raise ErrorValidacion(f"intention does not exist or is already resolved: {intencion_id}")
     return {"id": str(iid), "cancelada": True}
@@ -2833,6 +2859,7 @@ async def _consolidar(workspace: str | None = None) -> dict[str, Any]:
         )
         await ReporteConsolidacionRepository(session, ctx).crear(reporte)
         await session.commit()
+        _invalidar_recall()
     # Ritmo circadiano: sugiere la ventana más quieta — recomendación,
     # nunca un scheduler (el sueño de Nous lo decide el operador).
     ventana = ventana_optima_sueno([e.timestamp_unix for e in eventos])
@@ -2889,6 +2916,7 @@ async def _minar_scripts(workspace: str | None = None) -> dict[str, Any]:
                 )
             )
         await session.commit()
+        _invalidar_recall()
     return {
         "evaluados": len(eventos),
         "detectados": len(candidatos),
@@ -2946,6 +2974,7 @@ async def _restaurar_evento(evento_id: str, workspace: str | None = None) -> dic
     async with get_session(obtener_engine()) as session:
         ok = await EventoRepository(session, ctx).restaurar(eid)
         await session.commit()
+        _invalidar_recall()
     if not ok:
         raise ErrorValidacion(f"event does not exist or is not archived: {evento_id}")
     return {"id": str(eid), "restaurado": True}
@@ -2967,6 +2996,7 @@ async def _archivar_evento(
             eid, int(time.time()), razon[:200] or "manual"
         )
         await session.commit()
+        _invalidar_recall()
     if not ok:
         raise ErrorValidacion(f"event does not exist or is already archived: {evento_id}")
     return {"id": str(eid), "archivado": True, "razon_archivo": razon}
@@ -3001,6 +3031,7 @@ async def _marcar_curado(
                     )
         ok = await repo.marcar_curado(eid, curado)
         await session.commit()
+        _invalidar_recall()
     if not ok:
         raise ErrorValidacion(f"event not found in your visibility: {evento_id}")
     return {"id": str(eid), "curado": curado}
@@ -3257,6 +3288,7 @@ async def _recordar_borrador(
             )
         )
         await session.commit()
+        _invalidar_recall()
     return {
         "id": str(b.id),
         "expira_en": b.expira_en,
@@ -3295,6 +3327,7 @@ async def _ensayar_borrador(
             contenido, dimension = b.contenido, b.dimension
             await repo.descartar(b.id)
             await session.commit()
+            _invalidar_recall()
             promovido = await _recordar(
                 contenido=contenido,
                 dimension=dimension,  # type: ignore[arg-type]
@@ -3309,6 +3342,7 @@ async def _ensayar_borrador(
             respuesta["evento_id"] = promovido.get("id")
         else:
             await session.commit()
+            _invalidar_recall()
             respuesta["promovido"] = False
     return respuesta
 
@@ -3322,6 +3356,7 @@ async def _descartar_borrador(
     async with get_session(obtener_engine()) as session:
         ok = await BorradorRepository(session, ctx).descartar(uuid.UUID(str(borrador_id)))
         await session.commit()
+        _invalidar_recall()
     return {"id": borrador_id, "descartado": ok}
 
 
@@ -3382,6 +3417,7 @@ async def _olvidar_gradual(
             raise ErrorValidacion(f"event does not exist: {evento_id}")
         await repo.marcar_olvido_dirigido(eid, olvidar)
         await session.commit()
+        _invalidar_recall()
     return {"id": str(eid), "olvido_dirigido": olvidar}
 
 
@@ -3450,6 +3486,7 @@ async def _aplazar_intencion(
         if not await repo.aplazar(iid, hasta):
             raise ErrorValidacion(f"intention is not pending or does not exist: {intencion_id}")
         await session.commit()
+        _invalidar_recall()
     return {"id": str(iid), "aplazada_hasta": hasta, "segundos": segundos}
 
 
@@ -3485,6 +3522,7 @@ async def _confiar_fuente(
             # ya indexados, ahora también evocables.
             liberados = await EventoRepository(session, ctx).aprobar_cuarentena_fuente(nombre)
         await session.commit()
+        _invalidar_recall()
     return {"fuente": nombre, "confiable": confiable, "liberados": liberados}
 
 
@@ -3559,6 +3597,7 @@ async def _iniciar_sesion(
             )
         )
         await session.commit()
+        _invalidar_recall()
     pack = await _contexto_inicial(top_n=8, presupuesto=presupuesto, workspace=workspace)
     pack["sesion_id"] = str(sesion.id)
     pack["inicio"] = ahora
@@ -3637,6 +3676,7 @@ async def _cerrar_sesion(
         sesion.handoff = handoff
         sesion.eventos = len(escritos)
         await session.commit()
+        _invalidar_recall()
     return {
         "id": str(sesion.id),
         "fin": ahora,
@@ -3910,6 +3950,7 @@ async def _registrar_prediccion(
             )
         )
         await session.commit()
+        _invalidar_recall()
     return {
         "id": str(prediccion.id),
         "afirmacion": afirmacion,
@@ -3945,6 +3986,7 @@ async def _resolver_prediccion(
     async with get_session(obtener_engine()) as session:
         ok = await PrediccionRepository(session, ctx).resolver(pid, acierto, ahora)
         await session.commit()
+        _invalidar_recall()
     if not ok:
         raise ErrorValidacion(
             "prediction does not exist or is already resolved: " f"{prediccion_id}"
@@ -4074,6 +4116,7 @@ async def _aprobar_evento(
     async with get_session(obtener_engine()) as session:
         aprobados = await EventoRepository(session, ctx).aprobar_staged([eid])
         await session.commit()
+        _invalidar_recall()
     if not aprobados:
         raise ErrorValidacion(f"no staged proposal with that id: {evento_id}")
     return {"id": str(eid), "aprobado": True}
@@ -4102,6 +4145,7 @@ async def _rechazar_evento(
     async with get_session(obtener_engine()) as session:
         rechazados = await EventoRepository(session, ctx).rechazar_staged([eid])
         await session.commit()
+        _invalidar_recall()
     if not rechazados:
         raise ErrorValidacion(f"no staged proposal with that id: {evento_id}")
     return {"id": str(eid), "rechazado": True}
@@ -4127,6 +4171,7 @@ async def _aprobar_pendientes(
         staged = await repo.listar_staged(limite=500)
         aprobados = await repo.aprobar_staged([e.id for e in staged])
         await session.commit()
+        _invalidar_recall()
     return {"aprobados": aprobados}
 
 

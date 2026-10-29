@@ -55,8 +55,8 @@ async def test_recordar_evento_persiste_con_dimension_explicita(
         fuente=FUENTE_TEST,
         amplitud=0.8,
     )
-    assert respuesta["dimension"] == "cognitiva"
-    assert respuesta["indexado"] is False
+    assert respuesta["dimension"] == "cognitive"
+    assert respuesta["indexed"] is False
     await tools._drenar_fondo()
     async with motor.connect() as conn:
         fila = (
@@ -83,8 +83,8 @@ async def test_recordar_evento_clasifica_sin_dimension(
         "corrí cinco kilómetros y me siento agotado",
         fuente=FUENTE_TEST,
     )
-    assert respuesta["dimension"] in {"cognitiva", "somatica", "conductual"}
-    assert "confianza_clasificacion" in respuesta
+    assert respuesta["dimension"] in {"cognitive", "somatic", "behavioral"}
+    assert "classification_confidence" in respuesta
 
 
 async def test_consultar_memoria_retorna_contexto_4d(
@@ -103,9 +103,9 @@ async def test_consultar_memoria_retorna_contexto_4d(
 
     assert resultados
     top = resultados[0]
-    assert "futuro" in top["evento"]["contenido"]
-    assert "contexto_temporal" in top
-    assert top["score_final"] > 0
+    assert "futuro" in top["event"]["content"]
+    assert "temporal_context" in top
+    assert top["final_score"] > 0
 
 
 async def test_proyectar_trayectoria_persiste_proyeccion(
@@ -118,8 +118,8 @@ async def test_proyectar_trayectoria_persiste_proyeccion(
     respuesta = await tools.proyectar_trayectoria(
         horizonte_dias=7, dias_historial=30
     )
-    assert respuesta["dimension_probable"] in respuesta["distribucion"]
-    total = sum(respuesta["distribucion"].values())
+    assert respuesta["probable_dimension"] in respuesta["distribution"]
+    total = sum(respuesta["distribution"].values())
     assert total == pytest.approx(1.0, abs=0.01)
     async with motor.connect() as conn:
         n = (
@@ -142,16 +142,18 @@ async def test_recordar_evento_rechaza_amplitud_invalida(
 async def test_consultar_memoria_sin_coincidencias_lista_vacia(
     motor: AsyncEngine,
 ) -> None:
-    """Verifica que una query sin hits retorna lista vacía."""
+    """Verifica que una query sin hits no devuelve eventos."""
     resultados = await tools.consultar_memoria("xyzzy termo inexistente")
-    assert resultados == []
+    assert not [
+        r for r in resultados if isinstance(r.get("event"), dict)
+    ]
 
 
 async def test_obtener_linea_rango_invertido_lanza_error(
     motor: AsyncEngine,
 ) -> None:
     """Verifica que desde > hasta lanza ValueError."""
-    with pytest.raises(ValueError, match="desde_unix"):
+    with pytest.raises(ValueError, match="from_unix"):
         await tools.obtener_linea_de_universo(2000, 1000)
 
 
@@ -168,7 +170,7 @@ async def test_recordar_evento_crea_vinculos_explicitos(
         fuente=FUENTE_TEST,
         relaciona_ids=[a["id"]],
     )
-    assert b["vinculos_creados"] == 1
+    assert b["links_created"] == 1
     async with motor.connect() as conn:
         fila = (
             await conn.execute(
@@ -193,7 +195,7 @@ async def test_recordar_evento_ignora_ids_invalidos(
         fuente=FUENTE_TEST,
         relaciona_ids=["no-es-uuid", "00000000-0000-0000-0000-000000000000"],
     )
-    assert "vinculos_creados" not in respuesta
+    assert "links_created" not in respuesta
 
 
 async def test_recordar_evento_reporta_entidad_sin_antecedente(
@@ -204,10 +206,10 @@ async def test_recordar_evento_reporta_entidad_sin_antecedente(
         "Xiomara me genera mucha presión",
         fuente=FUENTE_TEST,
     )
-    contexto = respuesta["contexto"]
-    assert contexto["completo"] is False
-    assert "Xiomara" in contexto["entidades_nuevas"]
-    assert "sugerencia" in contexto
+    contexto = respuesta["context"]
+    assert contexto["complete"] is False
+    assert "Xiomara" in contexto["new_entities"]
+    assert "suggestion" in contexto
 
 
 async def test_recordar_evento_contexto_completo_con_antecedente(
@@ -220,7 +222,7 @@ async def test_recordar_evento_contexto_completo_con_antecedente(
     respuesta = await tools.recordar_evento(
         "Bernarda dormía junto al teclado", fuente=FUENTE_TEST
     )
-    assert respuesta["contexto"]["completo"] is True
+    assert respuesta["context"]["complete"] is True
 
 
 async def test_indexacion_crea_vinculo_semantico(motor: AsyncEngine) -> None:

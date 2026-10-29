@@ -87,7 +87,7 @@ async def test_parametrica_topa_confianza_al_recall(
     await _insertar_evento(
         motor, f"{marca} afirmado sin observar", parametrica=True
     )
-    resultados = await tools.consultar_memoria(marca)
+    resultados = await tools._consultar(marca, 10)
     propio = next(
         r for r in resultados if marca in r["evento"]["contenido"]
     )
@@ -103,7 +103,7 @@ async def test_no_parametrica_no_tiene_techo(motor: AsyncEngine) -> None:
     await _insertar_evento(
         motor, f"{marca} visto en el log", parametrica=False
     )
-    resultados = await tools.consultar_memoria(marca)
+    resultados = await tools._consultar(marca, 10)
     propio = next(
         r for r in resultados if marca in r["evento"]["contenido"]
     )
@@ -157,11 +157,14 @@ async def test_aprobar_staged_levanta_parametrica(
 async def test_expansion_coactiva_trae_vecinos(motor: AsyncEngine) -> None:
     """Un vecino coactivo asoma en el recall aunque no matchee."""
     marca = uuid.uuid4().hex[:8]
+    marca_vecino = uuid.uuid4().hex[:8]
     ancla_id = await _insertar_evento(
         motor, f"ancla-{marca} término único de búsqueda"
     )
+    # El vecino no comparte ningún token con la consulta: solo puede
+    # asomar por la arista coactiva, nunca como hit léxico directo.
     vecino_id = await _insertar_evento(
-        motor, f"vecino-{marca} concepto sin relación textual"
+        motor, f"vecino-{marca_vecino} concepto sin relación textual"
     )
     # Arista hebbiana sembrada: se encendieron juntas hace 1h.
     async with motor.begin() as conn:
@@ -181,14 +184,14 @@ async def test_expansion_coactiva_trae_vecinos(motor: AsyncEngine) -> None:
                 "uc": int(time.time()) - 3600,
             },
         )
-    resultados = await tools.consultar_memoria(f"ancla-{marca}")
+    resultados = await tools._consultar(f"ancla-{marca}", 10)
     asociados = [r for r in resultados if r.get("via") == "coactiva"]
     assert asociados, "el vecino hebbiano debió asomar vía coactiva"
     hallado = next(
         (
             a
             for a in asociados
-            if f"vecino-{marca}" in a["evento"]["contenido"]
+            if f"vecino-{marca_vecino}" in a["evento"]["contenido"]
         ),
         None,
     )
@@ -204,7 +207,7 @@ async def test_mapa_lagunas_sobre_tema_vacio_es_total(
     motor: AsyncEngine,
 ) -> None:
     """Sin evidencia, la herramienta lo declara como laguna total."""
-    mapa = await tools.mapa_lagunas(f"laguna-{uuid.uuid4().hex[:12]}")
+    mapa = await tools._mapa_lagunas(f"laguna-{uuid.uuid4().hex[:12]}", 10)
     assert mapa["es_laguna_total"] is True
     assert mapa["cobertura"] == 0.0
     assert mapa["lagunas"]
@@ -214,7 +217,7 @@ async def test_mapa_lagunas_reporta_estructura(motor: AsyncEngine) -> None:
     """Con evidencia, el mapa declara cobertura y huecos concretos."""
     marca = f"cubierto-{uuid.uuid4().hex[:8]}"
     await _insertar_evento(motor, f"{marca} evidencia cognitiva")
-    mapa = await tools.mapa_lagunas(marca)
+    mapa = await tools._mapa_lagunas(marca, 10)
     assert mapa["es_laguna_total"] is False
     assert mapa["resultados"] >= 1
     assert "somatica" in " ".join(mapa["lagunas"])
