@@ -25,9 +25,11 @@ nous/
 │   │
 │   ├── mcp/                    # Capa de protocolo MCP
 │   │   ├── server.py           # Servidor MCP (transporte stdio + streamable-http)
-│   │   ├── tools.py            # Tools MCP (recordar, consultar, proyectar, línea)
-│   │   ├── resources.py        # Resources MCP (resúmenes, patrones, proyección)
-│   │   └── prompts.py          # Prompts MCP (reflexión, análisis, decisión)
+│   │   ├── contract.py         # Frontera de traducción ES interno ↔ EN canónico
+│   │   ├── tools_en.py         # Tools MCP canónicas en inglés (remember, recall, ...)
+│   │   ├── tools.py            # Alias MCP en español (deprecated, devuelven contrato EN)
+│   │   ├── resources.py        # Resources MCP (memory://summary, patterns, projection)
+│   │   └── prompts.py          # Prompts MCP (daily_reflection, weekly_review, ...)
 │   │
 │   ├── core/                   # Lógica de negocio
 │   │   ├── clasificador.py     # Clasifica eventos en 3 dimensiones (semántico+léxico)
@@ -377,7 +379,7 @@ async def test_fusion_rrf_con_dos_listas_ordena_por_score():
   con peso tope), `reconsolida` (supersede dentro de la ventana
   lábil post-recall) y `gist` (episodio → semántica destilada en el
   sueño). Los efectos post-evocación corren en la cola de fondo,
-  nunca en el camino caliente de `consultar_memoria`.
+  nunca en el camino caliente de `recall`.
 
 ## 🚀 Cómo Ejecutar el Proyecto
 

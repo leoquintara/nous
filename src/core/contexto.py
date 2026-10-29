@@ -154,8 +154,8 @@ async def analizar_contexto(
         "completo": False,
         "entidades_nuevas": nuevas,
         "sugerencia": (
-            f"El evento menciona {lista} sin antecedentes en la memoria. "
-            "Pregunta al usuario por contexto (quién/qué es, por qué "
-            "importa) para que futuras consultas tengan panorama completo."
+            f"The event mentions {lista} with no prior memory. "
+            "Ask the user for context (who/what it is, why it matters) "
+            "so future queries get the full picture."
         ),
     }

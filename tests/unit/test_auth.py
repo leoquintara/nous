@@ -83,7 +83,7 @@ async def _app_interna(
 
 
 def _scope_http(
-    autorizacion: str | None = None, path: str = "/api/eventos"
+    autorizacion: str | None = None, path: str = "/api/events"
 ) -> dict[str, Any]:
     headers = []
     if autorizacion is not None:
@@ -161,6 +161,48 @@ class TestMiddlewareASGI:
             _scope_http(path="/mcp"), TOKEN_PRUEBA
         )
         assert mensajes[0]["status"] == 401
+
+    @pytest.mark.asyncio
+    async def test_canje_invitacion_es_publico(self) -> None:
+        """El canje de invitaciones no exige Bearer — el ns_inv_ lo es."""
+        mensajes = await self._ejecutar(
+            _scope_http(path="/api/invitations/redeem"), TOKEN_PRUEBA
+        )
+        assert mensajes[0]["status"] == 200
+
+    @pytest.mark.asyncio
+    async def test_login_es_publico(self) -> None:
+        mensajes = await self._ejecutar(
+            _scope_http(path="/api/login"), TOKEN_PRUEBA
+        )
+        assert mensajes[0]["status"] == 200
+
+
+class TestRutasPublicas:
+    """La allowlist del middleware no puede apuntar a rutas inexistentes.
+
+    Regresión: al renombrar el contrato REST, ``/api/invitaciones/canjear``
+    quedó permitida pero la ruta real era ``/api/invitations/redeem`` —
+    el canje público recibía 401.
+    """
+
+    def test_toda_ruta_publica_existe_en_el_router(self) -> None:
+        from src.api.routes import router
+
+        registradas = {r.path for r in router.routes}
+        for path in auth.RUTAS_PUBLICAS:
+            if not path.startswith("/api/"):
+                continue  # /health vive en la app raíz, no en el router
+            subruta = path[len("/api") :]
+            assert subruta in registradas, (
+                f"RUTAS_PUBLICAS permite {path} pero el router no "
+                f"registra {subruta}"
+            )
+
+    def test_no_hay_rutas_publicas_espanolas(self) -> None:
+        for path in auth.RUTAS_PUBLICAS:
+            assert "invitaciones" not in path
+            assert "canjear" not in path
 
 
 class TestPrefijoToken:

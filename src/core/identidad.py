@@ -291,7 +291,7 @@ async def resolver_workspace(
             )
         ).scalar_one_or_none()
         if ws is None:
-            raise ErrorValidacion(f"workspace no encontrado: {ref!r}")
+            raise ErrorValidacion(f"workspace not found: {ref!r}")
         if ctx.usuario_id is None:
             # Modo desarrollo sin token: acceso abierto al ws.
             return Contexto(
@@ -307,7 +307,7 @@ async def resolver_workspace(
         ).scalar_one_or_none()
         if rol is None:
             raise PermisoDenegadoError(
-                f"sin membresía en workspace: {ref!r}"
+                f"no membership in workspace: {ref!r}"
             )
         return Contexto(
             usuario_id=ctx.usuario_id,
@@ -416,8 +416,8 @@ async def _verificar_cupo_usuarios(engine: AsyncEngine) -> None:
     maximo = get_settings().max_usuarios_libres
     if await _contar_usuarios(engine) >= maximo:
         raise CupoExcedidoError(
-            f"edición libre limitada a {maximo} usuario(s) — "
-            "activa NOUS_LICENSE_KEY para desbloquear el equipo"
+            f"free edition limited to {maximo} user(s) — "
+            "activate NOUS_LICENSE_KEY to unlock the team"
         )
 
 
@@ -435,8 +435,8 @@ async def _verificar_cupo_workspaces(engine: AsyncEngine) -> None:
     maximo = get_settings().max_workspaces_libres
     if await _contar_workspaces(engine) >= maximo:
         raise CupoExcedidoError(
-            f"edición libre limitada a {maximo} workspaces — "
-            "activa NOUS_LICENSE_KEY para crear más"
+            f"free edition limited to {maximo} workspaces — "
+            "activate NOUS_LICENSE_KEY to create more"
         )
 
 
@@ -499,7 +499,7 @@ async def crear_usuario(
 
     if not _re.fullmatch(r"[a-z0-9][a-z0-9_.\-]{0,63}", handle):
         raise ErrorValidacion(
-            f"handle inválido: {handle!r} — minúsculas, números, ._-"
+            f"invalid handle: {handle!r} — lowercase, numbers, ._-"
         )
     await _verificar_cupo_usuarios(engine)
     async with get_session(engine) as session:
@@ -511,7 +511,7 @@ async def crear_usuario(
             )
         ).scalar_one_or_none()
         if existe is not None:
-            raise ErrorValidacion(f"handle ya registrado: {handle!r}")
+            raise ErrorValidacion(f"handle already taken: {handle!r}")
         usuario = UsuarioModel(
             handle=handle, nombre=nombre, email=email
         )
@@ -556,7 +556,7 @@ async def crear_workspace(
 
     if not _re.fullmatch(r"[a-z0-9][a-z0-9\-]{0,63}", slug):
         raise ErrorValidacion(
-            f"slug inválido: {slug!r} — minúsculas, números y guiones"
+            f"invalid slug: {slug!r} — lowercase, numbers and dashes"
         )
     await _verificar_cupo_workspaces(engine)
     async with get_session(engine) as session:
@@ -568,7 +568,7 @@ async def crear_workspace(
             )
         ).scalar_one_or_none()
         if existe is not None:
-            raise ErrorValidacion(f"slug ya registrado: {slug!r}")
+            raise ErrorValidacion(f"slug already taken: {slug!r}")
         ws = WorkspaceModel(
             slug=slug, nombre=nombre, owner_id=owner_id
         )
@@ -706,7 +706,7 @@ async def crear_invitacion(
     """
     if rol not in ("member", "viewer"):
         raise ErrorValidacion(
-            f"rol invitable: {rol!r} — solo member|viewer"
+            f"invalid invite role: {rol!r} — only member|viewer"
         )
     # La invitación implica un usuario nuevo al canjearse: fallar
     # aquí ahorra emitir un token condenado a expirar sin uso.
@@ -771,7 +771,7 @@ async def canjear_invitacion(
             inv.expira_en is not None and inv.expira_en <= ahora
         ):
             raise ErrorValidacion(
-                "invitación inválida, vencida o ya canjeada"
+                "invalid, expired or already redeemed invitation"
             )
         existe = (
             await session.execute(
@@ -781,7 +781,7 @@ async def canjear_invitacion(
             )
         ).scalar_one_or_none()
         if existe is not None:
-            raise ErrorValidacion(f"handle ya registrado: {handle!r}")
+            raise ErrorValidacion(f"handle already taken: {handle!r}")
         usuario = UsuarioModel(
             handle=handle, nombre=nombre, email=email
         )
@@ -951,10 +951,10 @@ async def quitar_miembro(
             )
         ).scalar_one_or_none()
         if fila is None:
-            raise ErrorValidacion("el usuario no es miembro")
+            raise ErrorValidacion("the user is not a member")
     if await _es_ultimo_owner(engine, workspace_id, usuario_id):
         raise ErrorValidacion(
-            "no se puede quitar al único owner del workspace"
+            "cannot remove the only workspace owner"
         )
     async with get_session(engine) as session:
         fila = (
@@ -990,7 +990,7 @@ async def cambiar_rol(
     """
     if rol not in ("member", "viewer"):
         raise ErrorValidacion(
-            f"rol no asignable: {rol!r} — solo member|viewer"
+            f"role not assignable: {rol!r} — only member|viewer"
         )
     async with get_session(engine) as session:
         fila = (
@@ -1002,7 +1002,7 @@ async def cambiar_rol(
             )
         ).scalar_one_or_none()
         if fila is None:
-            raise ErrorValidacion("el usuario no es miembro")
+            raise ErrorValidacion("the user is not a member")
         rol_actual = fila.rol
     if rol_actual == rol:
         return
@@ -1010,7 +1010,7 @@ async def cambiar_rol(
         engine, workspace_id, usuario_id
     ):
         raise ErrorValidacion(
-            "no se puede degradar al único owner del workspace"
+            "cannot demote the only workspace owner"
         )
     async with get_session(engine) as session:
         fila = (

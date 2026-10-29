@@ -64,8 +64,8 @@ def veredicto_censores(
             permitido=False,
             censores=tuple(coincidencias),
             motivo=(
-                f"{len(bloqueos)} censor(es) bloquean esta acción — "
-                "reglas aprendidas, no sugerencias"
+                f"{len(bloqueos)} censor(s) block this action — "
+                "learned rules, not suggestions"
             ),
         )
     if coincidencias:
@@ -73,14 +73,14 @@ def veredicto_censores(
             permitido=True,
             censores=tuple(coincidencias),
             motivo=(
-                f"{len(coincidencias)} advertencia(s) — la acción "
-                "puede continuar con cautela"
+                f"{len(coincidencias)} warning(s) — the action may "
+                "proceed with caution"
             ),
         )
     return Veredicto(
         permitido=True,
         censores=(),
-        motivo="sin censores aplicables",
+        motivo="no applicable censors",
     )
 
 

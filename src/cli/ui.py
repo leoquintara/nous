@@ -56,7 +56,7 @@ def estilo(texto: str, *codigos: str) -> str:
 
 
 def ok(texto: str) -> str:
-    """Verde — éxito."""
+    """Green — success."""
     return estilo(texto, "32")
 
 
@@ -81,7 +81,7 @@ def suave(texto: str) -> str:
 
 
 def negrita(texto: str) -> str:
-    """Negrita — énfasis estructural."""
+    """Bold — structural emphasis."""
     return estilo(texto, "1")
 
 

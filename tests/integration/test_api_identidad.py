@@ -148,12 +148,12 @@ class TestIdentidad:
         self, api: tuple[AsyncClient, AsyncEngine, str]
     ) -> None:
         cliente, _e, _t = api
-        r = await cliente.get("/api/identidad")
+        r = await cliente.get("/api/identity")
         assert r.status_code == 200
         cuerpo = r.json()
-        assert cuerpo["usuario"]["handle"] == "owner"
-        assert cuerpo["workspace_activo"]["slug"] == "personal"
-        assert cuerpo["workspace_activo"]["rol"] == "owner"
+        assert cuerpo["user"]["handle"] == "owner"
+        assert cuerpo["active_workspace"]["slug"] == "personal"
+        assert cuerpo["active_workspace"]["role"] == "owner"
         slugs = [w["slug"] for w in cuerpo["workspaces"]]
         assert "personal" in slugs
 
@@ -169,7 +169,7 @@ class TestIdentidad:
                 engine, "api-u1", WORKSPACE_PERSONAL_ID, "member"
             )
             r = await cliente.get(
-                "/api/identidad",
+                "/api/identity",
                 headers={"Authorization": f"Bearer {key}"},
             )
             assert r.status_code == 200
@@ -191,11 +191,11 @@ class TestWorkspacesYMmiembros:
         try:
             r = await cliente.post(
                 "/api/workspaces",
-                json={"slug": "api-nuevo", "nombre": "Nuevo"},
+                json={"slug": "api-nuevo", "name": "Nuevo"},
             )
             assert r.status_code == 201
-            assert r.json()["rol"] == "owner"
-            r2 = await cliente.get("/api/workspaces/api-nuevo/miembros")
+            assert r.json()["role"] == "owner"
+            r2 = await cliente.get("/api/workspaces/api-nuevo/members")
             assert r2.status_code == 200
             miembros = r2.json()
             assert len(miembros) == 1
@@ -215,7 +215,7 @@ class TestWorkspacesYMmiembros:
                 engine, "api-ext", WORKSPACE_PERSONAL_ID, "member"
             )
             r = await cliente.get(
-                "/api/workspaces/api-ajeno/miembros",
+                "/api/workspaces/api-ajeno/members",
                 headers={"Authorization": f"Bearer {key}"},
             )
             assert r.status_code == 403
@@ -234,8 +234,8 @@ class TestWorkspacesYMmiembros:
                 engine, "api-m", ws.id, "member"
             )
             r = await cliente.post(
-                "/api/workspaces/api-wsinv/invitaciones",
-                json={"rol": "member"},
+                "/api/workspaces/api-wsinv/invitations",
+                json={"role": "member"},
                 headers={"Authorization": f"Bearer {key}"},
             )
             assert r.status_code == 403
@@ -251,19 +251,19 @@ class TestWorkspacesYMmiembros:
                 engine, "api-team", "Team", USUARIO_OWNER_ID
             )
             r = await cliente.post(
-                "/api/workspaces/api-team/invitaciones",
-                json={"rol": "viewer", "dias": 3},
+                "/api/workspaces/api-team/invitations",
+                json={"role": "viewer", "days": 3},
             )
             assert r.status_code == 201
             token = r.json()["token"]
             assert token.startswith("ns_inv_")
             # Canje público — sin Bearer.
             r2 = await cliente.post(
-                "/api/invitaciones/canjear",
+                "/api/invitations/redeem",
                 json={
                     "token": token,
                     "handle": "api-invitado",
-                    "nombre": "Invitado",
+                    "name": "Invitado",
                 },
                 headers={"Authorization": ""},
             )
@@ -271,20 +271,20 @@ class TestWorkspacesYMmiembros:
             key = r2.json()["key"]
             # La key nueva funciona y ve el workspace.
             r3 = await cliente.get(
-                "/api/identidad",
+                "/api/identity",
                 headers={"Authorization": f"Bearer {key}"},
             )
             assert r3.status_code == 200
             cuerpo = r3.json()
-            assert cuerpo["workspace_activo"]["slug"] == "api-team"
-            assert cuerpo["workspace_activo"]["rol"] == "viewer"
+            assert cuerpo["active_workspace"]["slug"] == "api-team"
+            assert cuerpo["active_workspace"]["role"] == "viewer"
             # Un solo uso: re-canjear falla.
             r4 = await cliente.post(
-                "/api/invitaciones/canjear",
+                "/api/invitations/redeem",
                 json={
                     "token": token,
                     "handle": "api-otro",
-                    "nombre": "Otro",
+                    "name": "Otro",
                 },
                 headers={"Authorization": ""},
             )
@@ -310,27 +310,27 @@ class TestWorkspacesYMmiembros:
             m2 = next(m for m in uid if m.handle == "api-m2")
             # Degradar a viewer.
             r = await cliente.patch(
-                f"/api/workspaces/api-roles/miembros/{m2.usuario_id}",
-                json={"rol": "viewer"},
+                f"/api/workspaces/api-roles/members/{m2.usuario_id}",
+                json={"role": "viewer"},
             )
             assert r.status_code == 204
             identidad._cache_ctx.clear()
             # Ahora como viewer no puede escribir.
             r2 = await cliente.post(
-                "/api/eventos",
-                json={"contenido": "x", "workspace": "api-roles"},
+                "/api/events",
+                json={"content": "x", "workspace": "api-roles"},
                 headers={"Authorization": f"Bearer {key}"},
             )
             assert r2.status_code == 403
             # Quitar del todo.
             r3 = await cliente.delete(
-                f"/api/workspaces/api-roles/miembros/{m2.usuario_id}"
+                f"/api/workspaces/api-roles/members/{m2.usuario_id}"
             )
             assert r3.status_code == 204
             identidad._cache_ctx.clear()
             # Sin membresías la key ya no resuelve contexto.
             r4 = await cliente.get(
-                "/api/identidad",
+                "/api/identity",
                 headers={"Authorization": f"Bearer {key}"},
             )
             assert r4.status_code == 401
@@ -346,7 +346,7 @@ class TestWorkspacesYMmiembros:
                 engine, "api-solo", "Solo", USUARIO_OWNER_ID
             )
             r = await cliente.delete(
-                f"/api/workspaces/api-solo/miembros/{USUARIO_OWNER_ID}"
+                f"/api/workspaces/api-solo/members/{USUARIO_OWNER_ID}"
             )
             assert r.status_code == 422
         finally:
@@ -367,17 +367,17 @@ class TestLlaves:
             )
             cab = {"Authorization": f"Bearer {key_u}"}
             r = await cliente.post(
-                "/api/llaves", json={"nombre": "laptop"}, headers=cab
+                "/api/keys", json={"name": "laptop"}, headers=cab
             )
             assert r.status_code == 201
             nueva = r.json()["key"]
             assert nueva.startswith("ns_u_")
-            r2 = await cliente.get("/api/llaves", headers=cab)
+            r2 = await cliente.get("/api/keys", headers=cab)
             assert r2.status_code == 200
             assert len(r2.json()) == 2  # la del fixture + laptop
             # La nueva key también autentica.
             r3 = await cliente.get(
-                "/api/identidad",
+                "/api/identity",
                 headers={"Authorization": f"Bearer {nueva}"},
             )
             assert r3.status_code == 200
@@ -385,12 +385,12 @@ class TestLlaves:
             kid = next(
                 k["id"]
                 for k in r2.json()
-                if k["nombre"] == "laptop"
+                if k["name"] == "laptop"
             )
-            r4 = await cliente.delete(f"/api/llaves/{kid}", headers=cab)
+            r4 = await cliente.delete(f"/api/keys/{kid}", headers=cab)
             assert r4.status_code == 204
             r5 = await cliente.get(
-                "/api/identidad",
+                "/api/identity",
                 headers={"Authorization": f"Bearer {nueva}"},
             )
             assert r5.status_code in (401, 403)
@@ -415,7 +415,7 @@ class TestLlaves:
                 ).usuario_id,  # type: ignore[union-attr]
             )
             r = await cliente.delete(
-                f"/api/llaves/{llaves_a[0].id}",
+                f"/api/keys/{llaves_a[0].id}",
                 headers={"Authorization": f"Bearer {key_b}"},
             )
             assert r.status_code == 404

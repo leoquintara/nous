@@ -1,140 +1,178 @@
-"""Prompts MCP de Nous: flujos guiados de reflexión y análisis.
+"""Nous MCP prompts: guided flows for reflection and analysis.
 
-A diferencia de tools (acciones) y resources (datos), los prompts son
-plantillas de instrucciones que el cliente inyecta en su conversación
-para orquestar un uso coherente de la memoria 4D. Cada prompt indica
-qué resources leer y qué tools invocar, en qué orden.
+Unlike tools (actions) and resources (data), prompts are instruction
+templates the client injects into its conversation to orchestrate a
+coherent use of 4D memory. Each prompt states which resources to read
+and which tools to invoke, in order.
+
+The Spanish-named prompts below are deprecated aliases kept for
+backward compatibility — they delegate to the canonical English ones.
 """
 
 from mcp.server.fastmcp.prompts import base
 from src.mcp.server import mcp_server
 
 
-@mcp_server.prompt()
-def reflexion_diaria() -> list[base.Message]:
-    """Guía una reflexión estructurada sobre la actividad del día.
+@mcp_server.prompt(name="daily_reflection")
+def daily_reflection() -> list[base.Message]:
+    """Guides a structured reflection on the day's activity.
 
-    USAR CUANDO: el usuario pida cerrar su día, hacer un check-in o
-    revisar cómo le fue hoy. Orquesta resources de solo lectura y una
-    escritura opcional al final.
+    USE WHEN: the user asks to close their day, do a check-in or
+    review how today went. Orchestrates read-only resources plus one
+    optional write at the end.
 
     Returns:
-        Mensaje con instrucciones paso a paso para el agente.
+        Message with step-by-step instructions for the agent.
     """
     return [
         base.UserMessage(
-            "Guía una reflexión diaria usando la memoria de Nous:\n"
-            "1. Lee el resource memoria://resumen/diario para ver la "
-            "actividad de hoy por dimensión.\n"
-            "2. Lee memoria://patrones/flow y menciona solo las "
-            "trayectorias activas relevantes a hoy.\n"
-            "3. Resume en 3 líneas: qué dominó (cognitiva/somática/"
-            "conductual), qué faltó, y el evento de mayor amplitud.\n"
-            "4. Haz UNA pregunta de reflexión al usuario sobre su día.\n"
-            "5. Solo si el usuario responde algo nuevo, guárdalo con "
-            "la tool recordar_evento (no dupliques lo ya registrado)."
+            "Guide a daily reflection using Nous memory:\n"
+            "1. Read the resource memory://summary/daily for today's "
+            "activity by dimension.\n"
+            "2. Read memory://patterns/flow and mention only the "
+            "active trajectories relevant to today.\n"
+            "3. Summarize in 3 lines: what dominated (cognitive/"
+            "somatic/behavioral), what was missing, and the highest "
+            "amplitude event.\n"
+            "4. Ask the user ONE reflection question about their day.\n"
+            "5. Only if the user answers something new, store it with "
+            "the remember tool (do not duplicate what is already "
+            "recorded)."
         )
     ]
 
 
-@mcp_server.prompt()
-def analisis_semanal() -> list[base.Message]:
-    """Guía un análisis de patrones de la última semana.
+@mcp_server.prompt(name="weekly_review")
+def weekly_review() -> list[base.Message]:
+    """Guides a pattern analysis over the last week.
 
-    USAR CUANDO: el usuario pida una retrospectiva semanal o quiera
-    entender sus patrones recientes. Es análisis, no solo resumen:
-    debe cruzar dimensiones y detectar correlaciones.
+    USE WHEN: the user asks for a weekly retrospective or wants to
+    understand recent patterns. This is analysis, not just summary:
+    it must cross dimensions and detect correlations.
 
     Returns:
-        Mensaje con instrucciones paso a paso para el agente.
+        Message with step-by-step instructions for the agent.
     """
     return [
         base.UserMessage(
-            "Realiza un análisis semanal usando la memoria de Nous:\n"
-            "1. Lee memoria://resumen/semanal para los agregados por "
-            "dimensión.\n"
-            "2. Lee memoria://patrones/flow para las rachas de los "
-            "últimos 30 días.\n"
-            "3. Lee memoria://proyeccion/actual y úsala como punto de "
-            "partida (es una extrapolación, no una certeza).\n"
-            "4. Identifica: la dimensión dominante, rachas que se "
-            "repiten, y posibles correlaciones (p. ej. picos "
-            "somáticos tras rachas conductuales).\n"
-            "5. Cierra con 2 observaciones accionables. Si el usuario "
-            "quiere extrapolar, usa la tool proyectar_trayectoria."
+            "Run a weekly review using Nous memory:\n"
+            "1. Read memory://summary/weekly for the per-dimension "
+            "aggregates.\n"
+            "2. Read memory://patterns/flow for the last 30 days' "
+            "streaks.\n"
+            "3. Read memory://projection/current and use it as a "
+            "starting point (it is an extrapolation, not a certainty).\n"
+            "4. Identify: the dominant dimension, repeating streaks, "
+            "and possible correlations (e.g. somatic spikes after "
+            "behavioral streaks).\n"
+            "5. Close with 2 actionable observations. If the user "
+            "wants to extrapolate, use the project_trajectory tool."
         )
     ]
 
 
-@mcp_server.prompt()
-def preparar_decision(tema: str) -> list[base.Message]:
-    """Guía la recuperación de contexto antes de tomar una decisión.
+@mcp_server.prompt(name="prepare_decision")
+def prepare_decision(topic: str) -> list[base.Message]:
+    """Guides context recovery before making a decision.
 
-    USAR CUANDO: el usuario vaya a decidir algo y quiera consultar
-    su memoria relevante antes. Requiere que el agente busque con la
-    tool consultar_memoria, no solo leer resources.
+    USE WHEN: the user is about to decide something and wants to
+    consult their relevant memory first. Requires the agent to search
+    with the recall tool, not just read resources.
 
     Args:
-        tema: Tema de la decisión (p. ej. "cambiar de stack").
+        topic: Decision topic (e.g. "switching stacks").
 
     Returns:
-        Mensaje con instrucciones paso a paso para el agente.
+        Message with step-by-step instructions for the agent.
     """
     return [
         base.UserMessage(
-            f"Prepara el contexto para decidir sobre: {tema}\n"
-            f"1. Invoca la tool consultar_memoria con '{tema}' y "
-            "top_n=5 para traer memorias relevantes.\n"
-            "2. De cada resultado, considera el contexto_temporal: "
-            "qué pasó antes y después de esa memoria.\n"
-            "3. Si la búsqueda devuelve poco, reformula el tema con "
-            "sinónimos y consulta de nuevo (una vez).\n"
-            "4. Resume: qué pensé/decidí antes sobre esto, cómo me "
-            "sentí (dimensión somática) y qué hice (conductual).\n"
-            "5. NO decidas por el usuario: presenta el contexto y "
-            "termina con una pregunta que aclare el trade-off."
+            f"Prepare the context to decide about: {topic}\n"
+            f"1. Invoke the recall tool with '{topic}' and top_n=5 "
+            "to bring relevant memories.\n"
+            "2. For each result, consider the temporal_context: what "
+            "happened before and after that memory.\n"
+            "3. If the search returns little, reformulate the topic "
+            "with synonyms and query once more.\n"
+            "4. Summarize: what I thought/decided before about this, "
+            "how I felt (somatic dimension) and what I did "
+            "(behavioral).\n"
+            "5. DO NOT decide for the user: present the context and "
+            "end with a question that clarifies the trade-off."
         )
     ]
 
 
-@mcp_server.prompt()
-def evaluar_decision(dilema: str, opciones: str = "") -> list[base.Message]:
-    """Evalúa un dilema con el consejero prescriptivo de Nous (Pro).
+@mcp_server.prompt(name="evaluate_decision")
+def evaluate_decision(dilemma: str, options: str = "") -> list[base.Message]:
+    """Evaluates a dilemma with Nous' prescriptive advisor (Pro).
 
-    USAR CUANDO: el usuario pida ayuda para decidir entre opciones
-    concretas y quiera el veredicto calibrado alimentado por su línea
-    de universo. Orquesta contexto + ``consultar_decision`` y fija
-    cómo presentar el resultado sin usurpar la decisión.
+    USE WHEN: the user asks for help deciding between concrete options
+    and wants the calibrated verdict fed by their universe line.
+    Orchestrates context + ``ask_decision`` and sets how to present
+    the result without usurping the decision.
 
     Args:
-        dilema: La decisión planteada ("¿acepto el proyecto X?").
-        opciones: Opciones separadas por coma; vacío = sí/no.
+        dilemma: The posed decision ("should I take project X?").
+        options: Comma-separated options; empty = yes/no.
 
     Returns:
-        Mensaje con instrucciones paso a paso para el agente.
+        Message with step-by-step instructions for the agent.
     """
-    paso_opciones = (
-        f"las opciones: {opciones}"
-        if opciones
-        else "las opciones por defecto ['sí', 'no'] — pregunta al "
-        "usuario si hay opciones concretas que no mencionó"
+    option_step = (
+        f"the options: {options}"
+        if options
+        else "the default options ['yes', 'no'] — ask the user if "
+        "there are concrete options they did not mention"
     )
     return [
         base.UserMessage(
-            f"Evalúa el dilema con la memoria 4D de Nous: {dilema}\n"
-            f"1. Invoca la tool consultar_decision con el dilema y "
-            f"{paso_opciones}.\n"
-            "2. Si devuelve licencia_requerida/402, explica que es "
-            "feature Pro y ofrece el contexto igualmente: invoca "
-            "consultar_memoria con el dilema (top_n=5) y "
-            "compromisos_abiertos() para los loops que pesan.\n"
-            "3. Si disponible=false (sin provider), el dict trae el "
-            "contexto ensamblado — úsalo para razonar y dilo.\n"
-            "4. Con veredicto: presenta recomendacion + probabilidad "
-            "+ distribucion por opción, menciona riesgo_oculto si "
-            ">0.5 y la confianza del veredicto.\n"
-            "5. El modelo opina con datos; quien decide es el "
-            "usuario — cierra preguntando qué factor pesa más "
-            "para él."
+            f"Evaluate the dilemma with Nous' 4D memory: {dilemma}\n"
+            f"1. Invoke the ask_decision tool with the dilemma and "
+            f"{option_step}.\n"
+            "2. If it returns license_required/402, explain it is a "
+            "Pro feature and still offer context: invoke recall with "
+            "the dilemma (top_n=5) and open_commitments() for the "
+            "loops that weigh.\n"
+            "3. If available=false (no provider), the dict carries the "
+            "assembled context — use it to reason and say so.\n"
+            "4. With a verdict: present recommendation + probability "
+            "+ distribution per option, mention hidden_risk when "
+            ">0.5 and the verdict confidence.\n"
+            "5. The model advises with data; the user decides — close "
+            "asking which factor weighs most for them."
         )
     ]
+
+
+# ---------------------------------------------------------------------
+# Deprecated Spanish aliases — same prompts, legacy names/arguments.
+# ---------------------------------------------------------------------
+
+
+@mcp_server.prompt(name="reflexion_diaria")
+def reflexion_diaria() -> list[base.Message]:
+    """Deprecated alias — use ``daily_reflection``."""
+    mensajes: list[base.Message] = daily_reflection()
+    return mensajes
+
+
+@mcp_server.prompt(name="analisis_semanal")
+def analisis_semanal() -> list[base.Message]:
+    """Deprecated alias — use ``weekly_review``."""
+    mensajes: list[base.Message] = weekly_review()
+    return mensajes
+
+
+@mcp_server.prompt(name="preparar_decision")
+def preparar_decision(tema: str) -> list[base.Message]:
+    """Deprecated alias — use ``prepare_decision`` (``topic``)."""
+    mensajes: list[base.Message] = prepare_decision(tema)
+    return mensajes
+
+
+@mcp_server.prompt(name="evaluar_decision")
+def evaluar_decision(dilema: str, opciones: str = "") -> list[base.Message]:
+    """Deprecated alias — use ``evaluate_decision``."""
+    mensajes: list[base.Message] = evaluate_decision(dilema, opciones)
+    return mensajes

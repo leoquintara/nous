@@ -56,9 +56,7 @@ async def exportar(engine: AsyncEngine, archivo: Path) -> int:
         Número de eventos exportados.
     """
     async with get_session(engine) as session:
-        resultado = await session.execute(
-            select(EventoModel).order_by(EventoModel.timestamp_unix)
-        )
+        resultado = await session.execute(select(EventoModel).order_by(EventoModel.timestamp_unix))
         eventos = resultado.scalars().all()
     with archivo.open("w", encoding="utf-8") as salida:
         for e in eventos:
@@ -104,9 +102,7 @@ async def importar(
     from src.cli.importadores import leer_fuente
 
     filas, vinculos_idx, errores = leer_fuente(ruta, formato, fuente)
-    return await importar_filas(
-        engine, filas, vinculos_idx, errores, rama, workspace_id
-    )
+    return await importar_filas(engine, filas, vinculos_idx, errores, rama, workspace_id)
 
 
 async def importar_filas(
@@ -131,9 +127,7 @@ async def importar_filas(
     # reetiquetarlos al id realmente almacenado — puede diferir del
     # uuid5 actual si la fila entró con contenido pre-normalización.
     idx_a_id = {
-        i: mapa_ids.get(
-            (f["fuente"] or "import", f["contenido"]), f["id"]
-        )
+        i: mapa_ids.get((f["fuente"] or "import", f["contenido"]), f["id"])
         for i, f in enumerate(filas)
     }
     importados = await _persistir(engine, nuevos, workspace_id)
@@ -194,9 +188,7 @@ async def contar_nuevas(
     }
 
 
-async def _persistir_vinculos(
-    engine: AsyncEngine, pares: list[tuple[uuid.UUID, uuid.UUID]]
-) -> int:
+async def _persistir_vinculos(engine: AsyncEngine, pares: list[tuple[uuid.UUID, uuid.UUID]]) -> int:
     """Crea relaciones explícitas entre eventos ya persistidos."""
     if not pares:
         return 0
@@ -228,7 +220,7 @@ def _leer_jsonl(archivo: Path) -> tuple[list[FilaEvento], int]:
             cruda = json.loads(linea)
             filas.append(_validar_fila(cruda))
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
-            logger.warning("Línea JSONL inválida descartada: %s", exc)
+            logger.warning("Invalid JSONL line discarded: %s", exc)
             errores += 1
     return filas, errores
 
@@ -298,30 +290,20 @@ async def _filtrar_nuevos(
     ws = workspace_id or WORKSPACE_PERSONAL_ID
     ids = [uuid.UUID(f["id"]) for f in filas]
     async with get_session(engine) as session:
-        resultado = await session.execute(
-            select(EventoModel.id).where(EventoModel.id.in_(ids))
-        )
+        resultado = await session.execute(select(EventoModel.id).where(EventoModel.id.in_(ids)))
         existentes = {str(fila[0]) for fila in resultado.all()}
         contenidos = await session.execute(
-            select(
-                EventoModel.id, EventoModel.fuente, EventoModel.contenido
-            ).where(
+            select(EventoModel.id, EventoModel.fuente, EventoModel.contenido).where(
                 EventoModel.workspace_id == ws,
-                EventoModel.fuente.in_(
-                    {f["fuente"] or "import" for f in filas}
-                ),
+                EventoModel.fuente.in_({f["fuente"] or "import" for f in filas}),
             )
         )
-        mapa_ids = {
-            (str(fuente), contenido): str(eid)
-            for eid, fuente, contenido in contenidos
-        }
+        mapa_ids = {(str(fuente), contenido): str(eid) for eid, fuente, contenido in contenidos}
         pares = set(mapa_ids)
     nuevos = [
         f
         for f in filas
-        if f["id"] not in existentes
-        and ((f["fuente"] or "import"), f["contenido"]) not in pares
+        if f["id"] not in existentes and ((f["fuente"] or "import"), f["contenido"]) not in pares
     ]
     return nuevos, mapa_ids
 
@@ -351,11 +333,7 @@ async def _persistir(
                         fuente=fila["fuente"] or "import",
                         contenido=fila["contenido"],
                         embedding=vector,
-                        amplitud=(
-                            fila["amplitud"]
-                            if fila["amplitud"] is not None
-                            else 0.5
-                        ),
+                        amplitud=(fila["amplitud"] if fila["amplitud"] is not None else 0.5),
                         frecuencia=fila["frecuencia"],
                         tags=fila.get("tags") or [],
                         rama=fila.get("rama") or "main",

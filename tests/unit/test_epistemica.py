@@ -131,7 +131,7 @@ class TestDetectarLagunas:
             2, 10, ["cognitiva", "somatica", "conductual"],
             [0.6, 0.6], 2,
         )
-        assert any("paramétrico" in lag for lag in m.lagunas)
+        assert any("parametric" in lag for lag in m.lagunas)
 
     def test_cobertura_completa_sin_lagunas_de_hueco(self) -> None:
         """Cobertura plena y evidencia fuerte: sin lagunas de fondo."""

@@ -91,7 +91,7 @@ class ReordenadorLocal:
             return_tensors="np",
             padding=True,
             truncation=True,
-            max_length=512,
+            max_length=get_settings().reranker_max_tokens,
         )
         entradas = {
             nombre: tokens[nombre]
@@ -146,6 +146,9 @@ class ReordenadorLocal:
             opciones = onnxruntime.SessionOptions()
             opciones.intra_op_num_threads = (
                 get_settings().reranker_threads
+            )
+            opciones.graph_optimization_level = (
+                onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
             )
             self._sesion_onnx = onnxruntime.InferenceSession(
                 ruta, opciones, providers=["CPUExecutionProvider"]

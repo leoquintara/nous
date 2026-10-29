@@ -1,16 +1,18 @@
-"""Resources MCP de Nous: vistas de solo lectura sobre la memoria 4D.
+"""Nous MCP resources: read-only views over 4D memory.
 
-Los resources no modifican estado: exponen resúmenes agregados,
-patrones detectados y la proyección vigente. A diferencia de las
-tools (acciones del agente), un resource es contexto que el cliente
-puede adjuntar a su prompt.
+Resources do not modify state: they expose aggregated summaries,
+detected patterns and the current projection. Unlike tools (agent
+actions), a resource is context the client can attach to its prompt.
 
-URIs disponibles:
+Available URIs (canonical English):
 
-- ``memoria://resumen/diario`` — agregado de las últimas 24 horas.
-- ``memoria://resumen/semanal`` — agregado de los últimos 7 días.
-- ``memoria://patrones/flow`` — rachas dimensionales de los últimos 30 días.
-- ``memoria://proyeccion/actual`` — última proyección persistida.
+- ``memory://summary/daily`` — last-24-hours aggregate.
+- ``memory://summary/weekly`` — last-7-days aggregate.
+- ``memory://patterns/flow`` — dimensional streaks of the last 30 days.
+- ``memory://projection/current`` — latest persisted projection.
+
+The ``memoria://`` URIs remain registered as deprecated aliases —
+same payloads, legacy addresses.
 """
 
 import json
@@ -20,56 +22,60 @@ from typing import Any
 
 from src.core.modelos import Dimension, Evento, Trayectoria
 from src.core.temporal import SEGUNDOS_POR_DIA, detectar_trayectorias
+from src.mcp.contract import traducir_payload
 from src.mcp.server import mcp_server
 from src.storage.database import get_session, obtener_engine
 from src.storage.repositories import EventoRepository, ProyeccionRepository
 
-DIAS_RESUMEN: dict[str, int] = {"diario": 1, "semanal": 7}
+DIAS_RESUMEN: dict[str, int] = {"daily": 1, "weekly": 7}
+_PERIODOS_ES = {"diario": "daily", "semanal": "weekly"}
 DIAS_PATRONES = 30
 MAX_EVENTOS_RESUMEN = 500
 TOP_EVENTOS_DESTACADOS = 5
 
 
-@mcp_server.resource("memoria://resumen/{periodo}")
-async def resumen(periodo: str) -> str:
-    """Resume la actividad reciente de la línea de universo (solo lectura).
+@mcp_server.resource("memory://summary/{period}")
+async def summary(period: str) -> str:
+    """Summarizes recent universe-line activity (read-only).
 
-    Resource de contexto: el agente lo lee para situarse, no para
-    actuar. Para buscar un tema concreto usar la tool
-    ``consultar_memoria``; para registrar algo, ``recordar_evento``.
+    Context resource: the agent reads it to get situated, not to act.
+    To search a concrete topic use the ``recall`` tool; to record
+    something, ``remember``.
 
     Args:
-        periodo: ``diario`` (24 h) o ``semanal`` (7 días).
+        period: ``daily`` (24 h) or ``weekly`` (7 days).
 
     Returns:
-        JSON con el período, total de eventos, conteo y amplitud media
-        por dimensión, y los eventos de mayor amplitud del período.
+        JSON with the period, total events, per-dimension count and
+        mean amplitude, and the highest-amplitude events of the period.
     """
-    if periodo not in DIAS_RESUMEN:
+    if period not in DIAS_RESUMEN:
         return json.dumps(
             {
-                "error": f"Período '{periodo}' no soportado",
-                "periodos_validos": sorted(DIAS_RESUMEN),
+                "error": f"Period '{period}' not supported",
+                "valid_periods": sorted(DIAS_RESUMEN),
             },
             ensure_ascii=False,
         )
-    eventos = await _eventos_recientes(DIAS_RESUMEN[periodo])
+    eventos = await _eventos_recientes(DIAS_RESUMEN[period])
     return json.dumps(
-        _construir_resumen(periodo, eventos), ensure_ascii=False, default=str
+        traducir_payload(_construir_resumen(period, eventos)),
+        ensure_ascii=False,
+        default=str,
     )
 
 
-@mcp_server.resource("memoria://patrones/flow")
-async def patrones_flow() -> str:
-    """Expone las trayectorias (rachas dimensionales) recientes (solo lectura).
+@mcp_server.resource("memory://patterns/flow")
+async def flow_patterns() -> str:
+    """Exposes recent dimensional streaks/trajectories (read-only).
 
-    Resource de contexto: describe patrones ya detectados en los
-    últimos 30 días. Para generar una extrapolación futura usar la
-    tool ``proyectar_trayectoria``.
+    Context resource: describes patterns already detected over the
+    last 30 days. To extrapolate futures use the
+    ``project_trajectory`` tool.
 
     Returns:
-        JSON con las trayectorias detectadas (tipo, rango temporal,
-        amplitud media, confianza y si sigue activa).
+        JSON with the detected trajectories (kind, temporal range,
+        mean amplitude, confidence and whether still active).
     """
     eventos = await _eventos_recientes(DIAS_PATRONES)
     trayectorias = detectar_trayectorias(eventos)
@@ -78,28 +84,28 @@ async def patrones_flow() -> str:
         "eventos_analizados": len(eventos),
         "trayectorias": [_trayectoria_a_dict(t) for t in trayectorias],
     }
-    return json.dumps(salida, ensure_ascii=False)
+    return json.dumps(traducir_payload(salida), ensure_ascii=False)
 
 
-@mcp_server.resource("memoria://proyeccion/actual")
-async def proyeccion_actual() -> str:
-    """Expone la última proyección persistida (solo lectura).
+@mcp_server.resource("memory://projection/current")
+async def current_projection() -> str:
+    """Exposes the latest persisted projection (read-only).
 
-    Resource de contexto: refleja lo que la tool
-    ``proyectar_trayectoria`` calculó por última vez; no recalcula.
-    Si nunca se ha proyectado, lo indica en ``estado``.
+    Context resource: reflects what the ``project_trajectory`` tool
+    last computed; it does not recalculate. When nothing was ever
+    projected, ``status`` says so.
 
     Returns:
-        JSON con horizonte, distribución por dimensión, probabilidad
-        y fecha de cálculo, o ``estado: sin_proyecciones``.
+        JSON with horizon, per-dimension distribution, probability
+        and computation date, or ``status: no_projections``.
     """
     async with get_session(obtener_engine()) as session:
         proyeccion = await ProyeccionRepository(session).ultima()
     if proyeccion is None:
         return json.dumps(
             {
-                "estado": "sin_proyecciones",
-                "sugerencia": "Invoca la tool proyectar_trayectoria primero",
+                "status": "no_projections",
+                "suggestion": "Invoke the project_trajectory tool first",
             },
             ensure_ascii=False,
         )
@@ -112,9 +118,40 @@ async def proyeccion_actual() -> str:
         "vector_proyectado": proyeccion.vector_proyectado,
         "rama_decision": proyeccion.rama_decision,
         "eventos_base": len(proyeccion.basada_en_eventos),
-        "aviso": "Extrapolación probabilística, no una predicción cierta",
+        "aviso": "Probabilistic extrapolation, not a certain prediction",
     }
-    return json.dumps(salida, ensure_ascii=False)
+    return json.dumps(traducir_payload(salida), ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------
+# Deprecated Spanish aliases — same payloads, legacy URIs.
+# ---------------------------------------------------------------------
+
+
+@mcp_server.resource("memoria://resumen/{periodo}")
+async def resumen(periodo: str) -> str:
+    """Deprecated alias — use ``memory://summary/{period}``."""
+    salida: str = await summary(_PERIODOS_ES.get(periodo, periodo))
+    return salida
+
+
+@mcp_server.resource("memoria://patrones/flow")
+async def patrones_flow() -> str:
+    """Deprecated alias — use ``memory://patterns/flow``."""
+    salida: str = await flow_patterns()
+    return salida
+
+
+@mcp_server.resource("memoria://proyeccion/actual")
+async def proyeccion_actual() -> str:
+    """Deprecated alias — use ``memory://projection/current``."""
+    salida: str = await current_projection()
+    return salida
+
+
+# ---------------------------------------------------------------------
+# Helpers internos (payload en español — se traduce en la frontera).
+# ---------------------------------------------------------------------
 
 
 async def _eventos_recientes(dias: int) -> list[Evento]:
@@ -136,13 +173,9 @@ def _construir_resumen(periodo: str, eventos: list[Evento]) -> dict[str, Any]:
         grupo = [e for e in eventos if e.dimension == dimension]
         por_dimension[dimension.value] = {
             "total": len(grupo),
-            "amplitud_media": (
-                round(fmean(e.amplitud for e in grupo), 3) if grupo else None
-            ),
+            "amplitud_media": (round(fmean(e.amplitud for e in grupo), 3) if grupo else None),
         }
-    destacados = sorted(eventos, key=lambda e: e.amplitud, reverse=True)[
-        :TOP_EVENTOS_DESTACADOS
-    ]
+    destacados = sorted(eventos, key=lambda e: e.amplitud, reverse=True)[:TOP_EVENTOS_DESTACADOS]
     return {
         "periodo": periodo,
         "generado_en": int(time.time()),

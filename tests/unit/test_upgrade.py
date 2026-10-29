@@ -73,7 +73,7 @@ class TestCheckUpdateFuente:
         resultado = up.check_update()
         assert resultado.actualizacion_disponible is None
         assert resultado.metodo == "fuente"
-        assert "sin remoto" in resultado.detalle
+        assert "without remote" in resultado.detalle
 
     def test_remoto_con_commits_pendientes(
         self, monkeypatch: pytest.MonkeyPatch
@@ -193,7 +193,7 @@ class TestUpgrade:
         )
         resultado = up.upgrade()
         assert resultado.ok is True
-        assert resultado.pasos[0].salida == "omitido: sin remoto"
+        assert resultado.pasos[0].salida == "skipped: no remote"
         nombres = [p.nombre for p in resultado.pasos]
         assert any("alembic" in n for n in nombres)
 
@@ -272,7 +272,7 @@ class TestUpgrade:
         )
         resultado = up.upgrade()
         assert resultado.ok is False
-        assert "migración" in resultado.detalle
+        assert "migration" in resultado.detalle
 
 
 class TestSerializacion:

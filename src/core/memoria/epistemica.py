@@ -77,7 +77,7 @@ def detectar_lagunas(
         return MapaLagunas(
             cobertura=0.0,
             confianza_media=None,
-            lagunas=["sin evidencia alguna — laguna total"],
+            lagunas=["no evidence at all — total gap"],
             es_laguna_total=True,
             n_parametricas=0,
         )
@@ -85,25 +85,25 @@ def detectar_lagunas(
     presentes = set(dimensiones)
     for dim in todas:
         if dim not in presentes:
-            lagunas.append(f"sin evidencia {dim}")
+            lagunas.append(f"no evidence in '{dim}'")
     if confianza_media is not None and confianza_media < UMBRAL_EVIDENCIA_DEBIL:
         lagunas.append(
-            f"evidencia débil (confianza media {confianza_media:.2f} "
+            f"weak evidence (mean confidence {confianza_media:.2f} "
             f"< {UMBRAL_EVIDENCIA_DEBIL})"
         )
     if n_parametricas == n_resultados:
         lagunas.append(
-            "todo lo recuperado es paramétrico — afirmado desde los "
-            "pesos del modelo, sin corroboración"
+            "all recovered results are parametric — asserted from "
+            "model weights, uncorroborated"
         )
     elif n_parametricas > 0:
         lagunas.append(
-            f"{n_parametricas} de {n_resultados} resultados son "
-            "paramétricos (sin corroborar)"
+            f"{n_parametricas} of {n_resultados} results are "
+            "parametric (uncorroborated)"
         )
     if cobertura < 1.0:
         lagunas.append(
-            f"cobertura parcial — {n_resultados} de {top_n} pedidos"
+            f"partial coverage — {n_resultados} of {top_n} requested"
         )
     return MapaLagunas(
         cobertura=round(cobertura, 3),

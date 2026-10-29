@@ -121,7 +121,7 @@ class TestUpgrade:
         monkeypatch.setattr(cli.up, "check_update", self._ya_actualizado)
         monkeypatch.setattr(cli.up, "upgrade", no_llamar)
         assert cli.main(["upgrade", "--yes"]) == 0
-        assert "reciente" in _salida(capsys)
+        assert "latest" in _salida(capsys)
 
     def test_ejecuta_y_reporta_pasos(
         self, capsys: pytest.CaptureFixture[str],

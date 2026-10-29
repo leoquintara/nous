@@ -1660,7 +1660,6 @@ también dicen algo).
 """
 
 
-
 @dataclass(frozen=True, slots=True)
 class Artefacto:
     """Un skill o agente empaquetado listo para instalar."""
@@ -1749,7 +1748,5 @@ def cmd_skills(accion: str, target: str, raiz: Path) -> int:
     resultado = instalar(target, raiz)
     for ruta in resultado["instalados"]:
         sys.stdout.write(f"  - {ruta}\n")
-    sys.stdout.write(
-        f"{len(resultado['instalados'])} artefactos instalados.\n"
-    )
+    sys.stdout.write(f"{len(resultado['instalados'])} artefactos instalados.\n")
     return 0

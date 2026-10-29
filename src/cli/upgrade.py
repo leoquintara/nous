@@ -85,10 +85,7 @@ class ResultadoUpgrade:
             "ok": self.ok,
             "metodo_instalacion": self.metodo,
             "detalle": self.detalle,
-            "pasos": [
-                {"nombre": p.nombre, "ok": p.ok, "salida": p.salida}
-                for p in self.pasos
-            ],
+            "pasos": [{"nombre": p.nombre, "ok": p.ok, "salida": p.salida} for p in self.pasos],
         }
 
 
@@ -117,9 +114,7 @@ def detectar_metodo() -> MetodoInstalacion:
     Returns:
         ``"fuente"`` si es un checkout git, ``"paquete"`` si no.
     """
-    if (RAIZ_PROYECTO / "pyproject.toml").is_file() and (
-        RAIZ_PROYECTO / ".git"
-    ).exists():
+    if (RAIZ_PROYECTO / "pyproject.toml").is_file() and (RAIZ_PROYECTO / ".git").exists():
         return "fuente"
     return "paquete"
 
@@ -177,10 +172,7 @@ def _version_mas_reciente_paquete() -> tuple[str | None, bool]:
     except (httpx.HTTPError, ValueError, KeyError):
         return None, False
     huella = json.dumps(
-        {
-            k: info.get(k)
-            for k in ("author", "author_email", "home_page", "project_urls")
-        },
+        {k: info.get(k) for k in ("author", "author_email", "home_page", "project_urls")},
         ensure_ascii=False,
     ).lower()
     if "quintarai" not in huella:
@@ -214,37 +206,65 @@ def check_update() -> ResultadoCheckUpdate:
         comando = "nous upgrade  # git pull --ff-only + poetry install"
         if not _tiene_remoto():
             return ResultadoCheckUpdate(
-                actual, metodo, None, None, comando, None,
-                "Checkout fuente sin remoto: no hay fuente de versiones.",
+                actual,
+                metodo,
+                None,
+                None,
+                comando,
+                None,
+                "Source checkout without remote: no version source.",
             )
         atras, tag = _versiones_remotas_fuente()
         if atras < 0:
             return ResultadoCheckUpdate(
-                actual, metodo, tag, None, comando, None,
-                "Remoto inalcanzable; no se pudo comprobar.",
+                actual,
+                metodo,
+                tag,
+                None,
+                comando,
+                None,
+                "Remote unreachable; could not check.",
             )
         return ResultadoCheckUpdate(
-            actual, metodo, tag, atras > 0, comando, None,
+            actual,
+            metodo,
+            tag,
+            atras > 0,
+            comando,
+            None,
             f"{atras} commit(s) por detrás del upstream.",
         )
     comando = f"{sys.executable} -m pip install --upgrade {PAQUETE}"
     reciente, homonimo = _version_mas_reciente_paquete()
     if homonimo:
         return ResultadoCheckUpdate(
-            actual, metodo, None, None,
-            "pipx install --force <ruta-del-repo>",
+            actual,
+            metodo,
+            None,
+            None,
+            "pipx install --force <repo-path>",
             PYPI_JSON,
             "El nombre 'nous' en PyPI pertenece a otro proyecto: sin "
             "índice propio, actualiza reinstalando desde la fuente.",
         )
     if reciente is None:
         return ResultadoCheckUpdate(
-            actual, metodo, None, None, comando, PYPI_JSON,
+            actual,
+            metodo,
+            None,
+            None,
+            comando,
+            PYPI_JSON,
             "Índice de paquetes inalcanzable.",
         )
     return ResultadoCheckUpdate(
-        actual, metodo, reciente, es_mas_nueva(reciente, actual),
-        comando, PYPI_JSON, "Versión comparada contra el índice.",
+        actual,
+        metodo,
+        reciente,
+        es_mas_nueva(reciente, actual),
+        comando,
+        PYPI_JSON,
+        "Version compared against the index.",
     )
 
 
@@ -257,8 +277,12 @@ def _ejecutar_paso(nombre: str, comando: list[str]) -> PasoUpgrade:
     """Ejecuta un comando del upgrade y captura el resultado."""
     try:
         proc = subprocess.run(
-            comando, cwd=RAIZ_PROYECTO, capture_output=True,
-            text=True, timeout=600, check=False,
+            comando,
+            cwd=RAIZ_PROYECTO,
+            capture_output=True,
+            text=True,
+            timeout=600,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return PasoUpgrade(nombre, False, str(exc))
@@ -279,8 +303,7 @@ def _alembic_upgrade() -> PasoUpgrade:
         [
             sys.executable,
             "-c",
-            "from src.storage.migraciones import migrar_head; "
-            "migrar_head()",
+            "from src.storage.migraciones import migrar_head; " "migrar_head()",
         ],
     )
 
@@ -301,27 +324,20 @@ def upgrade(*, no_migrate: bool = False) -> ResultadoUpgrade:
         if not _arbol_limpio():
             resultado.ok = False
             resultado.detalle = (
-                "Árbol de trabajo con cambios: commit o stash antes "
-                "de actualizar."
+                "Árbol de trabajo con cambios: commit o stash antes " "de actualizar."
             )
             return resultado
         if _tiene_remoto():
             resultado.pasos.append(
-                _ejecutar_paso(
-                    "git pull --ff-only", ["git", "pull", "--ff-only"]
-                )
+                _ejecutar_paso("git pull --ff-only", ["git", "pull", "--ff-only"])
             )
             if not resultado.pasos[-1].ok:
                 resultado.ok = False
-                resultado.detalle = "git pull falló (¿historia divergente?)."
+                resultado.detalle = "git pull failed (divergent history?)."
                 return resultado
         else:
-            resultado.pasos.append(
-                PasoUpgrade("git pull", True, "omitido: sin remoto")
-            )
-        resultado.pasos.append(
-            _ejecutar_paso("instalar dependencias", ["poetry", "install"])
-        )
+            resultado.pasos.append(PasoUpgrade("git pull", True, "skipped: no remote"))
+        resultado.pasos.append(_ejecutar_paso("instalar dependencias", ["poetry", "install"]))
     else:
         _, homonimo = _version_mas_reciente_paquete()
         if homonimo:
@@ -329,7 +345,7 @@ def upgrade(*, no_migrate: bool = False) -> ResultadoUpgrade:
             resultado.detalle = (
                 "'nous' en PyPI es otro proyecto — abortando para no "
                 "instalar código ajeno. Reinstala desde la fuente: "
-                "pipx install --force <ruta-del-repo>"
+                "pipx install --force <repo-path>"
             )
             return resultado
         resultado.pasos.append(
@@ -343,13 +359,11 @@ def upgrade(*, no_migrate: bool = False) -> ResultadoUpgrade:
             resultado.pasos.append(_alembic_upgrade())
     else:
         resultado.ok = False
-        resultado.detalle = "Falló un paso previo; migraciones omitidas."
+        resultado.detalle = "An earlier step failed; migrations skipped."
         return resultado
     resultado.ok = all(p.ok for p in resultado.pasos)
     if not resultado.ok:
-        resultado.detalle = "Falló la migración de base de datos."
+        resultado.detalle = "Database migration failed."
     else:
-        resultado.detalle = json.dumps(
-            check_update().a_dict(), ensure_ascii=False
-        )
+        resultado.detalle = json.dumps(check_update().a_dict(), ensure_ascii=False)
     return resultado
