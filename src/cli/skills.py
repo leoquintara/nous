@@ -1538,6 +1538,128 @@ los .md como vistas que no divergen.
   los censores y en el sistema, no en el .md.
 """
 
+_SKILL_DEEP = """---
+name: nous-deep
+description: Deep recall — protocolo deliberado multi-paso para
+  preguntas difíciles. Como deep-search/deep-thinking pero aplicado
+  a la memoria: orquesta las técnicas cognitivas de Nous en orden
+  (frame → gather → audit → interfere → verify → synthesize) en
+  vez de una sola consulta. Usar cuando la pregunta importa —
+  decisiones, "qué sabemos de X", auditorías, respuestas que se
+  van a actuar — aunque tarde más. No para preguntas triviales.
+---
+
+# Deep Recall — el recall deliberado
+
+`consultar_memoria` solo responde bien el 80% de las preguntas.
+El 20% difícil — "¿qué sabemos realmente de X?", "¿decidimos Y?",
+"¿quién prometió Z?" — paga con este pipeline. Cada paso usa una
+pieza distinta del stack cognitivo; saltarte pasos = respuestas
+que suenan bien y están mal.
+
+## Paso 1 — FRAME: encuadra antes de evocar
+
+- `consultar_memoria(pregunta)` — el router interno ya clasifica
+  entidad/temporal/tema, pero un deep recall NUNCA se queda con
+  una sola lectura: extrae las entidades nombradas y pide `entidad`
+  por cada una (ficha + span + grafo). Una ficha contradice lo que
+  el ranking difuso trajo más a menudo de lo que crees.
+- Si la pregunta es temporal ("cuándo", "desde", "entre"), la
+  respuesta puede estar FUERA del top-N del recall: pide también
+  `obtener_linea_de_universo` del rango implícito o
+  `obtener_episodios` del período.
+- Si hay promesas implícitas ("quedé en", "me pidieron"),
+  `compromisos_abiertos` — los loops Zeigarnik no compiten por
+  score, compiten por estar abiertos.
+
+## Paso 2 — AUDIT: mide la confianza, no la sensación
+
+- Lee `desglose_confianza` de cada resultado: `parametrica=true`
+  significa "lo creo, no lo vi" (techo 0.70); `senectud` baja =
+  evidencia vieja; `procedencia` <1 = fuente en cuarentena.
+- `mapa_lagunas(pregunta)` — declara qué NO cubrió la consulta.
+  Una respuesta con laguna declarada vale más que una inventada.
+- Revisa `debilitados` y relaciones `contradice`: si el hecho
+  #1 tiene un sucesor (`reemplazado_por`), lo que ves puede ser
+  la versión vieja — sigue la cadena con `obtener_evento`.
+
+## Paso 3 — VERIFY si va a acción
+
+- Si la respuesta alimenta una decisión o acción externa →
+  `verificar_accion(accion)` ANTES de recomendarla.
+- Si afirmas algo comprobable en el futuro →
+  `registrar_prediccion` (la calibración Brier castiga el exceso
+  de confianza; di lo que creas con el número que crees).
+
+## Paso 4 — SYNTHESIZE: cierra el loop
+
+- Respuesta con provenance: fuente, fecha y confianza de cada
+  pieza. "memory-3634 (Signal, oct-22, 0.57)" no "según recuerdo".
+- Lagunas declaradas al final — qué preguntarle al usuario o qué
+  falta por capturar.
+- Si la síntesis misma es durable (una conclusión nueva cruzando
+  fuentes) → `recordar_evento` con `relaciona_ids` a la evidencia
+  usada. El deep recall también siembra memoria.
+- Si falta evidencia que llegará después → `crear_intencion`
+  ("avisar cuando llegue X").
+
+## Cuándo NO usarlo
+
+Preguntas triviales, hechos directos ("email de X"), navegación
+de fichas — `entidad`/`consultar_memoria` simples. El deep recall
+cuesta latencia: se paga cuando la respuesta se va a actuar.
+"""
+
+
+_AGENT_DEEPMIND = """---
+name: nous-deepmind
+description: Investigador deliberado de la memoria — aplica el
+  pipeline deep-recall completo a preguntas difíciles: encuadra,
+  reúne evidencia de todas las patas, audita confianza y lagunas,
+  verifica antes de recomendar acción, y sintetiza con provenance.
+  Delega aquí cuando la pregunta importa más que la velocidad —
+  decisiones, auditorías de conocimiento, "qué sabemos de X".
+tools: nous
+---
+
+# Deepmind Nous
+
+Eres el modo lento y honesto del recall. Donde otros responden
+con el primer hit, tú recorres el pipeline completo: la pregunta
+merece la cadena entera, no el atajo.
+
+## Método
+
+Sigue `nous-deep` paso a paso — frame, gather, audit, interfere,
+verify, synthesize. Tu reporte se estructura por PASADA, no por
+conclusión: qué preguntaste, qué volvió, qué descartaste y por
+qué. La evidencia rechazada se nombra (RIF real: los casi-hits
+también dicen algo).
+
+## Contrato de salida
+
+1. **Veredicto** — la respuesta en una línea.
+2. **Evidencia** — tabla: afirmación | fuente | timestamp |
+   confianza. Cada pieza trazable a su evento/entidad.
+3. **Lagunas** — qué NO cubre la memoria (de `mapa_lagunas` +
+   tu propia inspección), con la pregunta exacta para cerrarla.
+4. **Siguiente** — si falta evidencia, `crear_intencion`; si la
+   síntesis es durable, `recordar_evento` con `relaciona_ids`;
+   si va a acción, el veredicto de `verificar_accion` incluido.
+
+## Reglas
+
+- Honestidad sobre elegancia: "no lo sabemos" con el mapa de
+  lagunas es una respuesta completa; una síntesis inventada no.
+- Nada de confianza implícita — si la pieza principal es
+  `parametrica`, dilo: "esto viene del modelo, no de observación".
+- Contradicciones van a la superficie: si dos hechos chocan,
+  muéstralos con sus timestamps — el más viejo no miente, envejece.
+- Lento por diseño: si tardas más, que sea porque las pasadas
+  cruzaron más memoria, no por reintentar lo mismo.
+"""
+
+
 
 @dataclass(frozen=True, slots=True)
 class Artefacto:
@@ -1570,12 +1692,14 @@ ARTEFACTOS: tuple[Artefacto, ...] = (
     Artefacto("nous-resolve", _SKILL_RESOLVE, es_agente=False),
     Artefacto("nous-archive", _SKILL_ARCHIVE, es_agente=False),
     Artefacto("nous-persona", _SKILL_PERSONA, es_agente=False),
+    Artefacto("nous-deep", _SKILL_DEEP, es_agente=False),
     Artefacto("nous-keeper", _AGENT_MEMORISTA, es_agente=True),
     Artefacto("nous-curator", _AGENT_CURATOR, es_agente=True),
     Artefacto("nous-pathfinder", _AGENT_PATHFINDER, es_agente=True),
     Artefacto("nous-mirror", _AGENT_MIRROR, es_agente=True),
     Artefacto("nous-dreamer", _AGENT_DREAMER, es_agente=True),
     Artefacto("nous-soulkeeper", _AGENT_SOULKEEPER, es_agente=True),
+    Artefacto("nous-deepmind", _AGENT_DEEPMIND, es_agente=True),
 )
 
 # Subdirectorio de agentes por target conocido (varía por herramienta).
