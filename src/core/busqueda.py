@@ -33,6 +33,11 @@ BOOST_AMPLITUD = 0.25
 BOOST_PRIMING = 0.15
 BOOST_CURADO = 0.2
 BOOST_TITULO = 1.0
+# La posición en la línea ES la respuesta cuando la pregunta
+# pide «primero/último» — término aditivo del blend (no factor):
+# un extremo real con coseno bajo no puede perder contra hits
+# recientes que solo traen recencia.
+BOOST_TEMPORAL = 0.5
 UMBRAL_COSENO_MIN = 0.25
 SOBREMUESTREO = 4
 
@@ -136,6 +141,7 @@ class BusquedaHibrida4D:
         ctx: Contexto | None = None,
         competidores: list[str] | None = None,
         orden_temporal: str | None = None,
+        query_temporal: str | None = None,
     ) -> list[ResultadoBusqueda]:
         """Ejecuta la búsqueda híbrida completa con contexto 4D.
 
@@ -155,6 +161,9 @@ class BusquedaHibrida4D:
                 (RIF: la evocación del ganador suprime a los
                 perdedores). Solo los que estuvieron en rango real de
                 competencia, no todo el ruido de las ramas.
+            query_temporal: Lexemas de evidencia para la pata temporal
+                (``consulta_nucleo`` del router — la consulta sin el
+                andamiaje interrogativo). None = usar ``query`` cruda.
 
         Returns:
             Resultados ordenados por score_final con contexto temporal.
@@ -201,7 +210,7 @@ class BusquedaHibrida4D:
         if orden_temporal in ("asc", "desc"):
             hits_temporal = list(
                 await repo.buscar_linea_temporal(
-                    query, orden_temporal, rama=rama
+                    query_temporal or query, orden_temporal, rama=rama
                 )
             )
 
@@ -228,6 +237,16 @@ class BusquedaHibrida4D:
             top_n,
             hits_temporal,
         )
+        # El extremo pedido no puede caerse en el corte RRF: solo
+        # compite en una lista y el resto de patas lo desconoce.
+        # Los tres primeros de la pata temporal entran siempre —
+        # su posición se pagan en el boost posterior.
+        if hits_temporal and fusionados:
+            presentes = {r.evento_id for r in fusionados}
+            for modelo, _ in hits_temporal[:3]:
+                eid = str(modelo.id)
+                if eid not in presentes:
+                    fusionados.append(ResultadoBusqueda(evento_id=eid))
         if not fusionados:
             return []
 
@@ -241,6 +260,15 @@ class BusquedaHibrida4D:
                 titulo_scores[eid] = max(
                     titulo_scores.get(eid, 0.0), score
                 )
+        # Match temporal: la pata ordenada por timestamp ya dio
+        # a cada candidato su posición en la ventana (1.0 el
+        # extremo pedido). El boost es proporcional a esa
+        # posición — «primer mensaje de samay» debe coronar al
+        # evento más viejo que menciona a samay, no al más fresco
+        # con mejor coseno.
+        temporal_scores = {
+            str(m.id): score for m, score in hits_temporal
+        }
 
         ahora = int(time.time())
         resultados = _re_scored(
@@ -251,6 +279,7 @@ class BusquedaHibrida4D:
             self._vida_media_dias,
             self._activaciones(ahora),
             titulo_scores,
+            temporal_scores,
         )
         resultados = _deduplicar(resultados)
         # Fan effect: dos páginas casi idénticas no deberían ocupar
@@ -263,6 +292,14 @@ class BusquedaHibrida4D:
             )
         else:
             finales = await self._contextualizar(repo, resultados[:top_n])
+        finales = await self._anclar_extremo(
+            repo,
+            orden_temporal,
+            hits_temporal,
+            resultados=resultados,
+            finales=finales,
+            top_n=top_n,
+        )
         self._primar(finales, ahora)
         if competidores is not None:
             elegidos = {r.evento_id for r in finales}
@@ -285,6 +322,65 @@ class BusquedaHibrida4D:
                         vistos.add(eid)
                         competidores.append(eid)
         return finales
+
+    async def _anclar_extremo(
+        self,
+        repo: EventoRepository,
+        orden_temporal: str | None,
+        hits_temporal: list[tuple[EventoModel, float]],
+        *,
+        resultados: list[ResultadoBusqueda],
+        finales: list[ResultadoBusqueda],
+        top_n: int,
+    ) -> list[ResultadoBusqueda]:
+        """Garantiza que el extremo temporal pedido corone la respuesta.
+
+        «primer mensaje de samay» se responde con el evento más viejo
+        que menciona a samay — su evidencia es la posición en la
+        línea de universo, no el coseno del cross-encoder, que puede
+        degradarlo bajo el corte o la diversificación. Si la pata
+        temporal trajo hits y el extremo no encabezó el resultado,
+        se reinserta al frente con su contexto ±N.
+
+        Args:
+            repo: Repositorio para contextualizar el ancla.
+            orden_temporal: ``"asc"``/``"desc"`` pedido; otro valor
+                desactiva el anclaje.
+            hits_temporal: Salida de la pata ordenada por timestamp.
+            resultados: Lista completa tras fusión/re-score — de ahí
+                se rescata el candidato con sus scores si existe.
+            finales: Lista final tras rerank/contextualización.
+            top_n: Máximo de resultados a devolver.
+
+        Returns:
+            ``finales`` con el extremo temporal en la cabeza.
+        """
+        if orden_temporal not in ("asc", "desc") or not hits_temporal:
+            return finales
+        modelo_ancla = hits_temporal[0][0]
+        ancla_id = str(modelo_ancla.id)
+        if finales and finales[0].evento_id == ancla_id:
+            return finales
+        previo = next(
+            (r for r in resultados if r.evento_id == ancla_id), None
+        )
+        if previo is not None:
+            ancla = previo
+        else:
+            ancla = ResultadoBusqueda(
+                evento_id=ancla_id, evento=_a_evento(modelo_ancla)
+            )
+        cima = finales[0].score_final if finales else 1.0
+        ancla = replace(ancla, score_final=cima + 0.001)
+        mapa = await repo.adyacentes_lote(
+            [modelo_ancla.timestamp_unix], self._cantidad_contexto
+        )
+        ancla = replace(
+            ancla, contexto=_contexto_de(mapa.get(0, ([], [])))
+        )
+        return [ancla, *[r for r in finales if r.evento_id != ancla_id]][
+            :top_n
+        ]
 
     def _activaciones(self, ahora: float) -> dict[str, float]:
         """Devuelve las activaciones vivas y purga las expiradas.
@@ -462,6 +558,7 @@ def _re_scored(
     vida_media_dias: float,
     activaciones: dict[str, float] | None = None,
     titulo_scores: dict[str, float] | None = None,
+    temporal_scores: dict[str, float] | None = None,
 ) -> list[ResultadoBusqueda]:
     """Mezcla RRF con coseno y recencia; aplica amplitud y priming."""
     rrf_max = max(r.score_rrf for r in fusionados)
@@ -490,6 +587,13 @@ def _re_scored(
         if titulo_scores and titulo_max > 0:
             score_final *= 1.0 + BOOST_TITULO * (
                 titulo_scores.get(r.evento_id, 0.0) / titulo_max
+            )
+        # La posición temporal suma sobre el blend: 1.0 en el
+        # extremo pedido añade BOOST_TEMPORAL completo; los
+        # eventos a mitad de ventana reciben un empuje marginal.
+        if temporal_scores:
+            score_final += BOOST_TEMPORAL * temporal_scores.get(
+                r.evento_id, 0.0
             )
         if activaciones:
             score_final *= 1.0 + BOOST_PRIMING * activaciones.get(

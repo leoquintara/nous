@@ -3,6 +3,7 @@
 from src.core.routing import (
     IntencionConsulta,
     clasificar_intencion,
+    consulta_nucleo,
     direccion_temporal,
 )
 
@@ -90,6 +91,44 @@ def test_tema_pregunta_generica() -> None:
     assert nombre is None
 
 
+def test_quien_es_relacional_superlativo_es_temporal() -> None:
+    """«quién es el dev más nuevo» pide el extremo de una serie,
+    no la ficha de un ente llamado «dev más nuevo»."""
+    intencion, nombre = clasificar_intencion(
+        "quien es el dev mas nuevo del equipo"
+    )
+    assert intencion == IntencionConsulta.TEMPORAL
+    assert nombre is None
+
+
+def test_quien_es_adjetivo_predicado_es_tema() -> None:
+    """«quién es crítico para gatsby» describe un criterio, no una
+    entidad — antes caía a la ficha de «crítico» (falso positivo)."""
+    intencion, nombre = clasificar_intencion(
+        "quien es critico para gatsby"
+    )
+    assert intencion == IntencionConsulta.TEMA
+    assert nombre is None
+
+
+def test_quien_es_rol_generico_es_tema() -> None:
+    """«el responsable del deploy» es un rol a resolver por RAG,
+    no un nombre propio."""
+    intencion, nombre = clasificar_intencion(
+        "quien es el responsable del deploy"
+    )
+    assert intencion == IntencionConsulta.TEMA
+    assert nombre is None
+
+
+def test_entidad_nombre_propio_mixto_sobrevive() -> None:
+    """Un nombre con token de rol pero también token propio sigue
+    siendo entidad («samay qa» no es todo vocabulario relacional)."""
+    intencion, nombre = clasificar_intencion("quien es samay qa")
+    assert intencion == IntencionConsulta.ENTIDAD
+    assert nombre == "samay qa"
+
+
 def test_direccion_primero_es_ascendente() -> None:
     assert direccion_temporal("el primer proyecto de ricardo") == "asc"
     assert direccion_temporal("cuando aparecio samay") == "asc"
@@ -108,3 +147,25 @@ def test_consulta_vacia_es_tema() -> None:
     intencion, nombre = clasificar_intencion("   ")
     assert intencion == IntencionConsulta.TEMA
     assert nombre is None
+
+
+def test_nucleo_quita_andamiaje_interrogativo() -> None:
+    """La pata temporal filtra por el actor («samay»), no por la
+    forma de la pregunta («primer mensaje»)."""
+    assert consulta_nucleo("primer mensaje de samay") == "samay"
+    assert consulta_nucleo("cuando fue el primer mensaje de samay") == "samay"
+
+
+def test_nucleo_conserva_lexemas_de_evidencia() -> None:
+    assert consulta_nucleo("el ultimo deploy a produccion") == (
+        "deploy produccion"
+    )
+    assert consulta_nucleo("cuando empezo el proyecto kinam") == (
+        "proyecto kinam"
+    )
+
+
+def test_nucleo_puro_andamiaje_devuelve_vacio() -> None:
+    """Sin evidencia que filtrar el llamante conserva la consulta
+    original como antes."""
+    assert consulta_nucleo("cuando fue la ultima vez") == ""

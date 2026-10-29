@@ -64,6 +64,36 @@ _NO_ENTIDAD = frozenset(
     {"lo", "eso", "esto", "ello", "algo", "aquello", "tal", "nada"}
 )
 
+# Una cola de «quién es X» que describe una RELACIÓN en vez de
+# nombrar a alguien — «el dev más nuevo», «crítico para gatsby»,
+# «el responsable del deploy» — pide comparar la línea de
+# universo, no abrir una ficha. Señal 1: marcadores comparativos
+# o temporales dentro del propio nombre extraído.
+_RE_RELACIONAL = re.compile(
+    r"\b(?:m[aá]s|menos|mejores?|peores?|mayor(?:es)?|menor(?:es)?|"
+    r"primer[ao]?s?|segund[ao]?s?|tercer[ao]?s?|[uú]ltim[ao]s?|"
+    r"reciente[ns]?|nuevo[as]?|viej[ao]s?|antiguo[as]?|"
+    r"pr[oó]xim[ao]s?|anterior(?:es)?|siguiente[s]?)\b",
+    re.IGNORECASE,
+)
+
+# Señal 2: la cola entera son roles o adjetivos predicados —
+# «crítico», «el responsable», «dev junior». Si TODOS los
+# tokens del nombre son vocabulario relacional, lo que sigue a
+# «quién es» describe un criterio de filtro, no una entidad.
+_ROLES_GENERICOS = frozenset(
+    {
+        "dev", "devs", "developer", "developers", "programador",
+        "programadora", "ingeniero", "ingeniera", "arquitecto",
+        "arquitecta", "diseñador", "diseñadora", "coordinador",
+        "coordinadora", "qa", "tester", "lider", "líder", "jefe",
+        "jefa", "dueño", "dueña", "fundador", "fundadora",
+        "responsable", "encargado", "encargada", "critico", "crítico",
+        "importante", "principal", "senior", "junior", "mid",
+        "cliente", "prospecto", "equipo", "persona",
+    }
+)
+
 
 def _limpiar_nombre(texto: str) -> str:
     """Extrae el nombre propio de la cola de la pregunta."""
@@ -74,7 +104,19 @@ def _limpiar_nombre(texto: str) -> str:
     if limpio.lower() in _NO_ENTIDAD:
         return ""
     primer = limpio.split(maxsplit=1)[0].lower() if limpio else ""
-    return "" if primer in _NO_ENTIDAD else limpio
+    if primer in _NO_ENTIDAD:
+        return ""
+    # Un superlativo o comparador dentro del nombre delata una
+    # pregunta relacional: «quién es el dev más nuevo» pide el
+    # extremo de una serie temporal, no la ficha de «más nuevo».
+    if _RE_RELACIONAL.search(limpio):
+        return ""
+    # Si cada token es un rol o adjetivo predicado («dev junior»,
+    # «responsable») tampoco hay entidad que nombrar.
+    tokens = limpio.lower().split()
+    if tokens and all(t in _ROLES_GENERICOS for t in tokens):
+        return ""
+    return limpio
 
 
 def clasificar_intencion(consulta: str) -> tuple[IntencionConsulta, str | None]:
@@ -112,9 +154,52 @@ def direccion_temporal(consulta: str) -> str:
     """
     if re.search(
         r"\b(?:[uú]ltim[ao]s?|m[aá]s\s+(?:reciente[ns]?|nuevo[as]?)"
-        r"|reciente[ns]?)\b",
+        r"|reciente[ns]?|nuevo[as]?)\b",
         consulta,
         re.IGNORECASE,
     ):
         return "desc"
     return "asc"
+
+
+# Andamiaje interrogativo: palabras que dan FORMA a la pregunta
+# pero no aportan evidencia al contenido — «primer», «cuándo»,
+# «mensaje», «vez», artículos y cortesías. La pata temporal
+# (extremo de la línea de universo) solo debe filtrar por los
+# lexemas que nombran la evidencia («samay» en «primer mensaje
+# de samay»); con el andamiaje incluido, el OR de tsquery deja
+# entrar eventos viejos que mencionan «mensaje» pero no al actor
+# y el verdadero extremo se diluye en la fusión.
+_RE_SCAFFOLD = re.compile(
+    r"\b(?:cu[aá]ndo|qu[eé]|cu[aá]l(?:es)?|qui[eé]n(?:es)?|"
+    r"primer[ao]?s?|debut|[uú]ltim[ao]s?|m[aá]s|menos|mejores?|"
+    r"peores?|mayor(?:es)?|menor(?:es)?|reciente[ns]?|nuevo[as]?|"
+    r"viej[ao]s?|antiguo[as]?|apareci[oó]|empez[oó]|comenz[oó]|"
+    r"inici[oó]|fue|era|es|son|est[áa]|hay|tiene|"
+    r"mensaje[s]?|vez|fecha[s]?|d[ií]a[s]?|registro[s]?|evento[s]?|"
+    r"escribi[oó]|dij[oó]|dijiste|pregunt[oó]|cont[oó]|"
+    r"el|la|los|las|de|del|en|a|al|un|una|unos|unas|y|o|ni|"
+    r"para|por|con|sin|sobre|entre|lo|se|su|sus|le|les|me|nos|"
+    r"mi|tu|te|que|como|cuando|donde|"
+    r"dime|cu[eé]ntame|sabes|decir(?:me)?)\b",
+    re.IGNORECASE,
+)
+
+
+def consulta_nucleo(consulta: str) -> str:
+    """Devuelve los lexemas de evidencia sin el andamiaje interrogativo.
+
+    «primer mensaje de samay» → «samay»: la pata temporal ordena
+    por ``timestamp_unix`` los eventos que mencionan a samay y su
+    extremo ES la respuesta. Si la consulta no deja contenido
+    («¿cuándo fue la última vez?») devuelve cadena vacía y el
+    llamante usa la consulta original.
+
+    Returns:
+        Lexemas de contenido separados por espacio, o "" si la
+        consulta era puro andamiaje.
+    """
+    limpia = _RE_SCAFFOLD.sub(" ", consulta)
+    limpia = re.sub(r"[¿?¡!.,;:]", " ", limpia)
+    tokens = [t for t in limpia.split() if len(t) > 1]
+    return " ".join(tokens)

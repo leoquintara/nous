@@ -136,6 +136,7 @@ from src.core.reranker import ReordenadorLocal
 from src.core.routing import (
     IntencionConsulta,
     clasificar_intencion,
+    consulta_nucleo,
     direccion_temporal,
 )
 from src.core.temporal import detectar_trayectorias, proyectar
@@ -1193,6 +1194,15 @@ async def _consultar(
             if intencion == IntencionConsulta.TEMPORAL
             else None
         )
+        # La pata temporal filtra por la evidencia, no por el
+        # andamiaje de la pregunta («primer mensaje de samay» se
+        # resuelve ordenando los eventos de samay, no buscando la
+        # palabra «mensaje» en cualquier parte).
+        nucleo = (
+            consulta_nucleo(consulta)
+            if intencion == IntencionConsulta.TEMPORAL
+            else None
+        )
         resultados = await _obtener_busqueda().buscar(
             session,
             consulta,
@@ -1201,6 +1211,7 @@ async def _consultar(
             ctx=ctx,
             competidores=competidores,
             orden_temporal=orden,
+            query_temporal=nucleo or None,
         )
         estado_actual: float | None = None
         episodios_por_gist: dict[str, list[dict[str, Any]]] = {}
