@@ -3868,7 +3868,7 @@ async def _verificar_accion(
         vector = None
     coincidencias: list[CensorCoincidente] = []
     for c in censores:
-        if vector is not None and c.embedding:
+        if vector is not None and c.embedding is not None:
             sim = _coseno(vector, list(c.embedding))
         else:
             # Sin embedding disponible cae a cobertura léxica: ¿qué

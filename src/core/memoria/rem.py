@@ -71,12 +71,14 @@ def pares_rem(
         Pares ``(id_a, id_b)`` con ``id_a < id_b`` (orden canónico).
     """
     elegibles = _muestrear(
-        [e for e in episodios if e.embedding], max_candidatos
+        [e for e in episodios if e.embedding is not None], max_candidatos
     )
     candidatos: list[tuple[float, str, str]] = []
     for i, ev_a in enumerate(elegibles):
         for ev_b in elegibles[i + 1 :]:
-            cos = _coseno(ev_a.embedding or (), ev_b.embedding or ())
+            emb_a = ev_a.embedding if ev_a.embedding is not None else ()
+            emb_b = ev_b.embedding if ev_b.embedding is not None else ()
+            cos = _coseno(emb_a, emb_b)
             if minimo <= cos < maximo:
                 lo, hi = sorted((ev_a.id, ev_b.id))
                 candidatos.append((cos, lo, hi))

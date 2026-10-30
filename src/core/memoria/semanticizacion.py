@@ -60,7 +60,10 @@ def _medoide(
     """El episodio más cercano al centroide — la esencia del grupo."""
     assert all(e.embedding is not None for e in cluster)
     return max(
-        cluster, key=lambda e: _coseno(e.embedding or (), centroide)
+        cluster,
+        key=lambda e: _coseno(
+            e.embedding if e.embedding is not None else (), centroide
+        ),
     )
 
 
@@ -77,12 +80,15 @@ def agrupar_episodios(
         Clusters con al menos un miembro (los pequeños se filtran
         fuera en :func:`plan_gists`).
     """
-    elegibles = [e for e in episodios if e.embedding]
+    elegibles = [e for e in episodios if e.embedding is not None]
     clusters: list[list[EpisodioGist]] = []
     for e in elegibles:
         for cluster in clusters:
-            semilla = cluster[0].embedding or ()
-            if _coseno(e.embedding or (), semilla) >= umbral:
+            semilla = cluster[0].embedding
+            if semilla is None:
+                continue
+            emb = e.embedding if e.embedding is not None else ()
+            if _coseno(emb, semilla) >= umbral:
                 cluster.append(e)
                 break
         else:
@@ -111,7 +117,9 @@ def plan_gists(
     clusters.sort(key=len, reverse=True)
     planes = []
     for cluster in clusters[:max_gists]:
-        centro = _centroide([e.embedding or () for e in cluster])
+        centro = _centroide(
+            [e.embedding if e.embedding is not None else () for e in cluster]
+        )
         medoide = _medoide(cluster, centro)
         planes.append(
             PlanGist(
