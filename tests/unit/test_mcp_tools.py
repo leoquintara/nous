@@ -44,3 +44,43 @@ async def test_recordar_evento_expone_enum_de_dimension() -> None:
         v for variante in variantes for v in variante.get("enum", [])
     }
     assert valores == {"cognitiva", "somatica", "conductual"}
+
+
+def test_fuente_efectiva_conserva_fuente_explicita() -> None:
+    """Una fuente explícita siempre gana sobre el clientInfo."""
+    from src.mcp.tools import _fuente_efectiva
+
+    assert _fuente_efectiva("devin") == "devin"
+
+
+def test_fuente_efectiva_sin_peticion_mcp_devuelve_default() -> None:
+    """Fuera de una petición MCP el default genérico se conserva."""
+    from src.mcp.tools import _fuente_efectiva
+
+    assert _fuente_efectiva("agent") == "agent"
+    assert _fuente_efectiva("agente") == "agente"
+
+
+def test_cliente_actual_normaliza_nombre() -> None:
+    """clientInfo.name se normaliza a slug de fuente."""
+    from src.mcp.tools import _cliente_actual
+
+    class _Info:
+        name = "Gemini CLI 1.0"
+
+    class _Params:
+        clientInfo = _Info()
+
+    class _Session:
+        client_params = _Params()
+
+    class _RC:
+        session = _Session()
+
+    from mcp.server.lowlevel.server import request_ctx
+
+    token = request_ctx.set(_RC())  # type: ignore[arg-type]
+    try:
+        assert _cliente_actual() == "gemini-cli-1-0"
+    finally:
+        request_ctx.reset(token)

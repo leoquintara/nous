@@ -9,6 +9,7 @@ import gc
 import json
 import logging
 import queue
+import re
 import threading
 import time
 import uuid
@@ -262,7 +263,12 @@ _ACTIVIDAD_MAX = 100
 _actividad: deque[dict[str, Any]] = deque(maxlen=_ACTIVIDAD_MAX)
 
 
-def _registrar_actividad(kind: str, consulta: str, ids: list[str]) -> None:
+def _registrar_actividad(
+    kind: str,
+    consulta: str,
+    ids: list[str],
+    src: str | None = None,
+) -> None:
     """Registra un evento de actividad cerebral para el dashboard.
 
     Args:
@@ -270,6 +276,8 @@ def _registrar_actividad(kind: str, consulta: str, ids: list[str]) -> None:
             (evocación que devolvió huellas).
         consulta: Texto que originó la actividad (truncado).
         ids: UUIDs de los eventos implicados.
+        src: Cliente que originó la actividad (``clientInfo.name`` del
+            handshake MCP) — permite distinguir trazas por cliente.
     """
     if consulta == "__warmup__":
         return
@@ -279,8 +287,47 @@ def _registrar_actividad(kind: str, consulta: str, ids: list[str]) -> None:
             "q": consulta[:80],
             "ids": ids[:12],
             "ts": int(time.time()),
+            "src": src,
         }
     )
+
+
+def _cliente_actual() -> str | None:
+    """Nombre del cliente MCP de la petición en curso, normalizado.
+
+    Lee ``clientInfo.name`` del handshake ``initialize`` guardado en la
+    sesión; sirve para atribuir trazas y fuentes a cada cliente
+    (gemini-cli, qwen, …) sin que el cliente tenga que declararlo.
+    Fuera de una petición MCP (REST, stdio sin sesión, tests) → None.
+    """
+    try:
+        from mcp.server.lowlevel.server import request_ctx
+
+        rc = request_ctx.get()
+    except (LookupError, ImportError):
+        return None
+    params = getattr(getattr(rc, "session", None), "client_params", None)
+    nombre = getattr(getattr(params, "clientInfo", None), "name", None)
+    if not isinstance(nombre, str) or not nombre.strip():
+        return None
+    slug = re.sub(r"[^a-z0-9_-]+", "-", nombre.strip().lower()).strip("-")
+    return slug[:40] or None
+
+
+_FUENTES_GENERICAS = frozenset({"agent", "agente", "mcp"})
+
+
+def _fuente_efectiva(fuente: str) -> str:
+    """Resuelve la fuente atribuyendo al cliente MCP cuando aplica.
+
+    Una ``fuente`` genérica (el default ``agent``/``mcp``, sin valor
+    explícito del cliente) se sustituye por ``clientInfo.name`` — así
+    cada conector MCP registra su propia fuente en vez de colapsar
+    todo en ``agent``. Una fuente explícita siempre gana.
+    """
+    if fuente not in _FUENTES_GENERICAS:
+        return fuente
+    return _cliente_actual() or fuente
 
 
 def actividad_reciente(limite: int = 50) -> list[dict[str, Any]]:
@@ -640,6 +687,7 @@ async def _recordar(
     (relación ``cierra``). ``ttl`` acepta "30d"/"12h"/epoch.
     """
     ctx = await _ctx_escritura(workspace, proyecto)
+    fuente = _fuente_efectiva(fuente)
     if not 0.0 <= amplitud <= 1.0:
         raise ErrorValidacion("amplitude must be between 0.0 and 1.0")
     if frecuencia is not None and frecuencia <= 0.0:
@@ -761,7 +809,7 @@ async def _recordar(
             ctx.proyecto_id,
         )
     )
-    _registrar_actividad("store", contenido, [str(evento.id)])
+    _registrar_actividad("store", contenido, [str(evento.id)], src=fuente)
     respuesta.update(
         {
             "id": str(evento.id),
@@ -1004,7 +1052,12 @@ async def _disparar_intencion(
             modelo.project_id,
         )
     )
-    _registrar_actividad("intencion", modelo.intencion, [str(recordatorio.id)])
+    _registrar_actividad(
+        "intencion",
+        modelo.intencion,
+        [str(recordatorio.id)],
+        src=_cliente_actual(),
+    )
     return recordatorio
 
 
@@ -1515,7 +1568,12 @@ async def _consultar(
         )
     )
     if resultados:
-        _registrar_actividad("recall", consulta, [r.evento_id for r in resultados])
+        _registrar_actividad(
+            "recall",
+            consulta,
+            [r.evento_id for r in resultados],
+            src=_cliente_actual(),
+        )
     serializados = []
     for r in resultados:
         d = _resultado_a_dict(
