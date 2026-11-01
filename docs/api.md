@@ -1,10 +1,10 @@
 # API REST de Nous
 
 FastAPI (`src/api/`). Sirve el MCP streamable-HTTP en `/mcp` y la API de
-operación del dashboard. Todo endpoint requiere `Authorization: Bearer
-ns_<token>` (salvo `/health`, `/`, `/login` y
-`/api/invitaciones/canjear`), salvo que `NOUS_API_TOKEN` esté vacío
-(modo dev local).
+operación del dashboard (montada bajo `/api`, salvo `/health` y
+`/login`). Todo endpoint requiere `Authorization: Bearer ns_<token>`
+(salvo `/health`, `/`, `/login` y `/api/invitations/redeem`), salvo que
+`NOUS_API_TOKEN` esté vacío (modo dev local).
 
 **Credenciales**: `ns_<token>` estático = owner del workspace
 `personal`; `ns_u_*` = key de usuario (resuelve su workspace default
@@ -19,6 +19,10 @@ alternativa al header (clientes sin headers, p.ej. conectores
 remotos) se acepta `?access_token=<token>` en la URL (RFC 6750) —
 la URL lleva credencial, tratarla como privada.
 
+**Contrato**: rutas, campos y enums viajan en inglés canónico
+(`dimension: "cognitive"`, `kind: "commitment"`, `state: "archived"`);
+el dominio interno y el storage conservan vocabulario español.
+
 ## Vida y acceso
 
 | Método | Ruta | Qué hace |
@@ -30,73 +34,92 @@ la URL lleva credencial, tratarla como privada.
 
 | Método | Ruta | Qué hace |
 |---|---|---|
-| POST | `/eventos` | Registra evento (`contenido`, `dimension`, `tipo`, `tags`, `relaciona_ids`, `rama`, `ttl_horas`, `reemplaza_id`, `con_quien`→loop) |
-| GET | `/eventos` | Lista eventos; soporta rango temporal (`desde`/`hasta`) y paginación |
-| DELETE | `/eventos/{id}` | Olvido irreversible — borra el evento y sus vínculos |
-| GET | `/buscar` | Búsqueda híbrida (BM25+vector+RRF+recencia+reranker); params `q`, `dimension`, `rama` (default `main`, `"*"` = todas) |
+| POST | `/events` | Registra evento (`content`, `dimension`, `kind`, `tags`, `related_ids`, `branch`, `ttl`, `supersedes_id`, `with_whom`→loop, `scope`, `project`) |
+| GET | `/events` | Lista eventos; soporta rango temporal (`desde`/`hasta`) y paginación |
+| DELETE | `/events/{event_id}` | Olvido irreversible — borra el evento y sus vínculos |
+| POST | `/events/{event_id}/forget` | Olvido dirigido — marca sin borrar (auditable) |
+| POST | `/events/{event_id}/archive` · `/events/{event_id}/curate` | Ciclo de vida manual: archivar / promover a curada |
+| GET | `/search` | Búsqueda híbrida (BM25+vector+RRF+recencia+reranker); params `q`, `dimension`, `branch` (default `main`, `"*"` = todas), `project` |
+| GET | `/gaps` | Mapa de lagunas — lo que una consulta NO cubrió (Neuro-6) |
+| GET | `/entity` | Ficha de entidad: card + grafo + span temporal |
+| POST | `/consolidate` | Corrida de sueño bajo demanda (opcional `project`) |
+| GET | `/consolidation/reports` | Reportes de consolidación |
+| GET | `/archived` | Memorias archivadas |
+| POST | `/scripts/mine` · GET `/scripts` | Minería de secuencias recurrentes |
+| POST | `/drafts` · GET `/drafts` · POST `/drafts/{draft_id}/rehearse` · DELETE `/drafts/{draft_id}` | Buffer de trabajo (borradores con TTL y ensayo) |
+| GET | `/reviews` | Revisiones SRS pendientes |
+| GET | `/quarantine` | Memorias en cuarentena (auditoría inmune) |
+| GET | `/approvals/pending` · POST `/approvals/{event_id}/approve` · DELETE `/approvals/{event_id}` · POST `/approvals/approve-all` | Cola de write-approval (Neuro-5) |
 
 ## Universo 4D
 
 | Método | Ruta | Qué hace |
 |---|---|---|
-| GET | `/loops` | Compromisos abiertos con edad |
-| POST | `/loops/{compromiso_id}/cerrar` | Cierra el loop (auditable) |
-| GET | `/objetivos` | Lista objetivos |
-| POST | `/objetivos` | Crea objetivo (`titulo`, `fecha_objetivo`, `rama`) |
-| PATCH | `/objetivos/{id}` | Edita objetivo |
-| POST | `/objetivos/{id}/cerrar` | Cierra con resolución |
-| GET | `/contexto-inicial` | Resumen de arranque de sesión (eventos recientes, loops, objetivos) |
-| GET | `/relaciones` | Vínculos del grafo |
+| GET | `/commitments` | Compromisos abiertos con edad |
+| POST | `/commitments/{commitment_id}/close` | Cierra el loop (auditable) |
+| POST | `/intentions` · GET `/intentions` · POST `/intentions/{intention_id}/cancel` · POST `/intentions/{intention_id}/snooze` | Intenciones prospectivas (time/event trigger, snooze) |
+| GET | `/goals` | Lista objetivos |
+| POST | `/goals` | Crea objetivo (`title`, `target_date`, `branch`) |
+| PATCH | `/goals/{goal_id}` | Edita objetivo |
+| POST | `/goals/{goal_id}/close` | Cierra con resolución |
+| GET | `/bootstrap` | Pack de arranque de sesión (eventos recientes, loops, objetivos) — disparador de intenciones temporales |
+| GET | `/relations` | Vínculos del grafo |
+| POST | `/sessions` · POST `/sessions/close` · GET `/sessions` · GET `/sessions/handoff` | Sesiones y documento de continuidad |
 
 ## Fuentes y ramas
 
 | Método | Ruta | Qué hace |
 |---|---|---|
-| GET | `/fuentes` | Fuentes de memoria registradas |
-| POST | `/fuentes` | Registra una fuente |
-| PATCH | `/fuentes/{nombre}` | Edita fuente |
-| DELETE | `/fuentes/{nombre}` | Elimina fuente |
-| POST | `/fuentes/{nombre}/ramificar` | Crea rama alternativa de universo |
+| GET | `/sources` | Fuentes de memoria registradas (conteo real) |
+| POST | `/sources` | Registra una fuente |
+| PATCH | `/sources/{name}` | Edita fuente |
+| DELETE | `/sources/{name}` | Elimina fuente |
+| POST | `/sources/{name}/branch` | Crea rama alternativa de universo |
+| POST | `/sources/{name}/trust` | Marca fuente confiable/no confiable |
 | GET | `/tags` | Todos los tags con conteo |
 
 ## Proyección e IA
 
 | Método | Ruta | Qué hace |
 |---|---|---|
-| POST | `/proyeccion` | Proyección de trayectoria desde un evento |
-| GET | `/proyeccion/actual` | Proyección desde el estado actual |
-| GET | `/ia/proveedores` | Proveedores LLM (keys enmascaradas) |
-| PUT | `/ia/proveedores/{pid}` | Crea/actualiza proveedor (key cifrada pgcrypto) |
-| DELETE | `/ia/proveedores/{pid}` | Elimina proveedor |
-| POST | `/ia/proveedores/{pid}/probar` | Prueba conexión sin persistir |
-| POST | `/ia/predecir` | Futuros re-ponderados por LLM (primario → fallback) |
+| POST | `/projection` | Proyección de trayectoria desde un evento |
+| GET | `/projection/current` | Proyección desde el estado actual |
+| POST | `/decision` · POST `/ai/predict` | Decisión System One / futuros re-ponderados por LLM |
+| GET | `/ai/providers` | Proveedores LLM (keys enmascaradas) |
+| PUT | `/ai/providers/{pid}` | Crea/actualiza proveedor (key cifrada pgcrypto) |
+| DELETE | `/ai/providers/{pid}` | Elimina proveedor |
+| POST | `/ai/providers/{pid}/test` | Prueba conexión sin persistir |
+| POST | `/predictions` · GET `/predictions` · POST `/predictions/{prediction_id}/resolve` | Predicciones calibrables |
+| GET | `/calibration` | Brier score + curva de confiabilidad |
+| POST | `/verify` · GET `/censors` · POST `/censors` | Veredicto de censores pre-acción |
+| POST | `/license/activate` · DELETE `/license` | Licencia Pro/Enterprise |
 
 ## Operación
 
 | Método | Ruta | Qué hace |
 |---|---|---|
-| GET | `/actividad` | Actividad reciente para el cerebro 3D |
-| GET | `/preferencias/{clave}` · PUT | Preferencias por clave (namespacadas) |
+| GET | `/activity` | Actividad reciente para el cerebro 3D (`src` = cliente MCP que originó la traza) |
+| GET | `/preferences/{key}` · PUT `/preferences/{key}` | Preferencias por clave (namespacadas) |
 | GET | `/benchmarks` | Corridas de benchmark persistidas |
-| GET | `/llamadas` · `/llamadas/stats` | Trazas de llamadas MCP/REST + agregados |
+| GET | `/calls` · `/calls/stats` | Trazas de llamadas MCP/REST + agregados |
 | POST | `/ping` | Latido de agente → feed de actividad |
-| POST | `/importar` | Migración: `{fuente, ruta\|url, token, vista_previa}` — gbrain/memlord vía API MCP, archivos por `ruta` |
-| GET | `/importar/historial` | Historial de migraciones |
+| POST | `/import` | Migración: `{format, path\|url, token, source, branch, preview}` — gbrain/memlord vía API MCP, archivos por `path` |
+| GET | `/import/history` | Historial de migraciones |
 
 ## Identidad multi-tenant
 
 | Método | Ruta | Qué hace |
 |---|---|---|
-| GET | `/identidad` | Whoami: usuario, workspace activo, workspaces con rol, estado de licencia |
+| GET | `/identity` | Whoami: usuario, workspace activo, workspaces con rol, estado de licencia |
 | POST | `/workspaces` | Crea workspace (el llamante queda owner) |
-| GET | `/workspaces/{ref}/miembros` | Roster del workspace (cualquier miembro) |
-| PATCH | `/workspaces/{ref}/miembros/{uid}` | Cambia rol member↔viewer — solo owner |
-| DELETE | `/workspaces/{ref}/miembros/{uid}` | Expulsa miembro — solo owner; último owner protegido |
-| POST | `/workspaces/{ref}/invitaciones` | Emite `ns_inv_*` (rol, días) — solo owner; se ve una vez |
-| POST | `/invitaciones/canjear` | **Público** (rate-limited): token + handle + nombre → key `ns_u_*` una vez |
-| GET | `/llaves` | Keys del llamante (sin secretos) |
-| POST | `/llaves` | Emite key propia — en claro una sola vez |
-| DELETE | `/llaves/{ref}` | Revoca por UUID o prefijo — solo las propias |
+| GET | `/workspaces/{ref}/members` | Roster del workspace (cualquier miembro) |
+| PATCH | `/workspaces/{ref}/members/{uid}` | Cambia rol member↔viewer — solo owner |
+| DELETE | `/workspaces/{ref}/members/{uid}` | Expulsa miembro — solo owner; último owner protegido |
+| POST | `/workspaces/{ref}/invitations` | Emite `ns_inv_*` (rol, días) — solo owner; se ve una vez |
+| POST | `/invitations/redeem` | **Público** (rate-limited): token + handle + nombre → key `ns_u_*` una vez |
+| GET | `/keys` | Keys del llamante (sin secretos) |
+| POST | `/keys` | Emite key propia — en claro una sola vez |
+| DELETE | `/keys/{ref}` | Revoca por UUID o prefijo — solo las propias |
 
 ## Projects (subdivisión del workspace)
 
@@ -119,7 +142,7 @@ project no destruye memoria: los eventos caen a `project_id NULL`
 | DELETE | `/projects/{ref}/members/{handle}` | Quita miembro |
 
 Los endpoints de memoria aceptan `?project=<slug|uuid>` como
-restricción dentro del workspace efectivo (`/eventos`, búsqueda,
+restricción dentro del workspace efectivo (`/events`, búsqueda,
 línea de universo, lagunas). Un `recall` sin `project` cubre los
 projects accesibles más el nivel workspace.
 
