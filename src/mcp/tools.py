@@ -32,7 +32,12 @@ from src.core.exceptions import (
     ErrorValidacion,
     PermisoDenegadoError,
 )
-from src.core.identidad import Contexto, contexto_actual, resolver_workspace
+from src.core.identidad import (
+    Contexto,
+    contexto_actual,
+    resolver_proyecto,
+    resolver_workspace,
+)
 from src.core.memoria.bootstrap import (
     SeccionBootstrap,
     empaquetar_bootstrap,
@@ -134,6 +139,20 @@ from src.core.persona import (
     hash_banco,
     render,
 )
+from src.core.proyectos import (
+    actualizar_proyecto,
+    agregar_miembro,
+    asignar_proyecto,
+    crear_proyecto,
+    eliminar_proyecto,
+    listar_proyectos,
+)
+from src.core.proyectos import (
+    listar_miembros as _miembros_proyecto_dom,
+)
+from src.core.proyectos import (
+    quitar_miembro as _quitar_miembro_dom,
+)
 from src.core.reranker import ReordenadorLocal
 from src.core.routing import (
     ORDEN_POR_OP,
@@ -156,6 +175,7 @@ from src.storage.models import (
     IntencionProspectivaModel,
     ObjetivoModel,
     PrediccionModel,
+    ProjectModel,
     ProyeccionModel,
     ReporteConsolidacionModel,
     ScriptDetectadoModel,
@@ -201,6 +221,7 @@ class _ItemIndexacion:
     workspace_id: uuid.UUID
     autor_id: uuid.UUID | None
     fuente: str = "mcp"
+    project_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,7 +278,9 @@ def actividad_reciente(limite: int = 50) -> list[dict[str, Any]]:
     return list(_actividad)[: max(1, min(limite, _ACTIVIDAD_MAX))]
 
 
-async def _ctx(workspace: str | None = None) -> Contexto:
+async def _ctx(
+    workspace: str | None = None, proyecto: str | None = None
+) -> Contexto:
     """Resuelve el contexto de identidad de la llamada en curso.
 
     En HTTP lo fija el BearerTokenMiddleware por request; en stdio es
@@ -265,20 +288,33 @@ async def _ctx(workspace: str | None = None) -> Contexto:
 
     ``workspace`` (slug o UUID) permite a una tool operar sobre otro
     workspace del mismo usuario — la membresía en el destino fija el
-    rol efectivo (grill-me Q6, opción C).
+    rol efectivo (grill-me Q6, opción C). ``proyecto`` (slug o UUID)
+    se resuelve siempre dentro del workspace efectivo (spec §6).
     """
     engine = obtener_engine()
     ctx = await contexto_actual(engine)
     if workspace is not None:
         ctx = await resolver_workspace(engine, ctx, workspace)
+    if proyecto is not None:
+        ctx = await resolver_proyecto(engine, ctx, proyecto)
     return ctx
 
 
-async def _ctx_escritura(workspace: str | None = None) -> Contexto:
-    """Contexto con permiso de escritura; rechaza viewers."""
-    ctx = await _ctx(workspace)
+async def _ctx_escritura(
+    workspace: str | None = None, proyecto: str | None = None
+) -> Contexto:
+    """Contexto con permiso de escritura; rechaza viewers.
+
+    Un project archivado se lee pero no se escribe (spec §4): la
+    memoria se cierra como compartimento, nunca se borra.
+    """
+    ctx = await _ctx(workspace, proyecto)
     if not ctx.puede_escribir:
         raise PermisoDenegadoError("read-only role: no write permission")
+    if ctx.proyecto_estado == "archivado":
+        raise ErrorValidacion(
+            "project archived — read-only, reactivate to write"
+        )
     return ctx
 
 
@@ -477,6 +513,7 @@ def _modelo_a_dict(modelo: EventoModel) -> dict[str, Any]:
         "scope": modelo.scope,
         "workspace_id": str(modelo.workspace_id),
         "autor_id": str(modelo.autor_id) if modelo.autor_id else None,
+        "project_id": str(modelo.project_id) if modelo.project_id else None,
     }
 
 
@@ -574,6 +611,7 @@ async def _recordar(
     con_quien: str | None = None,
     scope: Literal["personal", "workspace"] = "personal",
     workspace: str | None = None,
+    proyecto: str | None = None,
     tipo_memoria: str | None = None,
     estado_emocional: float | None = None,
     contexto_extra: dict[str, Any] | None = None,
@@ -591,7 +629,7 @@ async def _recordar(
     abre un loop que permanece abierto hasta que un evento lo cierre
     (relación ``cierra``). ``ttl`` acepta "30d"/"12h"/epoch.
     """
-    ctx = await _ctx_escritura(workspace)
+    ctx = await _ctx_escritura(workspace, proyecto)
     if not 0.0 <= amplitud <= 1.0:
         raise ErrorValidacion("amplitude must be between 0.0 and 1.0")
     if frecuencia is not None and frecuencia <= 0.0:
@@ -661,6 +699,7 @@ async def _recordar(
             # Neuro-6 — contenido afirmado desde los pesos del
             # modelo, no observado: techo epistémico al recall.
             parametrica=parametrica,
+            project_id=ctx.proyecto_id,
         )
         await repo.crear(evento)
         await FuenteRepository(session, ctx).crear(fuente, tipo="agente")
@@ -709,6 +748,7 @@ async def _recordar(
             ctx.workspace_id,
             ctx.usuario_id,
             fuente,
+            ctx.proyecto_id,
         )
     )
     _registrar_actividad("store", contenido, [str(evento.id)])
@@ -921,6 +961,7 @@ async def _disparar_intencion(
             usuario_id=modelo.autor_id,
             workspace_id=modelo.workspace_id,
             rol="member",
+            proyecto_id=modelo.project_id,
         ),
     ).buscar_por_texto(consulta_pack, limite=3)
     pack = [{"id": str(e.id), "contenido": e.contenido[:200]} for e, _ in pack_rows]
@@ -937,6 +978,7 @@ async def _disparar_intencion(
         workspace_id=modelo.workspace_id,
         autor_id=modelo.autor_id,
         scope="personal",
+        project_id=modelo.project_id,
     )
     session.add(recordatorio)
     await session.flush()
@@ -949,6 +991,7 @@ async def _disparar_intencion(
             modelo.workspace_id,
             modelo.autor_id,
             "prospectiva",
+            modelo.project_id,
         )
     )
     _registrar_actividad("intencion", modelo.intencion, [str(recordatorio.id)])
@@ -968,6 +1011,7 @@ async def _evaluar_intenciones_evento(session: Any, item: _ItemIndexacion) -> No
             usuario_id=item.autor_id,
             workspace_id=item.workspace_id,
             rol="member",
+            proyecto_id=item.project_id,
         ),
     )
     pendientes = await repo.pendientes_por_evento(int(time.time()))
@@ -1180,10 +1224,11 @@ async def _consultar(
     top_n: int,
     rama: str | None = None,
     workspace: str | None = None,
+    proyecto: str | None = None,
     max_tokens: int | None = None,
 ) -> list[dict[str, Any]]:
     """Ejecuta la búsqueda híbrida 4D y serializa los resultados."""
-    ctx = await _ctx(workspace)
+    ctx = await _ctx(workspace, proyecto)
     ttl = get_settings().recall_cache_ttl
     clave = _cache_key(ctx, consulta, top_n, rama, max_tokens)
     if ttl > 0 and (hit := _RECALL_CACHE.get(clave)) is not None:
@@ -1703,11 +1748,12 @@ async def _linea(
     rama: str | None = None,
     repartir: bool = False,
     workspace: str | None = None,
+    proyecto: str | None = None,
 ) -> list[dict[str, Any]]:
     """Devuelve los eventos del rango temporal en orden cronológico."""
     if desde_unix > hasta_unix:
         raise ErrorValidacion("from_unix must be <= to_unix")
-    ctx = await _ctx(workspace)
+    ctx = await _ctx(workspace, proyecto)
     async with get_session(obtener_engine()) as session:
         eventos = await EventoRepository(session, ctx).listar_por_rango(
             desde_unix, hasta_unix, min(max(limite, 1), 4000), rama, repartir
@@ -1724,6 +1770,7 @@ async def _entidad(
     nombre: str,
     limite_menciones: int,
     workspace: str | None = None,
+    proyecto: str | None = None,
 ) -> dict[str, Any]:
     """Compone la ficha de una entidad: página, vínculos y span temporal.
 
@@ -1734,7 +1781,7 @@ async def _entidad(
     temporal en la línea de universo — cuándo se escribió de ella por
     primera y última vez.
     """
-    ctx = await _ctx(workspace)
+    ctx = await _ctx(workspace, proyecto)
     async with get_session(obtener_engine()) as session:
         repo = EventoRepository(session, ctx)
         candidatos = await repo.buscar_por_titulo(nombre, limite=6)
@@ -1901,9 +1948,10 @@ async def _objetivos(
     estado: str | None = "activo",
     rama: str = "main",
     workspace: str | None = None,
+    proyecto: str | None = None,
 ) -> list[dict[str, Any]]:
     """Lista objetivos del usuario filtrados por estado y rama."""
-    ctx = await _ctx(workspace)
+    ctx = await _ctx(workspace, proyecto)
     async with get_session(obtener_engine()) as session:
         filas = await ObjetivoRepository(session, ctx).listar(estado, rama)
     return [_objetivo_a_dict(o) for o in filas]
@@ -1917,6 +1965,7 @@ async def _crear_objetivo(
     rama: str,
     scope: Literal["personal", "workspace"] = "personal",
     workspace: str | None = None,
+    proyecto: str | None = None,
 ) -> dict[str, Any]:
     """Persiste un objetivo que ancla una proyección futura."""
     titulo = titulo.strip()
@@ -1930,7 +1979,7 @@ async def _crear_objetivo(
         raise ErrorValidacion(
             f"invalid dimension: {dimension!r} " "(cognitive|somatic|behavioral)"
         )
-    ctx = await _ctx_escritura(workspace)
+    ctx = await _ctx_escritura(workspace, proyecto)
     async with get_session(obtener_engine()) as session:
         objetivo = await ObjetivoRepository(session, ctx).crear(
             ObjetivoModel(
@@ -1942,6 +1991,7 @@ async def _crear_objetivo(
                 workspace_id=ctx.workspace_id,
                 autor_id=ctx.usuario_id,
                 scope=scope,
+                project_id=ctx.proyecto_id,
             )
         )
         await session.commit()
@@ -2119,6 +2169,7 @@ async def _proyectar(
                 basada_en_eventos=list(proyeccion.basada_en_eventos),
                 workspace_id=ctx.workspace_id,
                 autor_id=ctx.usuario_id,
+                project_id=ctx.proyecto_id,
             )
         )
         await session.commit()
@@ -2266,7 +2317,7 @@ async def consultar_memoria(
         top_n,
         None if rama == "*" else rama,
         workspace,
-        max_tokens,
+        max_tokens=max_tokens,
     )
 
 
@@ -2274,9 +2325,10 @@ async def _mapa_lagunas(
     consulta: str,
     top_n: int,
     workspace: str | None = None,
+    proyecto: str | None = None,
 ) -> dict[str, Any]:
     """Radiografía de lo que la consulta NO cubrió — las lagunas."""
-    items = await _consultar(consulta, top_n, workspace=workspace)
+    items = await _consultar(consulta, top_n, workspace=workspace, proyecto=proyecto)
     ev_items = [i for i in items if isinstance(i.get("evento"), dict)]
     lagunas = detectar_lagunas(
         n_resultados=len(ev_items),
@@ -2646,6 +2698,7 @@ async def _crear_intencion(
     cuando: str | None,
     umbral: float,
     workspace: str | None = None,
+    proyecto: str | None = None,
 ) -> dict[str, Any]:
     """Registra una intención prospectiva (time o event-based)."""
     if not intencion.strip():
@@ -2654,7 +2707,7 @@ async def _crear_intencion(
         raise ErrorValidacion("declare exactly one trigger: 'at' (time) or 'when' (event)")
     if not 0.0 < umbral <= 1.0:
         raise ErrorValidacion("threshold must be in (0, 1]")
-    ctx = await _ctx_escritura(workspace)
+    ctx = await _ctx_escritura(workspace, proyecto)
     ahora = int(time.time())
     if en is not None:
         try:
@@ -2672,6 +2725,7 @@ async def _crear_intencion(
         modelo = IntencionProspectivaModel(
             workspace_id=ctx.workspace_id,
             autor_id=ctx.usuario_id,
+            project_id=ctx.proyecto_id,
             creada_en=ahora,
             intencion=intencion.strip(),
             trigger_tipo=trigger_tipo,
@@ -2751,7 +2805,9 @@ def _a_consolidable(modelo: EventoModel) -> EventoConsolidable:
     )
 
 
-async def _consolidar(workspace: str | None = None) -> dict[str, Any]:
+async def _consolidar(
+    workspace: str | None = None, proyecto: str | None = None
+) -> dict[str, Any]:
     """Ejecuta la corrida de consolidación-sueño y persiste su reporte.
 
     Además del replay/promoción/archivo de ADR-003, el sueño ahora
@@ -2759,11 +2815,26 @@ async def _consolidar(workspace: str | None = None) -> dict[str, Any]:
     ``semantica`` (fuente ``sueno``) vinculado a sus miembros por
     aristas ``gist`` — la memoria abstrae, no solo guarda.
     """
-    ctx = await _ctx_escritura(workspace)
+    ctx = await _ctx_escritura(workspace, proyecto)
     ahora = int(time.time())
     async with get_session(obtener_engine()) as session:
         repo = EventoRepository(session, ctx)
-        eventos = await repo.listar_para_consolidacion()
+        # Semántica vault (spec §9): el sueño LEE la bóveda para
+        # minería pero nunca muta sus items — promoción, fortaleza y
+        # archivo corren solo sobre memoria regular/NULL.
+        vault_ids = {
+            pid
+            for pid, kind in (
+                await session.execute(
+                    select(ProjectModel.id, ProjectModel.kind).where(
+                        ProjectModel.workspace_id == ctx.workspace_id
+                    )
+                )
+            ).all()
+            if kind == "vault"
+        }
+        eventos_todos = await repo.listar_para_consolidacion()
+        eventos = [e for e in eventos_todos if e.project_id not in vault_ids]
         plan = decidir_consolidacion([_a_consolidable(e) for e in eventos])
         # Overflow-pressure en la promoción: el tier curado tiene
         # presupuesto — el sueño promueve solo lo que cabe y reporta
@@ -2790,8 +2861,22 @@ async def _consolidar(workspace: str | None = None) -> dict[str, Any]:
             plan.archivar,
             plan.ejecutado_en,
         )
-        # Semanticización: episodios afines → gist semántico.
+        # Semanticización: episodios afines → gist semántico. La
+        # bóveda entra a la minería (sus episodios alimentan los
+        # clusters) pero el gist se escribe FUERA — al project de sus
+        # constituyentes si es inequívoco, o a nivel workspace (NULL).
         episodicos = await repo.episodicas_con_embedding()
+        proyecto_por_evento = {str(e.id): e.project_id for e in episodicos}
+
+        def _proyecto_de_gist(miembro_ids: list[str]) -> uuid.UUID | None:
+            destinos = {
+                proyecto_por_evento.get(m) for m in miembro_ids
+            }
+            destinos.discard(None)
+            if len(destinos) != 1:
+                return None
+            unico = next(iter(destinos))
+            return None if unico in vault_ids else unico
         gists = plan_gists(
             [
                 EpisodioGist(
@@ -2818,6 +2903,7 @@ async def _consolidar(workspace: str | None = None) -> dict[str, Any]:
                 workspace_id=ctx.workspace_id,
                 autor_id=ctx.usuario_id,
                 scope="personal",
+                project_id=_proyecto_de_gist(list(gist.miembros)),
             )
             await repo.crear(evento_gist)
             for miembro in gist.miembros:
@@ -2839,6 +2925,13 @@ async def _consolidar(workspace: str | None = None) -> dict[str, Any]:
         )
         rem_ids: list[tuple[str, str]] = []
         for id_a, id_b in pares_soñados:
+            # REM-pairs adentro de la bóveda quedan fuera del ciclo
+            # automático — la evidencia no se recombina consigo misma.
+            if (
+                proyecto_por_evento.get(id_a) in vault_ids
+                and proyecto_por_evento.get(id_b) in vault_ids
+            ):
+                continue
             if await relaciones.vincular(uuid.UUID(id_a), uuid.UUID(id_b), "rem"):
                 rem_ids.append((id_a, id_b))
         reporte = ReporteConsolidacionModel(
@@ -3265,9 +3358,10 @@ async def _recordar_borrador(
     contenido: str,
     dimension: Literal["cognitiva", "somatica", "conductual"],
     workspace: str | None,
+    proyecto: str | None = None,
 ) -> dict[str, Any]:
     """Guarda un borrador si el buffer tiene cupo."""
-    ctx = await _ctx_escritura(workspace)
+    ctx = await _ctx_escritura(workspace, proyecto)
     ahora = int(time.time())
     async with get_session(obtener_engine()) as session:
         repo = BorradorRepository(session, ctx)
@@ -3285,6 +3379,7 @@ async def _recordar_borrador(
                 expira_en=ahora + TTL_BORRADOR_SEG,
                 workspace_id=ctx.workspace_id,
                 autor_id=ctx.usuario_id,
+                project_id=ctx.proyecto_id,
             )
         )
         await session.commit()
@@ -3298,9 +3393,10 @@ async def _recordar_borrador(
 
 async def _listar_borrador(
     workspace: str | None,
+    proyecto: str | None = None,
 ) -> list[dict[str, Any]]:
     """Borradores vivos del buffer (los no expirados)."""
-    ctx = await _ctx(workspace)
+    ctx = await _ctx(workspace, proyecto)
     ahora = int(time.time())
     async with get_session(obtener_engine()) as session:
         filas = await BorradorRepository(session, ctx).listar_vigentes(ahora)
@@ -3310,9 +3406,10 @@ async def _listar_borrador(
 async def _ensayar_borrador(
     borrador_id: str,
     workspace: str | None,
+    proyecto: str | None = None,
 ) -> dict[str, Any]:
     """Suma un ensayo; al llegar al umbral promueve a evento."""
-    ctx = await _ctx_escritura(workspace)
+    ctx = await _ctx_escritura(workspace, proyecto)
     ahora = int(time.time())
     async with get_session(obtener_engine()) as session:
         repo = BorradorRepository(session, ctx)
@@ -3337,6 +3434,7 @@ async def _ensayar_borrador(
                 fuente="trabajo",
                 tipo="hecho",
                 workspace=workspace,
+                proyecto=proyecto,
             )
             respuesta["promovido"] = True
             respuesta["evento_id"] = promovido.get("id")
@@ -3594,6 +3692,7 @@ async def _iniciar_sesion(
                 inicio=ahora,
                 workspace_id=ctx.workspace_id,
                 autor_id=ctx.usuario_id,
+                project_id=ctx.proyecto_id,
             )
         )
         await session.commit()
@@ -3947,6 +4046,7 @@ async def _registrar_prediccion(
                 creado_en=ahora,
                 workspace_id=ctx.workspace_id,
                 autor_id=ctx.usuario_id,
+                project_id=ctx.proyecto_id,
             )
         )
         await session.commit()
@@ -4182,3 +4282,121 @@ async def aprobar_pendientes(
 ) -> dict[str, Any]:
     """Deprecated alias — use ``approve_all_pending`` instead."""
     return await _aprobar_pendientes(workspace)
+
+
+# ── Projects (spec 2026-10-30) ────────────────────────────────────
+# Implementación interna ES — los contratos públicos canónicos son
+# las tools EN de tools_en.py; no hay alias ES porque la feature es
+# nueva.
+
+
+def _proyecto_a_dict(p: Any) -> dict[str, Any]:
+    """Serializa un project con su contrato EN."""
+    return {
+        "id": str(p.id),
+        "slug": p.slug,
+        "name": p.nombre,
+        "description": p.descripcion,
+        "kind": p.kind,
+        "state": p.estado,
+        "vault": p.kind == "vault",
+        "created_at": (
+            p.creado_en.isoformat() if p.creado_en is not None else None
+        ),
+    }
+
+
+async def _crear_proyecto(
+    slug: str,
+    nombre: str,
+    descripcion: str | None,
+    kind: str,
+    workspace: str | None,
+) -> dict[str, Any]:
+    """Crea un project en el workspace efectivo."""
+    ctx = await _ctx_escritura(workspace)
+    proyecto = await crear_proyecto(
+        obtener_engine(), ctx, slug, nombre, descripcion, kind
+    )
+    return _proyecto_a_dict(proyecto)
+
+
+async def _listar_proyectos(
+    workspace: str | None,
+) -> list[dict[str, Any]]:
+    """Roster de projects accesibles — la fuente del routing semántico."""
+    ctx = await _ctx(workspace)
+    filas = await listar_proyectos(obtener_engine(), ctx)
+    return [_proyecto_a_dict(p) for p in filas]
+
+
+async def _actualizar_proyecto(
+    proyecto: str,
+    nombre: str | None,
+    descripcion: str | None,
+    estado: str | None,
+    workspace: str | None,
+) -> dict[str, Any]:
+    """Actualiza nombre/descripción/estado de un project."""
+    ctx = await _ctx_escritura(workspace)
+    p = await actualizar_proyecto(
+        obtener_engine(), ctx, proyecto, nombre, descripcion, estado
+    )
+    return _proyecto_a_dict(p)
+
+
+async def _eliminar_proyecto(
+    proyecto: str, workspace: str | None
+) -> dict[str, Any]:
+    """Elimina un project — sus memorias bajan a nivel workspace."""
+    ctx = await _ctx_escritura(workspace)
+    await eliminar_proyecto(obtener_engine(), ctx, proyecto)
+    _invalidar_recall()
+    return {"deleted": True, "project": proyecto}
+
+
+async def _miembros_proyecto(
+    proyecto: str, workspace: str | None
+) -> list[dict[str, Any]]:
+    """Roster de miembros del project (handle + rol)."""
+    ctx = await _ctx(workspace)
+    filas = await _miembros_proyecto_dom(obtener_engine(), ctx, proyecto)
+    return [
+        {"handle": m["handle"], "name": m["nombre"], "role": m["rol"]}
+        for m in filas
+    ]
+
+
+async def _agregar_miembro_proyecto(
+    proyecto: str, handle: str, rol: str, workspace: str | None
+) -> dict[str, Any]:
+    """Añade un miembro del workspace al project."""
+    ctx = await _ctx_escritura(workspace)
+    await agregar_miembro(obtener_engine(), ctx, proyecto, handle, rol)
+    return {"added": handle, "project": proyecto, "role": rol}
+
+
+async def _quitar_miembro_proyecto(
+    proyecto: str, handle: str, workspace: str | None
+) -> dict[str, Any]:
+    """Quita un miembro del project (el de workspace sigue)."""
+    ctx = await _ctx_escritura(workspace)
+    await _quitar_miembro_dom(obtener_engine(), ctx, proyecto, handle)
+    return {"removed": handle, "project": proyecto}
+
+
+async def _asignar_proyecto(
+    destino: str | None,
+    evento_ids: list[str] | None,
+    query: str | None,
+    desde: int | None,
+    hasta: int | None,
+    workspace: str | None,
+) -> dict[str, Any]:
+    """Mueve eventos entre projects (o al nivel workspace con NULL)."""
+    ctx = await _ctx_escritura(workspace)
+    resultado = await asignar_proyecto(
+        obtener_engine(), ctx, destino, evento_ids, query, desde, hasta
+    )
+    _invalidar_recall()
+    return {"moved": resultado["moved"], "project": resultado["destino"]}

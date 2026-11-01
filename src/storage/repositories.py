@@ -161,6 +161,34 @@ def _score_idf(
     )
 
 
+def _predicado_proyecto(
+    modelo: Any, ctx: Contexto | None
+) -> list[ColumnElement[bool]]:
+    """Cláusula de visibilidad por project (spec 2026-10-30).
+
+    - Key con scope estricto (``key_proyecto_id``): solo SU project —
+      ni siquiera el nivel workspace (NULL) es visible.
+    - ``ctx.proyecto_id`` (un ``project=`` ya resuelto): acota la
+      lectura/escritura a ese project.
+    - Member/viewer: ``NULL`` (nivel workspace) ∪ sus membresías.
+    - Owner del workspace o ``ctx=None``: sin filtro — ve todo.
+    """
+    if ctx is None:
+        return []
+    if ctx.key_proyecto_id is not None:
+        return [modelo.project_id == ctx.key_proyecto_id]
+    if ctx.proyecto_id is not None:
+        return [modelo.project_id == ctx.proyecto_id]
+    if ctx.projects_visibles is None:
+        return []
+    return [
+        or_(
+            modelo.project_id.is_(None),
+            modelo.project_id.in_(ctx.projects_visibles),
+        )
+    ]
+
+
 def _vis_eventos(ctx: Contexto | None) -> ColumnElement[bool] | None:
     """Cláusula de visibilidad multi-tenant sobre ``eventos``.
 
@@ -169,7 +197,7 @@ def _vis_eventos(ctx: Contexto | None) -> ColumnElement[bool] | None:
     atribuir (``autor_id IS NULL``, filas de importaciones/scripts).
     El workspace es el límite de aislamiento — nada cruza fronteras.
     Con ``ctx=None`` devuelve ``None`` — sin filtro (CLI, importers,
-    tests de capa storage).
+    tests de capa storage). La frontera de project se compone encima.
     """
     if ctx is None:
         return None
@@ -180,6 +208,7 @@ def _vis_eventos(ctx: Contexto | None) -> ColumnElement[bool] | None:
             EventoModel.autor_id == ctx.usuario_id,
             EventoModel.autor_id.is_(None),
         ),
+        *_predicado_proyecto(EventoModel, ctx),
     )
 
 
@@ -194,6 +223,7 @@ def _vis_generico(modelo: Any, ctx: Contexto | None) -> ColumnElement[bool] | No
             modelo.autor_id == ctx.usuario_id,
             modelo.autor_id.is_(None),
         ),
+        *_predicado_proyecto(modelo, ctx),
     )
 
 
@@ -2664,7 +2694,8 @@ class IntencionProspectivaRepository:
                     IntencionProspectivaModel.autor_id == self._ctx.usuario_id,
                     IntencionProspectivaModel.autor_id.is_(None),
                 ),
-            )
+            ),
+            *_predicado_proyecto(IntencionProspectivaModel, self._ctx),
         ]
 
     async def crear(self, intencion: IntencionProspectivaModel) -> IntencionProspectivaModel:
@@ -2982,7 +3013,8 @@ class BorradorRepository:
                     BorradorModel.autor_id == self._ctx.usuario_id,
                     BorradorModel.autor_id.is_(None),
                 ),
-            )
+            ),
+            *_predicado_proyecto(BorradorModel, self._ctx),
         ]
 
     async def crear(self, borrador: BorradorModel) -> BorradorModel:
@@ -3055,7 +3087,10 @@ class PrediccionRepository:
         """Predicciones son de workspace — no llevan scope propio."""
         if self._ctx is None:
             return []
-        return [PrediccionModel.workspace_id == self._ctx.workspace_id]
+        return [
+            PrediccionModel.workspace_id == self._ctx.workspace_id,
+            *_predicado_proyecto(PrediccionModel, self._ctx),
+        ]
 
     async def crear(self, prediccion: PrediccionModel) -> PrediccionModel:
         """Persiste la afirmación con su confianza declarada."""
@@ -3116,7 +3151,10 @@ class SesionRepository:
         """Sesiones son de workspace — no llevan scope propio."""
         if self._ctx is None:
             return []
-        return [SesionModel.workspace_id == self._ctx.workspace_id]
+        return [
+            SesionModel.workspace_id == self._ctx.workspace_id,
+            *_predicado_proyecto(SesionModel, self._ctx),
+        ]
 
     async def crear(self, sesion: SesionModel) -> SesionModel:
         """Persiste la sesión abierta."""

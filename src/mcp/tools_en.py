@@ -39,6 +39,7 @@ async def remember(
     with_whom: str | None = None,
     scope: Literal["personal", "workspace"] = "personal",
     workspace: str | None = None,
+    project: str | None = None,
     memory_kind: Literal["episodic", "semantic", "procedural"] | None = None,
     emotional_state: float | None = None,
     parametric: bool = False,
@@ -95,6 +96,9 @@ async def remember(
             workspace team).
         workspace: Slug or UUID of the target workspace (overrides the
             key's default). Requires membership.
+        project: Slug or UUID of the project inside the effective
+            workspace. Requires project membership; archived projects
+            reject writes. Omit for workspace-level memory.
         memory_kind: ADR-003 — "episodic", "semantic" or "procedural"
             when the caller already knows (e.g. a check-in declares
             "episodic"). Omit to let the classifier estimate it.
@@ -134,6 +138,7 @@ async def remember(
             con_quien=with_whom,
             scope=scope,
             workspace=workspace,
+            proyecto=project,
             tipo_memoria=tipo_memoria_es(memory_kind),
             estado_emocional=emotional_state,
             parametrica=parametric,
@@ -229,6 +234,7 @@ async def list_goals(
     status: str = "active",
     branch: str = "main",
     workspace: str | None = None,
+    project: str | None = None,
 ) -> list[dict[str, Any]]:
     """Lists the user's declared goals, filtered by status.
 
@@ -248,7 +254,10 @@ async def list_goals(
     """
     return traducir_payload(
         await _es._objetivos(
-            None if status == "*" else estado_objetivo_es(status), branch, workspace
+            None if status == "*" else estado_objetivo_es(status),
+            branch,
+            workspace,
+            project,
         )
     )
 
@@ -262,6 +271,7 @@ async def create_goal(
     branch: str = "main",
     scope: Literal["personal", "workspace"] = "personal",
     workspace: str | None = None,
+    project: str | None = None,
 ) -> dict[str, Any]:
     """Registers a declared goal in the universe line.
 
@@ -294,6 +304,7 @@ async def create_goal(
             branch,
             scope,
             workspace,
+            project,
         )
     )
 
@@ -333,6 +344,7 @@ async def recall(
     top_n: int = 10,
     branch: str = "main",
     workspace: str | None = None,
+    project: str | None = None,
     max_tokens: int | None = None,
 ) -> list[dict[str, Any]]:
     """Hybrid retrieval over persistent 4D memory.
@@ -360,6 +372,9 @@ async def recall(
         top_n: Max direct results.
         branch: Universe line; "*" searches every branch.
         workspace: Slug or UUID; None uses the key's default.
+        project: Slug or UUID inside the effective workspace —
+            narrows the search to that project. Omit to search every
+            accessible project plus workspace-level memory.
         max_tokens: Approximate cap on the serialized results —
             overflow is reported as "truncated" with "omitted" count.
 
@@ -371,7 +386,14 @@ async def recall(
         reminder/episode enrichments).
     """
     return traducir_payload(
-        await _es._consultar(query, top_n, None if branch == "*" else branch, workspace, max_tokens)
+        await _es._consultar(
+            query,
+            top_n,
+            None if branch == "*" else branch,
+            workspace,
+            project,
+            max_tokens,
+        )
     )
 
 
@@ -380,6 +402,7 @@ async def gap_map(
     query: str,
     top_n: int = 10,
     workspace: str | None = None,
+    project: str | None = None,
 ) -> dict[str, Any]:
     """Epistemic gaps: what the query did NOT cover in memory.
 
@@ -399,7 +422,9 @@ async def gap_map(
         Dict with detected "gaps" (typed reasons + suggestions) and
         whether the gap is total ("is_total_gap").
     """
-    return traducir_payload(await _es._mapa_lagunas(query, top_n, workspace))
+    return traducir_payload(
+        await _es._mapa_lagunas(query, top_n, workspace, project)
+    )
 
 
 @mcp_server.tool()
@@ -409,6 +434,7 @@ async def timeline(
     limit: int = 100,
     branch: str = "main",
     workspace: str | None = None,
+    project: str | None = None,
 ) -> list[dict[str, Any]]:
     """The universe line: events between two timestamps, in order.
 
@@ -434,6 +460,7 @@ async def timeline(
             limit,
             None if branch == "*" else branch,
             workspace=workspace,
+            proyecto=project,
         )
     )
 
@@ -607,6 +634,7 @@ async def entity(
     name: str,
     max_mentions: int = 8,
     workspace: str | None = None,
+    project: str | None = None,
 ) -> dict[str, Any]:
     """Entity card: everything memory knows about a name.
 
@@ -625,7 +653,9 @@ async def entity(
         Dict with "found", "name", "card", "graph", "mentions",
         "backlinks" and temporal "span".
     """
-    return traducir_payload(await _es._entidad(name, max_mentions, workspace))
+    return traducir_payload(
+        await _es._entidad(name, max_mentions, workspace, project)
+    )
 
 
 @mcp_server.tool()
@@ -793,6 +823,7 @@ async def create_intention(
     when: str | None = None,
     threshold: float = 0.6,
     workspace: str | None = None,
+    project: str | None = None,
 ) -> dict[str, Any]:
     """Prospective memory: an intention that fires later.
 
@@ -814,7 +845,11 @@ async def create_intention(
         Dict with the created intention ("id", "trigger_kind",
         "trigger_value").
     """
-    return traducir_payload(await _es._crear_intencion(intention, at, when, threshold, workspace))
+    return traducir_payload(
+        await _es._crear_intencion(
+            intention, at, when, threshold, workspace, project
+        )
+    )
 
 
 @mcp_server.tool()
@@ -856,7 +891,9 @@ async def cancel_intention(intention_id: str, workspace: str | None = None) -> d
 
 
 @mcp_server.tool()
-async def consolidate_memory(workspace: str | None = None) -> dict[str, Any]:
+async def consolidate_memory(
+    workspace: str | None = None, project: str | None = None
+) -> dict[str, Any]:
     """Sleep cycle: consolidation over recent memory.
 
     USE WHEN: a consolidation pass is due (typically nightly or after
@@ -871,7 +908,7 @@ async def consolidate_memory(workspace: str | None = None) -> dict[str, Any]:
         Consolidation report: "promoted", "strengthened", "archived",
         "gists", "rem" pairs and the legible "summary".
     """
-    return traducir_payload(await _es._consolidar(workspace))
+    return traducir_payload(await _es._consolidar(workspace, project))
 
 
 @mcp_server.tool()
@@ -990,6 +1027,7 @@ async def save_draft(
     content: str,
     dimension: Literal["cognitive", "somatic", "behavioral"] = "cognitive",
     workspace: str | None = None,
+    project: str | None = None,
 ) -> dict[str, Any]:
     """Working-memory buffer: saves a draft with TTL (Baddeley buffer).
 
@@ -1008,11 +1046,15 @@ async def save_draft(
         Dict with "id", expiry and remaining buffer "capacity".
     """
     dim_es = dimension_es(dimension) or "cognitiva"
-    return traducir_payload(await _es._recordar_borrador(content, dim_es, workspace))
+    return traducir_payload(
+        await _es._recordar_borrador(content, dim_es, workspace, project)
+    )
 
 
 @mcp_server.tool()
-async def list_drafts(workspace: str | None = None) -> list[dict[str, Any]]:
+async def list_drafts(
+    workspace: str | None = None, project: str | None = None
+) -> list[dict[str, Any]]:
     """Lists live working-memory drafts (with TTL countdown).
 
     USE WHEN: checking what the buffer currently holds before it
@@ -1024,11 +1066,17 @@ async def list_drafts(workspace: str | None = None) -> list[dict[str, Any]]:
     Returns:
         List of draft dicts with remaining TTL and "rehearsals".
     """
-    return traducir_payload(await _es._listar_borrador(workspace))
+    return traducir_payload(
+        await _es._listar_borrador(workspace, project)
+    )
 
 
 @mcp_server.tool()
-async def rehearse_draft(draft_id: str, workspace: str | None = None) -> dict[str, Any]:
+async def rehearse_draft(
+    draft_id: str,
+    workspace: str | None = None,
+    project: str | None = None,
+) -> dict[str, Any]:
     """Rehearses a draft: refreshes TTL and may promote it to memory.
 
     USE WHEN: a draft keeps being useful — each rehearsal renews it;
@@ -1041,7 +1089,9 @@ async def rehearse_draft(draft_id: str, workspace: str | None = None) -> dict[st
     Returns:
         Dict with "id", refreshed TTL and "promoted" when applicable.
     """
-    return traducir_payload(await _es._ensayar_borrador(draft_id, workspace))
+    return traducir_payload(
+        await _es._ensayar_borrador(draft_id, workspace, project)
+    )
 
 
 @mcp_server.tool()
@@ -1479,3 +1529,231 @@ async def approve_all_pending(workspace: str | None = None) -> dict[str, Any]:
         Dict with count of "approved" events.
     """
     return traducir_payload(await _es._aprobar_pendientes(workspace))
+
+
+# ── Projects (spec 2026-10-30) ────────────────────────────────────
+# Projects subdivide a workspace: closed compartments with their own
+# membership. NULL project_id = workspace-level memory. kind="vault"
+# = minable archive (sleep reads but never mutates). state="archived"
+# blocks writes, stays searchable.
+
+
+@mcp_server.tool()
+async def create_project(
+    slug: str,
+    name: str,
+    description: str | None = None,
+    kind: Literal["regular", "vault"] = "regular",
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Creates a project inside the effective workspace.
+
+    USE WHEN: carving memory into compartments — a client, a vault of
+    messages, a lab. The creator becomes project owner; membership is
+    closed (workspace owner overrides). A good ``description`` is what
+    semantic routing uses to pick the right project — write it well.
+    DO NOT use for workspaces — they are a different isolation level.
+
+    Args:
+        slug: Unique slug within the workspace (lowercase, dashes).
+        name: Human-readable name.
+        description: Purpose of the project — agents route memories
+            by this semantics, not by slug.
+        kind: "regular" (default) or "vault" — a vault is a minable
+            archive: sleep reads it for mining but never mutates it.
+        workspace: Slug or UUID; None uses the key's default.
+
+    Returns:
+        Dict with the created project ("id", "slug", "kind",
+        "state", "vault").
+    """
+    return traducir_payload(
+        await _es._crear_proyecto(slug, name, description, kind, workspace)
+    )
+
+
+@mcp_server.tool()
+async def list_projects(workspace: str | None = None) -> list[dict[str, Any]]:
+    """Lists projects accessible to the caller in the workspace.
+
+    USE WHEN: routing a memory — the roster (slug + name +
+    description + kind) is what semantic project routing resolves
+    against. Never route by hardcoded slug: match the memory's topic
+    to the project's described purpose.
+    DO NOT use for workspaces — ``list_workspaces``.
+
+    Args:
+        workspace: Slug or UUID; None uses the key's default.
+
+    Returns:
+        List of projects with "slug", "name", "description", "kind",
+        "state" and "vault" flag. Members see only their projects;
+        the workspace owner sees all.
+    """
+    return traducir_payload(await _es._listar_proyectos(workspace))
+
+
+@mcp_server.tool()
+async def update_project(
+    project: str,
+    name: str | None = None,
+    description: str | None = None,
+    state: Literal["active", "archived"] | None = None,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Updates a project's name, description or lifecycle state.
+
+    USE WHEN: renaming, fixing the routing description, or archiving
+    — an archived project rejects writes but stays searchable (the
+    memory compartment closes, nothing is deleted). Reactivate with
+    state="active".
+    Requires project owner (or workspace owner).
+
+    Args:
+        project: Slug or UUID of the project.
+        name: New human-readable name.
+        description: New purpose text (drives semantic routing).
+        state: "archived" (read-only) or "active" (reopened).
+        workspace: Slug or UUID; None uses the key's default.
+
+    Returns:
+        Dict with the updated project.
+    """
+    return traducir_payload(
+        await _es._actualizar_proyecto(
+            project,
+            name,
+            description,
+            None if state is None else {"active": "activo", "archived": "archivado"}[state],
+            workspace,
+        )
+    )
+
+
+@mcp_server.tool()
+async def delete_project(
+    project: str,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Deletes a project — its memories fall back to workspace level.
+
+    USE WHEN: a compartment is truly dead. Deletion is safe for the
+    memories: every event inside gets project_id NULL (workspace-
+    general), nothing is lost — only the organization. Members are
+    dropped. Requires project owner (or workspace owner).
+
+    Args:
+        project: Slug or UUID of the project.
+        workspace: Slug or UUID; None uses the key's default.
+
+    Returns:
+        Dict with "deleted": true.
+    """
+    return traducir_payload(await _es._eliminar_proyecto(project, workspace))
+
+
+@mcp_server.tool()
+async def list_project_members(
+    project: str,
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Lists the members of a project with their roles.
+
+    Args:
+        project: Slug or UUID of the project.
+        workspace: Slug or UUID; None uses the key's default.
+
+    Returns:
+        List with "handle", "name" and "role" (owner|member|viewer).
+    """
+    return traducir_payload(await _es._miembros_proyecto(project, workspace))
+
+
+@mcp_server.tool()
+async def add_project_member(
+    project: str,
+    handle: str,
+    role: Literal["owner", "member", "viewer"] = "member",
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Adds a workspace member to a project.
+
+    USE WHEN: granting access to a closed compartment. The handle
+    must already belong to the containing workspace — project
+    membership is a subset of workspace membership.
+    Requires project owner (or workspace owner).
+
+    Args:
+        project: Slug or UUID of the project.
+        handle: User handle (from ``list_members``).
+        role: "member" (default, read-write), "viewer" (read-only)
+            or "owner" (can manage members and settings).
+        workspace: Slug or UUID; None uses the key's default.
+
+    Returns:
+        Dict with "added" handle, "project" and "role".
+    """
+    return traducir_payload(
+        await _es._agregar_miembro_proyecto(project, handle, role, workspace)
+    )
+
+
+@mcp_server.tool()
+async def remove_project_member(
+    project: str,
+    handle: str,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Removes a member from a project (workspace access stays).
+
+    Args:
+        project: Slug or UUID of the project.
+        handle: User handle.
+        workspace: Slug or UUID; None uses the key's default.
+
+    Returns:
+        Dict with "removed" handle and "project".
+    """
+    return traducir_payload(
+        await _es._quitar_miembro_proyecto(project, handle, workspace)
+    )
+
+
+@mcp_server.tool()
+async def assign_project(
+    event_ids: list[str] | None = None,
+    query: str | None = None,
+    from_unix: int | None = None,
+    to_unix: int | None = None,
+    project: str | None = None,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Moves memories between projects (or to workspace level).
+
+    USE WHEN: reorganizing memory — "these 30 messages were really
+    about ruba", or the cartographer migrating a topic into its own
+    compartment. Select by ``event_ids`` and/or ``query`` + time
+    range. ``project`` omitted or "general" sends events to the
+    workspace level (project_id NULL).
+    Only events the caller can see move — the operation never
+    touches invisible memory. Requires write access in the target
+    project.
+
+    Args:
+        event_ids: Explicit event UUIDs to move.
+        query: Text filter for batch moves (semantic selection).
+        from_unix: Range start (Unix epoch), optional.
+        to_unix: Range end (Unix epoch), optional.
+        project: Slug/UUID of the target project; omit/"general" for
+            workspace-level (NULL).
+        workspace: Slug or UUID; None uses the key's default.
+
+    Returns:
+        Dict with "moved" count and the target "project" (null for
+        workspace level).
+    """
+    return traducir_payload(
+        await _es._asignar_proyecto(
+            project, event_ids, query, from_unix, to_unix, workspace
+        )
+    )

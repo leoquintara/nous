@@ -63,6 +63,7 @@ class EventRequest(BaseModel):
     with_whom: str | None = Field(default=None, max_length=128)
     scope: Literal["personal", "workspace"] = "personal"
     workspace: str | None = Field(default=None, max_length=64)
+    project: str | None = Field(default=None, max_length=80)
     # ADR-003: user-declared fields (the automatic estimator
     # does not overwrite them — see fijar_tipo_memoria).
     memory_kind: Literal["episodic", "semantic", "procedural"] | None = None
@@ -148,6 +149,7 @@ class EventResponse(BaseModel):
     with_whom: str | None = None
     scope: str = "personal"
     workspace_id: str | None = None
+    project_id: str | None = None
     author_id: str | None = None
     # ADR-003 — memory patterns (optional for compatibility).
     memory_kind: str | None = None
@@ -391,6 +393,51 @@ class MemberPatch(BaseModel):
     """Member role change (owner is not assignable)."""
 
     role: Literal["member", "viewer"]
+
+
+class ProjectRequest(BaseModel):
+    """Body to create a project inside a workspace."""
+
+    slug: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=10_000)
+    kind: Literal["regular", "vault"] = "regular"
+
+
+class ProjectPatch(BaseModel):
+    """Partial changes to a project."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=10_000)
+    state: Literal["active", "archived"] | None = None
+
+
+class ProjectSummary(BaseModel):
+    """Project inside a workspace (spec 2026-10-30)."""
+
+    id: str
+    slug: str
+    name: str
+    description: str | None = None
+    kind: str
+    state: str
+    vault: bool = False
+    created_at: str | None = None
+
+
+class ProjectMemberRequest(BaseModel):
+    """Body to add a member to a project."""
+
+    handle: str = Field(min_length=1, max_length=64)
+    role: Literal["owner", "member", "viewer"] = "member"
+
+
+class ProjectMemberSummary(BaseModel):
+    """Project member with their role."""
+
+    handle: str
+    name: str | None = None
+    role: str
 
 
 class InvitationRequest(BaseModel):

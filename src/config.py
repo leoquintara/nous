@@ -103,6 +103,7 @@ class Settings(BaseSettings):
     license_activation_url: str | None = None
     max_usuarios_libres: int = 1
     max_workspaces_libres: int = 3
+    max_projects_libres: int = 5
     # ADR-002 — proveedores de decisión System One. "none" = sin
     # provider → heurísticos puros. "auto" intenta Laya local →
     # Ollama → nada. La API key de Jev (externo) exige además el

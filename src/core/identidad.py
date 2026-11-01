@@ -17,6 +17,7 @@ import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -25,6 +26,8 @@ from src.storage.database import get_session
 from src.storage.models import (
     ApiKeyModel,
     MiembroModel,
+    ProjectMemberModel,
+    ProjectModel,
     UsuarioModel,
     WorkspaceModel,
 )
@@ -48,21 +51,42 @@ class Contexto:
 
     ``usuario_id=None`` indica modo desarrollo sin token — el acceso
     queda sin atribuir (solo válido en local, ver auth.py).
+
+    ``proyecto_id`` es el project destino de esta operación (lo fija
+    ``resolver_proyecto`` tras un ``project=`` explícito, o la key
+    scoped). ``projects_visibles`` es el universo de projects
+    legibles: ``None`` = todos los del workspace (owner/desarrollo);
+    frozenset = membresías del usuario. ``key_proyecto_id`` marca una
+    key ``ns_u_*`` con scope estricto — colapsa la visibilidad a ese
+    único project, ni siquiera el nivel workspace (NULL).
     """
 
     usuario_id: uuid.UUID | None
     workspace_id: uuid.UUID
     rol: str  # 'owner' | 'member' | 'viewer'
     key_id: uuid.UUID | None = None
+    proyecto_id: uuid.UUID | None = None
+    proyecto_rol: str | None = None  # 'owner' | 'member' | 'viewer'
+    proyecto_kind: str | None = None  # 'regular' | 'vault'
+    proyecto_estado: str | None = None  # 'activo' | 'archivado'
+    projects_visibles: frozenset[uuid.UUID] | None = None
+    key_proyecto_id: uuid.UUID | None = None
 
     @property
     def puede_escribir(self) -> bool:
-        """True si el rol permite crear/modificar memorias."""
-        return self.rol in ("owner", "member")
+        """True si el rol permite crear/modificar memorias.
+
+        Dentro de un project manda ``proyecto_rol``; fuera, el rol
+        del workspace.
+        """
+        rol = self.proyecto_rol if self.proyecto_id else self.rol
+        return rol in ("owner", "member")
 
     @property
     def es_owner(self) -> bool:
-        """True si el rol es owner del workspace actual."""
+        """True si el rol es owner del ámbito efectivo."""
+        if self.proyecto_id:
+            return self.proyecto_rol == "owner"
         return self.rol == "owner"
 
 
@@ -196,15 +220,38 @@ async def resolver_contexto(
     if (cached := _cache_ctx.get(token)) and cached[1] > ahora:
         return cached[0]
     ctx = await _resolver_key_usuario(engine, token)
-    if ctx is not None:
+    # Las keys con scope de project no se cachean: su membresía se
+    # re-verifica en cada request (grill-me §6 — si el usuario pierde
+    # la membresía, la key deja de resolver de inmediato).
+    if ctx is not None and ctx.key_proyecto_id is None:
         _cache_ctx[token] = (ctx, ahora + _TTL_CACHE_CTX)
     return ctx
+
+
+async def _projects_visibles_usuario(
+    session: Any, workspace_id: uuid.UUID, usuario_id: uuid.UUID
+) -> frozenset[uuid.UUID]:
+    """IDs de projects del workspace donde el usuario es miembro."""
+    stmt = select(ProjectMemberModel.project_id).where(
+        ProjectMemberModel.usuario_id == usuario_id,
+        ProjectMemberModel.project_id.in_(
+            select(ProjectModel.id).where(
+                ProjectModel.workspace_id == workspace_id
+            )
+        ),
+    )
+    return frozenset((await session.execute(stmt)).scalars().all())
 
 
 async def _resolver_key_usuario(
     engine: AsyncEngine, key: str
 ) -> Contexto | None:
-    """Resuelve una key ``ns_u_*`` a su (usuario, workspace, rol)."""
+    """Resuelve una key ``ns_u_*`` a su (usuario, workspace, rol).
+
+    Una key con ``project_id`` (scope estricto) ancla el workspace al
+    del project y colapsa la visibilidad a ese único project — su
+    membresía se verifica fresca en cada resolución.
+    """
     async with get_session(engine) as session:
         fila = (
             await session.execute(
@@ -216,7 +263,14 @@ async def _resolver_key_usuario(
         ).scalar_one_or_none()
         if fila is None:
             return None
+        proyecto_key: ProjectModel | None = None
+        if fila.project_id is not None:
+            proyecto_key = await session.get(ProjectModel, fila.project_id)
+            if proyecto_key is None:
+                return None
         workspace_id = fila.workspace_default_id
+        if proyecto_key is not None:
+            workspace_id = proyecto_key.workspace_id
         if workspace_id is None:
             # Key sin workspace por defecto: usa el de su primera
             # membresía; si el usuario no pertenece a ninguno, la
@@ -241,6 +295,30 @@ async def _resolver_key_usuario(
         ).scalar_one_or_none()
         if rol is None:
             return None
+        proyecto_rol: str | None = None
+        if proyecto_key is not None:
+            if rol == "owner":
+                proyecto_rol = "owner"
+            else:
+                proyecto_rol = (
+                    await session.execute(
+                        select(ProjectMemberModel.rol).where(
+                            ProjectMemberModel.project_id
+                            == proyecto_key.id,
+                            ProjectMemberModel.usuario_id
+                            == fila.usuario_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if proyecto_rol is None:
+                    return None
+        visibles = (
+            None
+            if rol == "owner"
+            else await _projects_visibles_usuario(
+                session, workspace_id, fila.usuario_id
+            )
+        )
         fila.ultimo_uso = (
             await session.execute(select(func.now()))
         ).scalar_one()
@@ -250,6 +328,26 @@ async def _resolver_key_usuario(
             workspace_id=workspace_id,
             rol=rol,
             key_id=fila.id,
+            proyecto_id=(
+                proyecto_key.id if proyecto_key is not None else None
+            ),
+            proyecto_rol=proyecto_rol,
+            proyecto_kind=(
+                proyecto_key.kind if proyecto_key is not None else None
+            ),
+            proyecto_estado=(
+                proyecto_key.estado
+                if proyecto_key is not None
+                else None
+            ),
+            projects_visibles=(
+                frozenset({proyecto_key.id})
+                if proyecto_key is not None
+                else visibles
+            ),
+            key_proyecto_id=(
+                proyecto_key.id if proyecto_key is not None else None
+            ),
         )
 
 
@@ -276,6 +374,10 @@ async def resolver_workspace(
     """
     from src.core.exceptions import ErrorValidacion, PermisoDenegadoError
 
+    if ctx.key_proyecto_id is not None:
+        raise PermisoDenegadoError(
+            "project-scoped key cannot switch workspaces"
+        )
     try:
         ws_id: uuid.UUID | None = uuid.UUID(ref)
     except ValueError:
@@ -309,12 +411,115 @@ async def resolver_workspace(
             raise PermisoDenegadoError(
                 f"no membership in workspace: {ref!r}"
             )
+        visibles = (
+            None
+            if rol == "owner"
+            else await _projects_visibles_usuario(
+                session, ws.id, ctx.usuario_id
+            )
+        )
         return Contexto(
             usuario_id=ctx.usuario_id,
             workspace_id=ws.id,
             rol=rol,
             key_id=ctx.key_id,
+            projects_visibles=visibles,
         )
+
+
+async def resolver_proyecto(
+    engine: AsyncEngine, ctx: Contexto, ref: str
+) -> Contexto:
+    """Resuelve un ``project=`` dentro del workspace efectivo.
+
+    ``ref`` acepta slug o UUID del project — siempre interpretado en
+    ``ctx.workspace_id`` (los slugs son únicos por workspace). El
+    owner del workspace entra a cualquier project con rol owner; el
+    resto necesita membresía en ``project_members``. Una key con
+    scope de project solo puede resolver ese mismo project.
+
+    Args:
+        engine: Engine async para abrir la sesión de resolución.
+        ctx: Contexto autenticado actual (workspace ya efectivo).
+        ref: Slug o UUID del project destino.
+
+    Returns:
+        Contexto con ``proyecto_id``/``proyecto_rol`` del destino.
+
+    Raises:
+        ErrorValidacion: Project inexistente en el workspace.
+        PermisoDenegadoError: Sin membresía, o key scoped a otro.
+    """
+    from src.core.exceptions import ErrorValidacion, PermisoDenegadoError
+
+    try:
+        proyecto_ref: uuid.UUID | None = uuid.UUID(ref)
+    except ValueError:
+        proyecto_ref = None
+    async with get_session(engine) as session:
+        proyecto = (
+            await session.execute(
+                select(ProjectModel).where(
+                    ProjectModel.workspace_id == ctx.workspace_id,
+                    (ProjectModel.id == proyecto_ref)
+                    if proyecto_ref is not None
+                    else (ProjectModel.slug == ref),
+                )
+            )
+        ).scalar_one_or_none()
+        if proyecto is None:
+            raise ErrorValidacion(
+                f"project not found in workspace: {ref!r} — "
+                f"available: {await _slugs_disponibles(session, ctx)}"
+            )
+        if ctx.key_proyecto_id is not None and (
+            ctx.key_proyecto_id != proyecto.id
+        ):
+            raise PermisoDenegadoError(
+                "project-scoped key cannot resolve other projects"
+            )
+        proyecto_rol: str | None
+        if ctx.usuario_id is None or ctx.rol == "owner":
+            proyecto_rol = "owner"
+        else:
+            proyecto_rol = (
+                await session.execute(
+                    select(ProjectMemberModel.rol).where(
+                        ProjectMemberModel.project_id == proyecto.id,
+                        ProjectMemberModel.usuario_id == ctx.usuario_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if proyecto_rol is None:
+                raise PermisoDenegadoError(
+                    f"no membership in project: {ref!r} — "
+                    "ask the project owner for access"
+                )
+        return Contexto(
+            usuario_id=ctx.usuario_id,
+            workspace_id=ctx.workspace_id,
+            rol=ctx.rol,
+            key_id=ctx.key_id,
+            proyecto_id=proyecto.id,
+            proyecto_rol=proyecto_rol,
+            proyecto_kind=proyecto.kind,
+            proyecto_estado=proyecto.estado,
+            projects_visibles=ctx.projects_visibles,
+            key_proyecto_id=ctx.key_proyecto_id,
+        )
+
+
+async def _slugs_disponibles(session: Any, ctx: Contexto) -> str:
+    """Slugs de projects accesibles al llamante (para errores útiles)."""
+    stmt = select(ProjectModel.slug).where(
+        ProjectModel.workspace_id == ctx.workspace_id
+    )
+    if ctx.projects_visibles is not None:
+        stmt = stmt.where(
+            ProjectModel.id.in_(ctx.projects_visibles)
+        )
+    slugs = sorted((await session.execute(stmt)).scalars().all())
+    return ", ".join(slugs) if slugs else "(none)"
 
 
 async def contexto_actual(engine: AsyncEngine) -> Contexto:
@@ -437,6 +642,45 @@ async def _verificar_cupo_workspaces(engine: AsyncEngine) -> None:
         raise CupoExcedidoError(
             f"free edition limited to {maximo} workspaces — "
             "activate NOUS_LICENSE_KEY to create more"
+        )
+
+
+async def _contar_projects(
+    engine: AsyncEngine, workspace_id: uuid.UUID
+) -> int:
+    """Cuenta projects de un workspace (cupo por workspace, spec §10)."""
+    async with get_session(engine) as session:
+        return int(
+            (
+                await session.execute(
+                    select(func.count())
+                    .select_from(ProjectModel)
+                    .where(ProjectModel.workspace_id == workspace_id)
+                )
+            ).scalar_one()
+        )
+
+
+async def _verificar_cupo_projects(
+    engine: AsyncEngine, ctx: Contexto
+) -> None:
+    """Exige cupo para un project nuevo en la edición libre.
+
+    Owner del workspace e instalaciones licenciadas no tienen techo;
+    el resto, ``max_projects_libres`` por workspace (default 5).
+
+    Raises:
+        CupoExcedidoError: Sin licencia, no-owner y cupo alcanzado.
+    """
+    if licencia_activa() or ctx.es_owner:
+        return
+    from src.config import get_settings
+
+    maximo = get_settings().max_projects_libres
+    if await _contar_projects(engine, ctx.workspace_id) >= maximo:
+        raise CupoExcedidoError(
+            f"free edition limited to {maximo} projects per "
+            "workspace — activate NOUS_LICENSE_KEY for unlimited"
         )
 
 

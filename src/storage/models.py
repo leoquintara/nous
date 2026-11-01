@@ -99,6 +99,94 @@ class MiembroModel(Base):
     )
 
 
+class ProjectModel(Base):
+    """Subdivisión de un workspace con frontera propia de membresía.
+
+    Workspace = espacio de equipo; project = compartimento semántico
+    (un cliente, una bóveda de mensajes). ``project_id NULL`` en las
+    entidades de memoria = contexto del workspace entero. ``kind``
+    ``vault`` = archivo minable: el sueño lee pero nunca muta sus
+    items. ``estado='archivado'`` = read-only reconsultable.
+    """
+
+    __tablename__ = "projects"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    slug: Mapped[str] = mapped_column(String(80), nullable=False)
+    nombre: Mapped[str] = mapped_column(String(200), nullable=False)
+    descripcion: Mapped[str | None] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(
+        String(20), server_default="regular", nullable=False
+    )
+    estado: Mapped[str] = mapped_column(
+        String(20), server_default="activo", nullable=False
+    )
+    creado_por: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("usuarios.id", ondelete="SET NULL"),
+    )
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('regular','vault')", name="ck_projects_kind"
+        ),
+        CheckConstraint(
+            "estado IN ('activo','archivado')",
+            name="ck_projects_estado",
+        ),
+        UniqueConstraint(
+            "workspace_id", "slug", name="uq_projects_workspace_slug"
+        ),
+        Index("ix_projects_workspace", "workspace_id"),
+    )
+
+
+class ProjectMemberModel(Base):
+    """Membresía de un usuario a un project con su rol.
+
+    La frontera de visibilidad del project: solo sus miembros lo ven
+    (el owner del workspace ve todo por override). Membresía ⊆
+    workspace — el usuario debe pertenecer primero al workspace.
+    """
+
+    __tablename__ = "project_members"
+
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    usuario_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("usuarios.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    rol: Mapped[str] = mapped_column(String(20), server_default="member")
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "rol IN ('owner','member','viewer')",
+            name="ck_project_members_rol",
+        ),
+        Index("ix_project_members_usuario", "usuario_id"),
+    )
+
+
 class ApiKeyModel(Base):
     """Llave ``ns_u_*`` de un usuario — la key ES la credencial.
 
@@ -124,6 +212,13 @@ class ApiKeyModel(Base):
     workspace_default_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("workspaces.id", ondelete="SET NULL"),
+    )
+    # Key con scope de project (grill-me Q9): no nula → el contexto
+    # colapsa a ese único project — ni siquiera el nivel workspace
+    # (NULL) es visible. La membresía se re-verifica en cada request.
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="SET NULL"),
     )
     nombre: Mapped[str] = mapped_column(String(100), server_default="")
     ultimo_uso: Mapped[datetime | None] = mapped_column(
@@ -209,6 +304,13 @@ class EventoModel(Base):
     autor_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("usuarios.id", ondelete="SET NULL"),
+    )
+    # NULL = memoria del workspace entero; no nulo = vive en un
+    # project con su frontera de membresía (SET NULL al borrarlo:
+    # baja al nivel workspace, nunca se pierde).
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="SET NULL"),
     )
     timestamp_unix: Mapped[int] = mapped_column(BigInteger, nullable=False)
     dimension: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -303,6 +405,7 @@ class EventoModel(Base):
         ),
         Index("ix_eventos_timestamp", "timestamp_unix"),
         Index("ix_eventos_workspace", "workspace_id"),
+        Index("ix_eventos_project", "project_id"),
         Index("ix_eventos_scope", "scope"),
         Index("ix_eventos_autor", "autor_id"),
         Index("ix_eventos_tipo", "tipo"),
@@ -501,6 +604,10 @@ class TrayectoriaModel(Base):
         UUID(as_uuid=True),
         ForeignKey("usuarios.id", ondelete="SET NULL"),
     )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="SET NULL"),
+    )
     tipo: Mapped[str] = mapped_column(String(30), nullable=False)
     fecha_inicio: Mapped[int] = mapped_column(BigInteger, nullable=False)
     fecha_fin: Mapped[int | None] = mapped_column(BigInteger)
@@ -520,6 +627,7 @@ class TrayectoriaModel(Base):
             name="ck_trayectorias_scope",
         ),
         Index("ix_trayectorias_workspace", "workspace_id"),
+        Index("ix_trayectorias_project", "project_id"),
     )
 
 
@@ -548,6 +656,10 @@ class ProyeccionModel(Base):
         UUID(as_uuid=True),
         ForeignKey("usuarios.id", ondelete="SET NULL"),
     )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="SET NULL"),
+    )
     creado_en: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -566,6 +678,7 @@ class ProyeccionModel(Base):
             name="ck_proyecciones_scope",
         ),
         Index("ix_proyecciones_workspace", "workspace_id"),
+        Index("ix_proyecciones_project", "project_id"),
     )
 
 
@@ -642,6 +755,10 @@ class ObjetivoModel(Base):
         UUID(as_uuid=True),
         ForeignKey("usuarios.id", ondelete="SET NULL"),
     )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="SET NULL"),
+    )
     titulo: Mapped[str] = mapped_column(String(200), nullable=False)
     descripcion: Mapped[str | None] = mapped_column(Text)
     dimension: Mapped[str | None] = mapped_column(String(20))
@@ -673,6 +790,7 @@ class ObjetivoModel(Base):
             name="ck_objetivos_scope",
         ),
         Index("ix_objetivos_workspace", "workspace_id"),
+        Index("ix_objetivos_project", "project_id"),
         Index("ix_objetivos_estado", "estado"),
         Index("ix_objetivos_fecha", "fecha_objetivo"),
     )
@@ -769,6 +887,10 @@ class IntencionProspectivaModel(Base):
         UUID(as_uuid=True),
         ForeignKey("usuarios.id", ondelete="SET NULL"),
     )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="SET NULL"),
+    )
     creada_en: Mapped[int] = mapped_column(BigInteger, nullable=False)
     intencion: Mapped[str] = mapped_column(Text, nullable=False)
     trigger_tipo: Mapped[str] = mapped_column(String(10), nullable=False)
@@ -798,6 +920,7 @@ class IntencionProspectivaModel(Base):
             name="ck_intenciones_trigger_tipo",
         ),
         Index("ix_intenciones_workspace", "workspace_id", "ejecutada", "cancelada"),
+        Index("ix_intenciones_prospectivas_project", "project_id"),
         Index("ix_intenciones_trigger", "trigger_tipo"),
     )
 
@@ -872,6 +995,10 @@ class BorradorModel(Base):
         UUID(as_uuid=True),
         ForeignKey("usuarios.id", ondelete="SET NULL"),
     )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="SET NULL"),
+    )
     contenido: Mapped[str] = mapped_column(Text, nullable=False)
     dimension: Mapped[str] = mapped_column(
         String(20), server_default="cognitiva"
@@ -888,6 +1015,7 @@ class BorradorModel(Base):
             name="ck_borradores_dimension",
         ),
         Index("ix_borradores_workspace", "workspace_id", "expira_en"),
+        Index("ix_borradores_project", "project_id"),
     )
 
 
@@ -953,6 +1081,10 @@ class PrediccionModel(Base):
         UUID(as_uuid=True),
         ForeignKey("usuarios.id", ondelete="SET NULL"),
     )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="SET NULL"),
+    )
     afirmacion: Mapped[str] = mapped_column(Text, nullable=False)
     confianza: Mapped[float] = mapped_column(Float, nullable=False)
     evento_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -969,6 +1101,7 @@ class PrediccionModel(Base):
             name="ck_predicciones_confianza",
         ),
         Index("ix_predicciones_workspace", "workspace_id", "acierto"),
+        Index("ix_predicciones_project", "project_id"),
     )
 
 
@@ -1000,6 +1133,10 @@ class SesionModel(Base):
         UUID(as_uuid=True),
         ForeignKey("usuarios.id", ondelete="SET NULL"),
     )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="SET NULL"),
+    )
     agente: Mapped[str] = mapped_column(String(80), server_default="")
     inicio: Mapped[int] = mapped_column(BigInteger, nullable=False)
     fin: Mapped[int | None] = mapped_column(BigInteger)
@@ -1009,4 +1146,5 @@ class SesionModel(Base):
 
     __table_args__ = (
         Index("ix_sesiones_workspace", "workspace_id", "inicio"),
+        Index("ix_sesiones_project", "project_id"),
     )

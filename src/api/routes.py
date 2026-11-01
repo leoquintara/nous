@@ -59,6 +59,11 @@ from src.api.schemas import (
     PingsStats,
     PredictionRequest,
     PredictRequest,
+    ProjectMemberRequest,
+    ProjectMemberSummary,
+    ProjectPatch,
+    ProjectRequest,
+    ProjectSummary,
     RedeemRequest,
     RedeemResponse,
     RelationResponse,
@@ -171,6 +176,7 @@ async def list_events(
     branch: str = "main",
     split: bool = False,
     workspace: str | None = None,
+    project: str | None = None,
 ) -> list[EventResponse]:
     """Lists universe-line events in a temporal range.
 
@@ -195,6 +201,7 @@ async def list_events(
             None if branch == "*" else branch,
             split,
             workspace,
+            project,
         )
     ]
 
@@ -226,6 +233,7 @@ async def create_event(request_body: EventRequest) -> dict[str, Any]:
             request_body.with_whom,
             request_body.scope,
             request_body.workspace,
+            request_body.project,
             tipo_memoria=tipo_memoria_es(request_body.memory_kind),
             estado_emocional=request_body.emotional_state,
             contexto_extra=request_body.context,
@@ -441,6 +449,7 @@ async def entity_card(
     name: str,
     max_mentions: int = 8,
     workspace: str | None = None,
+    project: str | None = None,
 ) -> dict[str, Any]:
     """Named-entity card.
 
@@ -456,7 +465,9 @@ async def entity_card(
         {"found", "card", "variants", "links", "mentions",
         "open_commitments", "span"}.
     """
-    return traducir_payload(await tools_impl._entidad(name, max_mentions, workspace))
+    return traducir_payload(
+        await tools_impl._entidad(name, max_mentions, workspace, project)
+    )
 
 
 @router.delete("/events/{event_id}", dependencies=[Depends(requerir_escritura)])
@@ -483,6 +494,7 @@ async def search(
     top_n: int = 10,
     branch: str = "main",
     workspace: str | None = None,
+    project: str | None = None,
 ) -> list[dict[str, Any]]:
     """Hybrid 4D search with temporal context (``recall``).
 
@@ -496,7 +508,9 @@ async def search(
         Results with event, scores and temporal context.
     """
     return traducir_payload(
-        await tools_impl._consultar(q, top_n, None if branch == "*" else branch, workspace)
+        await tools_impl._consultar(
+            q, top_n, None if branch == "*" else branch, workspace, project
+        )
     )
 
 
@@ -505,6 +519,7 @@ async def gap_map(
     q: str,
     top_n: int = 10,
     workspace: str | None = None,
+    project: str | None = None,
 ) -> dict[str, Any]:
     """Gap map — what memory does NOT know about the query.
 
@@ -521,7 +536,9 @@ async def gap_map(
         {query, results, coverage, mean_confidence, gaps,
         is_total_gap, parametric_count}.
     """
-    return traducir_payload(await tools_impl._mapa_lagunas(q, top_n, workspace))
+    return traducir_payload(
+        await tools_impl._mapa_lagunas(q, top_n, workspace, project)
+    )
 
 
 @router.post("/projection", dependencies=[Depends(requerir_escritura)])
@@ -1126,6 +1143,182 @@ def _uuid(ref: str) -> uuid.UUID:
         return uuid.UUID(ref)
     except ValueError:
         raise HTTPException(422, f"invalid UUID: {ref!r}") from None
+
+
+# ── Projects (spec 2026-10-30) ────────────────────────────────────
+
+
+def _project_summary(p: Any) -> ProjectSummary:
+    """Translates ProjectModel to the REST schema."""
+    return ProjectSummary(
+        id=str(p.id),
+        slug=p.slug,
+        name=p.nombre,
+        description=p.descripcion,
+        kind=p.kind,
+        state=p.estado,
+        vault=p.kind == "vault",
+        created_at=(p.creado_en.isoformat() if p.creado_en else None),
+    )
+
+
+@router.get(
+    "/workspaces/{ref}/projects",
+    dependencies=[Depends(verificar_token)],
+)
+async def list_projects(ref: str) -> list[ProjectSummary]:
+    """Project roster inside a workspace — the semantic routing source."""
+    from src.core import proyectos as proj
+
+    engine = obtener_engine()
+    ctx = await contexto_actual(engine)
+    ctx_ws = await idn.resolver_workspace(engine, ctx, ref)
+    return [
+        _project_summary(p)
+        for p in await proj.listar_proyectos(engine, ctx_ws)
+    ]
+
+
+@router.post(
+    "/workspaces/{ref}/projects",
+    dependencies=[Depends(requerir_escritura)],
+    status_code=201,
+)
+async def create_project(ref: str, request_body: ProjectRequest) -> ProjectSummary:
+    """Creates a project in the workspace; the caller becomes its owner."""
+    from src.core import proyectos as proj
+
+    engine = obtener_engine()
+    ctx = await contexto_actual(engine)
+    ctx_ws = await idn.resolver_workspace(engine, ctx, ref)
+    proyecto = await proj.crear_proyecto(
+        engine,
+        ctx_ws,
+        request_body.slug,
+        request_body.name,
+        request_body.description,
+        request_body.kind,
+    )
+    return _project_summary(proyecto)
+
+
+@router.get("/projects/{ref}", dependencies=[Depends(verificar_token)])
+async def get_project(ref: str, workspace: str | None = None) -> ProjectSummary:
+    """Returns a project by slug or UUID in the effective workspace."""
+    from src.core import proyectos as proj
+
+    engine = obtener_engine()
+    ctx = await contexto_actual(engine)
+    if workspace is not None:
+        ctx = await idn.resolver_workspace(engine, ctx, workspace)
+    proyecto = await proj.obtener_proyecto(engine, ctx, ref)
+    return _project_summary(proyecto)
+
+
+@router.patch(
+    "/projects/{ref}",
+    dependencies=[Depends(requerir_escritura)],
+)
+async def patch_project(
+    ref: str, request_body: ProjectPatch, workspace: str | None = None
+) -> ProjectSummary:
+    """Updates name/description/state — archived is read-only memory."""
+    from src.core import proyectos as proj
+
+    engine = obtener_engine()
+    ctx = await contexto_actual(engine)
+    if workspace is not None:
+        ctx = await idn.resolver_workspace(engine, ctx, workspace)
+    proyecto = await proj.actualizar_proyecto(
+        engine,
+        ctx,
+        ref,
+        request_body.name,
+        request_body.description,
+        None
+        if request_body.state is None
+        else {"active": "activo", "archived": "archivado"}[request_body.state],
+    )
+    return _project_summary(proyecto)
+
+
+@router.delete(
+    "/projects/{ref}",
+    dependencies=[Depends(requerir_escritura)],
+    status_code=204,
+)
+async def delete_project(ref: str, workspace: str | None = None) -> None:
+    """Deletes a project — its memories fall back to workspace level."""
+    from src.core import proyectos as proj
+
+    engine = obtener_engine()
+    ctx = await contexto_actual(engine)
+    if workspace is not None:
+        ctx = await idn.resolver_workspace(engine, ctx, workspace)
+    await proj.eliminar_proyecto(engine, ctx, ref)
+
+
+@router.get(
+    "/projects/{ref}/members",
+    dependencies=[Depends(verificar_token)],
+)
+async def list_project_members(
+    ref: str, workspace: str | None = None
+) -> list[ProjectMemberSummary]:
+    """Project roster — members only (closed access)."""
+    from src.core import proyectos as proj
+
+    engine = obtener_engine()
+    ctx = await contexto_actual(engine)
+    if workspace is not None:
+        ctx = await idn.resolver_workspace(engine, ctx, workspace)
+    return [
+        ProjectMemberSummary(
+            handle=m["handle"], name=m["nombre"], role=m["rol"]
+        )
+        for m in await proj.listar_miembros(engine, ctx, ref)
+    ]
+
+
+@router.post(
+    "/projects/{ref}/members",
+    dependencies=[Depends(requerir_escritura)],
+    status_code=201,
+)
+async def add_project_member(
+    ref: str, request_body: ProjectMemberRequest, workspace: str | None = None
+) -> ProjectMemberSummary:
+    """Adds a workspace member to the project — owners only."""
+    from src.core import proyectos as proj
+
+    engine = obtener_engine()
+    ctx = await contexto_actual(engine)
+    if workspace is not None:
+        ctx = await idn.resolver_workspace(engine, ctx, workspace)
+    await proj.agregar_miembro(
+        engine, ctx, ref, request_body.handle, request_body.role
+    )
+    return ProjectMemberSummary(
+        handle=request_body.handle, name=None, role=request_body.role
+    )
+
+
+@router.delete(
+    "/projects/{ref}/members/{handle}",
+    dependencies=[Depends(requerir_escritura)],
+    status_code=204,
+)
+async def remove_project_member(
+    ref: str, handle: str, workspace: str | None = None
+) -> None:
+    """Removes a project member — their workspace access stays."""
+    from src.core import proyectos as proj
+
+    engine = obtener_engine()
+    ctx = await contexto_actual(engine)
+    if workspace is not None:
+        ctx = await idn.resolver_workspace(engine, ctx, workspace)
+    await proj.quitar_miembro(engine, ctx, ref, handle)
 
 
 @router.post(
