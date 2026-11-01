@@ -140,15 +140,25 @@ from src.core.persona import (
     render,
 )
 from src.core.proyectos import (
-    actualizar_proyecto,
-    agregar_miembro,
-    asignar_proyecto,
-    crear_proyecto,
-    eliminar_proyecto,
-    listar_proyectos,
+    actualizar_proyecto as _actualizar_proyecto_dom,
+)
+from src.core.proyectos import (
+    agregar_miembro as _agregar_miembro_dom,
+)
+from src.core.proyectos import (
+    asignar_proyecto as _asignar_proyecto_dom,
+)
+from src.core.proyectos import (
+    crear_proyecto as _crear_proyecto_dom,
+)
+from src.core.proyectos import (
+    eliminar_proyecto as _eliminar_proyecto_dom,
 )
 from src.core.proyectos import (
     listar_miembros as _miembros_proyecto_dom,
+)
+from src.core.proyectos import (
+    listar_proyectos as _listar_proyectos_dom,
 )
 from src.core.proyectos import (
     quitar_miembro as _quitar_miembro_dom,
@@ -2203,6 +2213,7 @@ async def recordar_evento(
     con_quien: str | None = None,
     scope: Literal["personal", "workspace"] = "personal",
     workspace: str | None = None,
+    proyecto: str | None = None,
     tipo_memoria: (Literal["episodica", "semantica", "procedimental"] | None) = None,
     estado_emocional: float | None = None,
     parametrica: bool = False,
@@ -2224,6 +2235,7 @@ async def recordar_evento(
         con_quien,
         scope,
         workspace,
+        proyecto=proyecto,
         tipo_memoria=tipo_memoria,
         estado_emocional=estado_emocional,
         parametrica=parametrica,
@@ -2268,9 +2280,12 @@ async def listar_objetivos(
     estado: str = "activo",
     rama: str = "main",
     workspace: str | None = None,
+    proyecto: str | None = None,
 ) -> list[dict[str, Any]]:
     """Deprecated alias — use ``list_goals`` instead."""
-    return await _objetivos(None if estado == "*" else estado, rama, workspace)
+    return await _objetivos(
+        None if estado == "*" else estado, rama, workspace, proyecto
+    )
 
 
 @mcp_server.tool()
@@ -2283,10 +2298,18 @@ async def crear_objetivo(
     rama: str = "main",
     scope: Literal["personal", "workspace"] = "personal",
     workspace: str | None = None,
+    proyecto: str | None = None,
 ) -> dict[str, Any]:
     """Deprecated alias — use ``create_goal`` instead."""
     return await _crear_objetivo(
-        titulo, fecha_objetivo, dimension, descripcion, rama, scope, workspace
+        titulo,
+        fecha_objetivo,
+        dimension,
+        descripcion,
+        rama,
+        scope,
+        workspace,
+        proyecto,
     )
 
 
@@ -2309,6 +2332,7 @@ async def consultar_memoria(
     top_n: int = 10,
     rama: str = "main",
     workspace: str | None = None,
+    proyecto: str | None = None,
     max_tokens: int | None = None,
 ) -> list[dict[str, Any]]:
     """Deprecated alias — use ``recall`` instead."""
@@ -2317,6 +2341,7 @@ async def consultar_memoria(
         top_n,
         None if rama == "*" else rama,
         workspace,
+        proyecto=proyecto,
         max_tokens=max_tokens,
     )
 
@@ -2354,9 +2379,10 @@ async def mapa_lagunas(
     consulta: str,
     top_n: int = 10,
     workspace: str | None = None,
+    proyecto: str | None = None,
 ) -> dict[str, Any]:
     """Deprecated alias — use ``gap_map`` instead."""
-    return await _mapa_lagunas(consulta, top_n, workspace)
+    return await _mapa_lagunas(consulta, top_n, workspace, proyecto)
 
 
 @mcp_server.tool()
@@ -2367,6 +2393,7 @@ async def obtener_linea_de_universo(
     limite: int = 100,
     rama: str = "main",
     workspace: str | None = None,
+    proyecto: str | None = None,
 ) -> list[dict[str, Any]]:
     """Deprecated alias — use ``timeline`` instead."""
     return await _linea(
@@ -2375,6 +2402,7 @@ async def obtener_linea_de_universo(
         limite,
         None if rama == "*" else rama,
         workspace=workspace,
+        proyecto=proyecto,
     )
 
 
@@ -2492,9 +2520,10 @@ async def entidad(
     nombre: str,
     limite_menciones: int = 8,
     workspace: str | None = None,
+    proyecto: str | None = None,
 ) -> dict[str, Any]:
     """Deprecated alias — use ``entity`` instead."""
-    return await _entidad(nombre, limite_menciones, workspace)
+    return await _entidad(nombre, limite_menciones, workspace, proyecto)
 
 
 @mcp_server.tool()
@@ -3138,9 +3167,12 @@ async def crear_intencion(
     cuando: str | None = None,
     umbral: float = 0.6,
     workspace: str | None = None,
+    proyecto: str | None = None,
 ) -> dict[str, Any]:
     """Deprecated alias — use ``create_intention`` instead."""
-    return await _crear_intencion(intencion, en, cuando, umbral, workspace)
+    return await _crear_intencion(
+        intencion, en, cuando, umbral, workspace, proyecto
+    )
 
 
 @mcp_server.tool()
@@ -3167,9 +3199,10 @@ async def cancelar_intencion(
 @ingles
 async def consolidar_memoria(
     workspace: str | None = None,
+    proyecto: str | None = None,
 ) -> dict[str, Any]:
     """Deprecated alias — use ``consolidate_memory`` instead."""
-    return await _consolidar(workspace)
+    return await _consolidar(workspace, proyecto)
 
 
 @mcp_server.tool()
@@ -3464,18 +3497,20 @@ async def recordar_borrador(
     contenido: str,
     dimension: Literal["cognitiva", "somatica", "conductual"] = "cognitiva",
     workspace: str | None = None,
+    proyecto: str | None = None,
 ) -> dict[str, Any]:
     """Deprecated alias — use ``save_draft`` instead."""
-    return await _recordar_borrador(contenido, dimension, workspace)
+    return await _recordar_borrador(contenido, dimension, workspace, proyecto)
 
 
 @mcp_server.tool()
 @ingles
 async def listar_borrador(
     workspace: str | None = None,
+    proyecto: str | None = None,
 ) -> list[dict[str, Any]]:
     """Deprecated alias — use ``list_drafts`` instead."""
-    return await _listar_borrador(workspace)
+    return await _listar_borrador(workspace, proyecto)
 
 
 @mcp_server.tool()
@@ -3483,9 +3518,10 @@ async def listar_borrador(
 async def ensayar_borrador(
     borrador_id: str,
     workspace: str | None = None,
+    proyecto: str | None = None,
 ) -> dict[str, Any]:
     """Deprecated alias — use ``rehearse_draft`` instead."""
-    return await _ensayar_borrador(borrador_id, workspace)
+    return await _ensayar_borrador(borrador_id, workspace, proyecto)
 
 
 @mcp_server.tool()
@@ -4298,7 +4334,9 @@ def _proyecto_a_dict(p: Any) -> dict[str, Any]:
         "name": p.nombre,
         "description": p.descripcion,
         "kind": p.kind,
-        "state": p.estado,
+        "state": {"activo": "active", "archivado": "archived"}.get(
+            p.estado, p.estado
+        ),
         "vault": p.kind == "vault",
         "created_at": (
             p.creado_en.isoformat() if p.creado_en is not None else None
@@ -4315,7 +4353,7 @@ async def _crear_proyecto(
 ) -> dict[str, Any]:
     """Crea un project en el workspace efectivo."""
     ctx = await _ctx_escritura(workspace)
-    proyecto = await crear_proyecto(
+    proyecto = await _crear_proyecto_dom(
         obtener_engine(), ctx, slug, nombre, descripcion, kind
     )
     return _proyecto_a_dict(proyecto)
@@ -4326,7 +4364,7 @@ async def _listar_proyectos(
 ) -> list[dict[str, Any]]:
     """Roster de projects accesibles — la fuente del routing semántico."""
     ctx = await _ctx(workspace)
-    filas = await listar_proyectos(obtener_engine(), ctx)
+    filas = await _listar_proyectos_dom(obtener_engine(), ctx)
     return [_proyecto_a_dict(p) for p in filas]
 
 
@@ -4339,7 +4377,7 @@ async def _actualizar_proyecto(
 ) -> dict[str, Any]:
     """Actualiza nombre/descripción/estado de un project."""
     ctx = await _ctx_escritura(workspace)
-    p = await actualizar_proyecto(
+    p = await _actualizar_proyecto_dom(
         obtener_engine(), ctx, proyecto, nombre, descripcion, estado
     )
     return _proyecto_a_dict(p)
@@ -4350,7 +4388,7 @@ async def _eliminar_proyecto(
 ) -> dict[str, Any]:
     """Elimina un project — sus memorias bajan a nivel workspace."""
     ctx = await _ctx_escritura(workspace)
-    await eliminar_proyecto(obtener_engine(), ctx, proyecto)
+    await _eliminar_proyecto_dom(obtener_engine(), ctx, proyecto)
     _invalidar_recall()
     return {"deleted": True, "project": proyecto}
 
@@ -4372,7 +4410,7 @@ async def _agregar_miembro_proyecto(
 ) -> dict[str, Any]:
     """Añade un miembro del workspace al project."""
     ctx = await _ctx_escritura(workspace)
-    await agregar_miembro(obtener_engine(), ctx, proyecto, handle, rol)
+    await _agregar_miembro_dom(obtener_engine(), ctx, proyecto, handle, rol)
     return {"added": handle, "project": proyecto, "role": rol}
 
 
@@ -4395,8 +4433,107 @@ async def _asignar_proyecto(
 ) -> dict[str, Any]:
     """Mueve eventos entre projects (o al nivel workspace con NULL)."""
     ctx = await _ctx_escritura(workspace)
-    resultado = await asignar_proyecto(
+    resultado = await _asignar_proyecto_dom(
         obtener_engine(), ctx, destino, evento_ids, query, desde, hasta
     )
     _invalidar_recall()
     return {"moved": resultado["moved"], "project": resultado["destino"]}
+
+
+# ── Projects: alias ES (deprecated — usar los canónicos EN) ────────
+
+
+@mcp_server.tool()
+@ingles
+async def crear_proyecto(
+    slug: str,
+    nombre: str,
+    descripcion: str | None = None,
+    kind: Literal["regular", "vault"] = "regular",
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Deprecated alias — use ``create_project`` instead."""
+    return await _crear_proyecto(slug, nombre, descripcion, kind, workspace)
+
+
+@mcp_server.tool()
+@ingles
+async def listar_proyectos(
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Deprecated alias — use ``list_projects`` instead."""
+    return await _listar_proyectos(workspace)
+
+
+@mcp_server.tool()
+@ingles
+async def actualizar_proyecto(
+    proyecto: str,
+    nombre: str | None = None,
+    descripcion: str | None = None,
+    estado: Literal["activo", "archivado"] | None = None,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Deprecated alias — use ``update_project`` instead."""
+    return await _actualizar_proyecto(
+        proyecto, nombre, descripcion, estado, workspace
+    )
+
+
+@mcp_server.tool()
+@ingles
+async def eliminar_proyecto(
+    proyecto: str,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Deprecated alias — use ``delete_project`` instead."""
+    return await _eliminar_proyecto(proyecto, workspace)
+
+
+@mcp_server.tool()
+@ingles
+async def miembros_proyecto(
+    proyecto: str,
+    workspace: str | None = None,
+) -> list[dict[str, Any]]:
+    """Deprecated alias — use ``list_project_members`` instead."""
+    return await _miembros_proyecto(proyecto, workspace)
+
+
+@mcp_server.tool()
+@ingles
+async def agregar_miembro_proyecto(
+    proyecto: str,
+    handle: str,
+    rol: Literal["owner", "member", "viewer"] = "member",
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Deprecated alias — use ``add_project_member`` instead."""
+    return await _agregar_miembro_proyecto(proyecto, handle, rol, workspace)
+
+
+@mcp_server.tool()
+@ingles
+async def quitar_miembro_proyecto(
+    proyecto: str,
+    handle: str,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Deprecated alias — use ``remove_project_member`` instead."""
+    return await _quitar_miembro_proyecto(proyecto, handle, workspace)
+
+
+@mcp_server.tool()
+@ingles
+async def asignar_proyecto(
+    destino: str | None,
+    evento_ids: list[str] | None = None,
+    query: str | None = None,
+    desde: int | None = None,
+    hasta: int | None = None,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Deprecated alias — use ``assign_project`` instead."""
+    return await _asignar_proyecto(
+        destino, evento_ids, query, desde, hasta, workspace
+    )

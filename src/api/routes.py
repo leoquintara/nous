@@ -1156,7 +1156,9 @@ def _project_summary(p: Any) -> ProjectSummary:
         name=p.nombre,
         description=p.descripcion,
         kind=p.kind,
-        state=p.estado,
+        state={"activo": "active", "archivado": "archived"}.get(
+            p.estado, p.estado
+        ),
         vault=p.kind == "vault",
         created_at=(p.creado_en.isoformat() if p.creado_en else None),
     )
