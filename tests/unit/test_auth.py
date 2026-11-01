@@ -270,3 +270,33 @@ class TestPrefijoToken:
         from src.config import Settings
 
         assert Settings(api_token=None).api_token is None
+
+
+def test_filtro_redacta_access_token_en_logs() -> None:
+    """El token por query no debe aterrizar en access logs."""
+    import logging
+
+    from src.main import _RedactQuerySecretFilter
+
+    record = logging.LogRecord(
+        "uvicorn.access", logging.INFO, "x", 1,
+        'GET /mcp?access_token=ns_u_secreto123&x=1 HTTP/1.1',
+        (), None,
+    )
+    _RedactQuerySecretFilter().filter(record)
+    assert "ns_u_secreto123" not in record.getMessage()
+    assert "access_token=***" in record.getMessage()
+
+
+def test_filtro_no_toca_requests_sin_token() -> None:
+    """Requests normales pasan intactas por el filtro."""
+    import logging
+
+    from src.main import _RedactQuerySecretFilter
+
+    record = logging.LogRecord(
+        "uvicorn.access", logging.INFO, "x", 1,
+        "GET /api/events HTTP/1.1", (), None,
+    )
+    _RedactQuerySecretFilter().filter(record)
+    assert record.getMessage() == "GET /api/events HTTP/1.1"

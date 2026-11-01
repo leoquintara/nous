@@ -4,6 +4,7 @@ import asyncio
 import gc
 import logging
 import os
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -36,6 +37,30 @@ from src.storage.models import EventoModel
 async def _salud(_request: Request) -> JSONResponse:
     """Responde la sonda de vida pública del servidor."""
     return JSONResponse({"status": "ok"})
+
+
+_RE_QUERY_SECRET = re.compile(r"(access_token=)[^&\s\"']+", re.IGNORECASE)
+
+
+class _RedactQuerySecretFilter(logging.Filter):
+    """Enmascara ``access_token`` en los access logs de uvicorn.
+
+    El token por query (RFC 6750) existe para conectores sin headers,
+    pero uvicorn loguea el path completo — sin este filtro la key
+    quedaría en claro en ``docker logs``.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        mensaje = record.getMessage()
+        if "access_token=" in mensaje:
+            record.msg = _RE_QUERY_SECRET.sub(r"\1***", mensaje)
+            record.args = ()
+        return True
+
+
+def _instalar_redaccion_logs() -> None:
+    """Aplica el filtro de redacción al logger de acceso de uvicorn."""
+    logging.getLogger("uvicorn.access").addFilter(_RedactQuerySecretFilter())
 
 
 class SecurityHeadersMiddleware:
@@ -336,6 +361,7 @@ def main() -> None:
         "Arrancando Nous (transporte=http, auth=%s)",
         "token" if settings.api_token else "SIN TOKEN (solo desarrollo)",
     )
+    _instalar_redaccion_logs()
     uvicorn.run(
         crear_app_http(), host=settings.api_host, port=settings.api_port
     )

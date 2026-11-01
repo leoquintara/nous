@@ -40,6 +40,32 @@ El dashboard vive en `../nous-dashboard` (ADR-001 — licencia
 comercial, frontera legal = API REST): imagen propia nginx en :80
 expuesta en :3000, build `docker build ../nous-dashboard`.
 
+### MCP remoto (tailnet / internet)
+
+El transporte `/mcp` es streamable-HTTP — un cliente remoto solo
+necesita URL + Bearer. FastMCP aplica protección anti-DNS-rebinding:
+por defecto solo pasa `Host: localhost`; para exponer fuera de la
+máquina declara la allowlist en `.env`:
+
+```bash
+NOUS_MCP_ALLOWED_HOSTS=nous.ejemplo.com,100.x.y.z:*,nodo.ts.net:*
+NOUS_MCP_ALLOWED_ORIGINS=https://nous.ejemplo.com,http://100.x.y.z:*
+```
+
+- **Tailnet (recomendado)**: `tailscale serve --bg 8720` da HTTPS con
+  cert real en `https://<nodo>.<tailnet>.ts.net` sin puerto — tráfico
+  ya cifrado por WireGuard, nada sale de la tailnet.
+- **Internet (conectores cloud)**: `tailscale funnel --bg 8720` expone
+  el mismo hostname a internet — requiere habilitar Funnel en el
+  admin del tailnet. **Ojo**: público = la única frontera es el token;
+  usa una key `ns_u_*` dedicada por cliente, nunca el token owner.
+- Clientes que no pueden fijar el header `Authorization`: la key viaja
+  en `?access_token=<ns_u_...>` (RFC 6750). La URL queda con
+  credencial — tratarla como secreta.
+- Fuentes: todo `remember`/`recall` queda atribuido al
+  `clientInfo.name` del handshake MCP cuando el cliente no declara
+  `source` — cada conector registra su propia fuente.
+
 Notas de la imagen:
 
 - La imagen app ya no compila el dashboard — ese stage vive en el
@@ -90,7 +116,7 @@ repo `nous-dashboard`).
 8. **Licencia (multi-tenant)**: sin `NOUS_LICENSE_KEY` la edición libre
    permite **1 usuario y 3 workspaces** — suficiente para uso personal
    self-hosted. Con licencia se levantan los límites. El estado se
-   consulta en `GET /api/identidad` (`licencia.activa`) y en el
+   consulta en `GET /api/identity` (`license.licensed`/`tier`) y en el
    dashboard `/equipo`.
 9. **Agentes por usuario**: los clientes MCP stdio usan `NOUS_API_KEY`
    (key `ns_u_*` del usuario) en el entorno del proceso; ausente, stdio

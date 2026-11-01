@@ -70,7 +70,7 @@ Identidad multi-tenant (migración 0009): `usuarios` · `workspaces` ·
   gesto explícito del usuario (regla de control de costo/privacidad).
 - **Supersede**: `reemplaza_id` marca al anterior como corregido —
   historial auditable, nunca borrado.
-- **Olvido**: `DELETE /eventos/{id}` borra evento + vínculos
+- **Olvido**: `DELETE /api/events/{event_id}` borra evento + vínculos
   (irreversible, para el derecho al olvido).
 
 ## Multi-tenant
