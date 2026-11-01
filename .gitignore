@@ -43,3 +43,6 @@ nul
 dashboard/out/
 dashboard/.next/
 src/dashboard_static/
+*.cert
+*.crt
+*.key
