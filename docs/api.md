@@ -11,9 +11,13 @@ ns_<token>` (salvo `/health`, `/`, `/login` y
 y rol). Los GET solo exigen token válido; las escrituras exigen rol
 `member`/`owner` en el workspace activo (403 a `viewer`). Los
 endpoints aceptan `?workspace=<slug|uuid>` como override — exige
-membresía en el destino. Las escrituras de memoria aceptan `scope:
-"personal"|"workspace"` (default `personal` — compartir es siempre
-explícito).
+membresía en el destino, y `?project=<slug|uuid>` para acotar a un
+project del workspace efectivo (exige membresía en el project). Las
+escrituras de memoria aceptan `scope: "personal"|"workspace"`
+(default `personal` — compartir es siempre explícito). Como
+alternativa al header (clientes sin headers, p.ej. conectores
+remotos) se acepta `?access_token=<token>` en la URL (RFC 6750) —
+la URL lleva credencial, tratarla como privada.
 
 ## Vida y acceso
 
@@ -93,6 +97,31 @@ explícito).
 | GET | `/llaves` | Keys del llamante (sin secretos) |
 | POST | `/llaves` | Emite key propia — en claro una sola vez |
 | DELETE | `/llaves/{ref}` | Revoca por UUID o prefijo — solo las propias |
+
+## Projects (subdivisión del workspace)
+
+Un project agrupa memoria dentro de un workspace con membresía
+propia (`owner`/`member`/`viewer`). `kind: "regular"|"vault"` — el
+vault es minable por el sueño pero inmutable. `state` viaja en
+inglés (`active`/`archived`); archivado = read-only. Borrar un
+project no destruye memoria: los eventos caen a `project_id NULL`
+(nivel workspace).
+
+| Método | Ruta | Qué hace |
+|---|---|---|
+| GET | `/workspaces/{ref}/projects` | Roster visible del llamante (owner ve todos) |
+| POST | `/workspaces/{ref}/projects` | Crea project (rol member+ del workspace; cupo 5 sin licencia) |
+| GET | `/projects/{ref}` | Detalle por slug o UUID |
+| PATCH | `/projects/{ref}` | Renombra, descripción o `state` (archivar/reactivar) |
+| DELETE | `/projects/{ref}` | Elimina — memoria cae a nivel workspace (SET NULL) |
+| GET | `/projects/{ref}/members` | Miembros del project |
+| POST | `/projects/{ref}/members` | Asigna miembro del workspace (project owner o workspace owner) |
+| DELETE | `/projects/{ref}/members/{handle}` | Quita miembro |
+
+Los endpoints de memoria aceptan `?project=<slug|uuid>` como
+restricción dentro del workspace efectivo (`/eventos`, búsqueda,
+línea de universo, lagunas). Un `recall` sin `project` cubre los
+projects accesibles más el nivel workspace.
 
 ## Errores
 
