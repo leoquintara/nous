@@ -78,6 +78,14 @@ class Settings(BaseSettings):
     # Orígenes CORS del dashboard (separados por coma). El dashboard es
     # un origen distinto al API; self-hosters lo sirven en otro puerto.
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    # Allowlist extra de Host para el endpoint MCP streamable-http.
+    # FastMCP rechaza Hosts fuera de localhost (anti-DNS-rebinding, 421);
+    # aquí se declaran los nombres públicos del despliegue — IP de
+    # tailnet, MagicDNS, subdominio propio — separados por coma.
+    # Admiten comodín de puerto: "host:*" cubre cualquier puerto.
+    mcp_allowed_hosts: str = ""
+    # Ídem para Origin (clientes MCP servidos desde navegador).
+    mcp_allowed_origins: str = ""
     dashboard_usuario: str | None = None
     dashboard_password: str | None = None
     clave_cifrado: str | None = None

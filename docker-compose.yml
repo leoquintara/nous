@@ -44,6 +44,10 @@ services:
       NOUS_MAX_WORKSPACES_LIBRES: ${NOUS_MAX_WORKSPACES_LIBRES:-3}
       NOUS_MCP_TRANSPORT: http
       NOUS_API_HOST: 0.0.0.0
+      # Allowlist de Host/Origin para el endpoint MCP al exponerlo en
+      # red (Tailscale, subdominio propio). Vacío = solo localhost.
+      NOUS_MCP_ALLOWED_HOSTS: ${NOUS_MCP_ALLOWED_HOSTS:-}
+      NOUS_MCP_ALLOWED_ORIGINS: ${NOUS_MCP_ALLOWED_ORIGINS:-}
       NOUS_HF_OFFLINE: "true"
     ports:
       - "8720:8720"
