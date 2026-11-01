@@ -25,6 +25,7 @@ Comportamiento:
 
 import hmac
 import logging
+from urllib.parse import parse_qs
 
 from fastapi import HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -109,6 +110,23 @@ async def _resolver(token: str | None) -> Contexto | None:
         return None
 
 
+def _token_de_query(scope: Scope) -> str | None:
+    """Extrae el bearer token del query string (RFC 6750 §2.3).
+
+    Args:
+        scope: Scope ASGI de la petición.
+
+    Returns:
+        El token ``access_token`` si está presente; ``None`` si no.
+    """
+    crudo = scope.get("query_string", b"")
+    if not crudo:
+        return None
+    params = parse_qs(crudo.decode(), max_num_fields=50)
+    valores = params.get("access_token")
+    return valores[0] if valores else None
+
+
 async def verificar_token(request: Request) -> Contexto:
     """Dependencia FastAPI: exige bearer válido y devuelve el contexto.
 
@@ -129,10 +147,14 @@ async def verificar_token(request: Request) -> Contexto:
         request.state.contexto = ctx
         return ctx
     credenciales: HTTPAuthorizationCredentials | None = await _bearer(request)
-    ctx = await _resolver(
-        credenciales.credentials if credenciales else None
+    # Ídem middleware: ?access_token= como credencial alternativa.
+    token = (
+        credenciales.credentials
+        if credenciales
+        else request.query_params.get("access_token")
     )
-    if credenciales is None or ctx is None:
+    ctx = await _resolver(token)
+    if token is None or ctx is None:
         raise HTTPException(
             status_code=401,
             detail="Token de acceso inválido o ausente",
@@ -246,9 +268,18 @@ class BearerTokenMiddleware:
         }
         autorizacion = cabeceras.get("authorization", "")
         esquema, _, token = autorizacion.partition(" ")
-        if esquema.lower() != "bearer":
-            await self._responder_401(send)
-            return
+        if esquema.lower() == "bearer" and token:
+            pass
+        else:
+            # Fallback RFC 6750 §2.3: clientes que solo aceptan una
+            # URL (sin headers configurables) llevan la credencial
+            # como ``?access_token=``. Ojo: el token viaja en la URL —
+            # usar solo tras TLS (funnel/proxy); el header sigue
+            # siendo la vía preferida.
+            token = _token_de_query(scope)
+            if token is None:
+                await self._responder_401(send)
+                return
         ctx = await _resolver(token)
         if ctx is None:
             await self._responder_401(send)

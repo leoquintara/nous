@@ -64,6 +64,24 @@ class TestDependenciaFastAPI:
             )
         assert respuesta.status_code == 200
 
+    def test_access_token_en_query_permite_acceso(self) -> None:
+        with patch.object(
+            auth, "token_configurado", return_value=TOKEN_PRUEBA
+        ):
+            respuesta = TestClient(_app_protegida()).get(
+                f"/protegida?access_token={TOKEN_PRUEBA}"
+            )
+        assert respuesta.status_code == 200
+
+    def test_access_token_incorrecto_en_query_devuelve_401(self) -> None:
+        with patch.object(
+            auth, "token_configurado", return_value=TOKEN_PRUEBA
+        ):
+            respuesta = TestClient(_app_protegida()).get(
+                "/protegida?access_token=token-equivocado"
+            )
+        assert respuesta.status_code == 401
+
     def test_ruta_sin_dependencia_queda_abierta(self) -> None:
         with patch.object(
             auth, "token_configurado", return_value=TOKEN_PRUEBA
@@ -83,7 +101,9 @@ async def _app_interna(
 
 
 def _scope_http(
-    autorizacion: str | None = None, path: str = "/api/events"
+    autorizacion: str | None = None,
+    path: str = "/api/events",
+    query_string: bytes = b"",
 ) -> dict[str, Any]:
     headers = []
     if autorizacion is not None:
@@ -93,6 +113,7 @@ def _scope_http(
         "method": "GET",
         "path": path,
         "headers": headers,
+        "query_string": query_string,
     }
 
 
@@ -140,6 +161,32 @@ class TestMiddlewareASGI:
         scope = _scope_http(f"Bearer {TOKEN_PRUEBA}")
         mensajes = await self._ejecutar(scope, TOKEN_PRUEBA)
         assert mensajes[0]["status"] == 200
+
+    @pytest.mark.asyncio
+    async def test_access_token_en_query_deja_pasar(self) -> None:
+        scope = _scope_http(
+            query_string=f"access_token={TOKEN_PRUEBA}".encode()
+        )
+        mensajes = await self._ejecutar(scope, TOKEN_PRUEBA)
+        assert mensajes[0]["status"] == 200
+
+    @pytest.mark.asyncio
+    async def test_access_token_incorrecto_en_query_devuelve_401(
+        self,
+    ) -> None:
+        scope = _scope_http(query_string=b"access_token=token-equivocado")
+        mensajes = await self._ejecutar(scope, TOKEN_PRUEBA)
+        assert mensajes[0]["status"] == 401
+
+    @pytest.mark.asyncio
+    async def test_header_invalido_no_cae_al_query(self) -> None:
+        """Un Bearer presente pero inválido no se rescata con el query."""
+        scope = _scope_http(
+            "Bearer token-equivocado",
+            query_string=f"access_token={TOKEN_PRUEBA}".encode(),
+        )
+        mensajes = await self._ejecutar(scope, TOKEN_PRUEBA)
+        assert mensajes[0]["status"] == 401
 
     @pytest.mark.asyncio
     async def test_scope_no_http_deja_pasar(self) -> None:
