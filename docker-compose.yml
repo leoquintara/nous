@@ -8,7 +8,9 @@ services:
       POSTGRES_PASSWORD: ${NOUS_DB_PASSWORD:-nous}
       POSTGRES_DB: ${NOUS_DB_NAME:-nous}
     ports:
-      - "5432:5432"
+      # Solo loopback: la app alcanza `db` por la red interna; exponer
+      # 5432 en todas las interfaces abriría PostgreSQL a la LAN.
+      - "127.0.0.1:5432:5432"
     volumes:
       # postgres:18+ versiona el PGDATA en subdirectorios — el mount
       # va en la raíz, no en /data (error "unused mount/volume").

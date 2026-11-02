@@ -421,3 +421,49 @@ class TestLlaves:
             assert r.status_code == 404
         finally:
             await _limpiar(engine, "api-")
+
+
+@pytest.mark.asyncio
+class TestSuperficieOwner:
+    """Endpoints sensibles reservados al owner (post-hardening)."""
+
+    async def test_member_no_puede_importar(
+        self, api: tuple[AsyncClient, AsyncEngine, str]
+    ) -> None:
+        """POST /import queda fuera del alcance de una key member."""
+        cliente, engine, _t = api
+        try:
+            key = await _usuario_con_key(
+                engine, "api-imp", WORKSPACE_PERSONAL_ID, "member"
+            )
+            r = await cliente.post(
+                "/api/import",
+                headers={"Authorization": f"Bearer {key}"},
+                json={"format": "jsonl", "path": "/tmp/nada"},
+            )
+            assert r.status_code == 403
+        finally:
+            await _limpiar(engine, "api-")
+
+    async def test_member_no_puede_configurar_providers(
+        self, api: tuple[AsyncClient, AsyncEngine, str]
+    ) -> None:
+        """PUT/DELETE/test de /ai/providers exigen owner."""
+        cliente, engine, _t = api
+        try:
+            key = await _usuario_con_key(
+                engine, "api-prov", WORKSPACE_PERSONAL_ID, "member"
+            )
+            auth = {"Authorization": f"Bearer {key}"}
+            r = await cliente.put(
+                "/api/ai/providers/evil",
+                headers=auth,
+                json={"url": "http://169.254.169.254/", "api_key": "k"},
+            )
+            assert r.status_code == 403
+            r = await cliente.delete("/api/ai/providers/evil", headers=auth)
+            assert r.status_code == 403
+            r = await cliente.post("/api/ai/providers/evil/test", headers=auth)
+            assert r.status_code == 403
+        finally:
+            await _limpiar(engine, "api-")

@@ -106,6 +106,35 @@ from src.storage.repositories import (
 router = APIRouter()
 
 _limitador_login = LimitadorIntentos(max_intentos=5, ventana_segundos=60)
+# Techo global compartido por los endpoints públicos con credencial:
+# detrás de un proxy/funnel toda la IP entrante es la del relay, así
+# que el límite por IP es un bucket único — esto acota la fuerza
+# bruta distribuida aunque el atacante rote X-Forwarded-For.
+_limitador_global_publico = LimitadorIntentos(max_intentos=30, ventana_segundos=60)
+
+
+def _ip_cliente(request: Request) -> str:
+    """IP real del cliente para rate limiting.
+
+    Tras un proxy/funnel (Tailscale, nginx) ``request.client`` es el
+    relay — el cliente real viaja en ``X-Forwarded-For``. Se toma la
+    ÚLTIMA entrada: la añade el ingress más cercano al servidor y es
+    la que un atacante no puede falsificar por delante del proxy.
+    """
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        ultima = xff.split(",")[-1].strip()
+        if ultima:
+            return ultima
+    return request.client.host if request.client else "unknown"
+
+
+def _verificar_rate_limit(request: Request, por_ip: LimitadorIntentos) -> None:
+    """Aplica el límite global y el por-IP a endpoints con credencial."""
+    if not _limitador_global_publico.permite("global"):
+        raise HTTPException(status_code=429, detail="Too many attempts; wait a minute")
+    if not por_ip.permite(_ip_cliente(request)):
+        raise HTTPException(status_code=429, detail="Too many attempts; wait a minute")
 
 _PATRON_CLAVE_PREF = re.compile(r"^[a-z0-9_.\-]{1,64}$")
 
@@ -145,12 +174,7 @@ async def login(credentials: LoginRequest, request: Request) -> LoginResponse:
         HTTPException 429: attempt quota exceeded.
         HTTPException 503: username/password login not configured.
     """
-    ip = request.client.host if request.client else "unknown"
-    if not _limitador_login.permite(ip):
-        raise HTTPException(
-            status_code=429,
-            detail="Too many attempts; wait a minute",
-        )
+    _verificar_rate_limit(request, _limitador_login)
     settings = get_settings()
     if not settings.dashboard_usuario or not settings.dashboard_password:
         raise HTTPException(
@@ -640,7 +664,7 @@ async def list_ai_providers() -> list[dict[str, Any]]:
         return traducir_payload(await ia.listar_proveedores(session))
 
 
-@router.put("/ai/providers/{pid}", dependencies=[Depends(requerir_escritura)])
+@router.put("/ai/providers/{pid}", dependencies=[Depends(requerir_owner)])
 async def save_ai_provider(pid: str, request_body: AIProviderRequest) -> dict[str, Any]:
     """Creates or updates an AI provider (key encrypted in PostgreSQL).
 
@@ -667,7 +691,7 @@ async def save_ai_provider(pid: str, request_body: AIProviderRequest) -> dict[st
     return traducir_payload(publico)
 
 
-@router.delete("/ai/providers/{pid}", dependencies=[Depends(requerir_escritura)])
+@router.delete("/ai/providers/{pid}", dependencies=[Depends(requerir_owner)])
 async def delete_ai_provider(pid: str) -> dict[str, Any]:
     """Deletes an AI provider and its encrypted key."""
     async with get_session(obtener_engine()) as session:
@@ -678,7 +702,7 @@ async def delete_ai_provider(pid: str) -> dict[str, Any]:
     return {"id": pid, "deleted": True}
 
 
-@router.post("/ai/providers/{pid}/test", dependencies=[Depends(requerir_escritura)])
+@router.post("/ai/providers/{pid}/test", dependencies=[Depends(requerir_owner)])
 async def test_ai_provider(pid: str) -> dict[str, Any]:
     """Tests connectivity with the endpoint (GET /models)."""
     async with get_session(obtener_engine()) as session:
@@ -849,7 +873,7 @@ async def ping() -> dict[str, Any]:
     return {"status": "ok", "ts": int(time.time())}
 
 
-@router.post("/import", dependencies=[Depends(requerir_escritura)])
+@router.post("/import", dependencies=[Depends(requerir_owner)])
 async def import_memory(request_body: ImportRequest) -> ImportResponse:
     """Migrates external memory into Nous from a local file/directory.
 
@@ -1351,12 +1375,7 @@ async def redeem_invitation(request_body: RedeemRequest, request: Request) -> Re
     Rate-limited per IP like /login. Returns the new user's key
     only once.
     """
-    ip = request.client.host if request.client else "unknown"
-    if not _limitador_canje.permite(ip):
-        raise HTTPException(
-            status_code=429,
-            detail="Too many attempts; wait a minute",
-        )
+    _verificar_rate_limit(request, _limitador_canje)
     usuario, key = await idn.canjear_invitacion(
         obtener_engine(),
         request_body.token,
