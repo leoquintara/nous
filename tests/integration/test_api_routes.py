@@ -218,6 +218,68 @@ async def test_actividad_registra_store_y_recall(
 
 
 @pytest.mark.asyncio
+async def test_activity_se_acota_al_workspace(
+    cliente: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GET /actividad solo trae trazas del workspace efectivo.
+
+    Una escritura en otro workspace no debe contaminar el feed del
+    cerebro 3D activo; al pedir ?workspace= ese feed sí la muestra.
+    """
+    import uuid as _uuid
+
+    from sqlalchemy import text as _t
+
+    from src.api import routes as _routes
+    from src.storage.database import obtener_engine
+
+    # /api/workspaces usa el obtener_engine importado en routes: hay
+    # que apuntarlo también a nous_test o el workspace cae en la DB real.
+    monkeypatch.setattr(_routes, "obtener_engine", obtener_engine)
+
+    marca = f"qzx otro-ws {_uuid.uuid4().hex[:8]} zq9"
+    slug = f"act-otro-{_uuid.uuid4().hex[:6]}"
+    try:
+        r_ws = await cliente.post(
+            "/api/workspaces", json={"slug": slug, "name": "Otro"}
+        )
+        assert r_ws.status_code == 201
+
+        r_ev = await cliente.post(
+            "/api/events",
+            json={"content": marca, "workspace": slug},
+        )
+        assert r_ev.status_code in (200, 201), r_ev.text
+
+        r_otro = await cliente.get(
+            "/api/activity", params={"workspace": slug}
+        )
+        assert r_otro.status_code == 200
+        assert any(marca[:30] in e["q"] for e in r_otro.json())
+
+        r_mio = await cliente.get("/api/activity")
+        assert r_mio.status_code == 200
+        assert not any(marca[:30] in e["q"] for e in r_mio.json())
+    finally:
+        _ws = (
+            "SELECT id FROM workspaces WHERE slug = :s"
+        )
+        async with obtener_engine().begin() as conn:
+            await conn.execute(
+                _t(f"DELETE FROM miembros WHERE workspace_id IN ({_ws})"),
+                {"s": slug},
+            )
+            await conn.execute(
+                _t(f"DELETE FROM eventos WHERE workspace_id IN ({_ws})"),
+                {"s": slug},
+            )
+            await conn.execute(
+                _t("DELETE FROM workspaces WHERE slug = :s"), {"s": slug}
+            )
+
+
+@pytest.mark.asyncio
 async def test_relaciones_endpoint_devuelve_vinculos(
     cliente: AsyncClient,
 ) -> None:

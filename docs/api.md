@@ -98,7 +98,7 @@ el dominio interno y el storage conservan vocabulario español.
 
 | Método | Ruta | Qué hace |
 |---|---|---|
-| GET | `/activity` | Actividad reciente para el cerebro 3D (`src` = cliente MCP que originó la traza) |
+| GET | `/activity` | Actividad reciente para el cerebro 3D, acotada al workspace efectivo (`?workspace=` para override). `src` = cliente MCP que originó la traza; `ws` = workspace_id de la entrada |
 | GET | `/preferences/{key}` · PUT `/preferences/{key}` | Preferencias por clave (namespacadas) |
 | GET | `/benchmarks` | Corridas de benchmark persistidas |
 | GET | `/calls` · `/calls/stats` | Trazas de llamadas MCP/REST + agregados |

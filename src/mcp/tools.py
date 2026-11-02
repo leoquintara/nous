@@ -268,6 +268,7 @@ def _registrar_actividad(
     consulta: str,
     ids: list[str],
     src: str | None = None,
+    ws: str | None = None,
 ) -> None:
     """Registra un evento de actividad cerebral para el dashboard.
 
@@ -278,6 +279,8 @@ def _registrar_actividad(
         ids: UUIDs de los eventos implicados.
         src: Cliente que originó la actividad (``clientInfo.name`` del
             handshake MCP) — permite distinguir trazas por cliente.
+        ws: ``workspace_id`` de la llamada — la actividad se filtra
+            por workspace para que un grafo solo vea sus trazas.
     """
     if consulta == "__warmup__":
         return
@@ -288,6 +291,7 @@ def _registrar_actividad(
             "ids": ids[:12],
             "ts": int(time.time()),
             "src": src,
+            "ws": ws,
         }
     )
 
@@ -330,9 +334,24 @@ def _fuente_efectiva(fuente: str) -> str:
     return _cliente_actual() or fuente
 
 
-def actividad_reciente(limite: int = 50) -> list[dict[str, Any]]:
-    """Devuelve los eventos de actividad más recientes, nuevos primero."""
-    return list(_actividad)[: max(1, min(limite, _ACTIVIDAD_MAX))]
+async def actividad_reciente(
+    limite: int = 50, workspace: str | None = None
+) -> list[dict[str, Any]]:
+    """Devuelve la actividad más reciente del workspace, nuevas primero.
+
+    Cada entrada lleva el ``workspace_id`` que la originó — el feed del
+    dashboard se acota al workspace efectivo para que el cerebro 3D
+    solo anime trazas cuyos eventos están en su grafo. Las entradas
+    sin marca (proceso previo al filtro) se muestran en todos.
+    """
+    ctx = await _ctx(workspace)
+    ws = str(ctx.workspace_id)
+    filtradas = [
+        e
+        for e in _actividad
+        if e.get("ws") in (None, ws)
+    ]
+    return filtradas[: max(1, min(limite, _ACTIVIDAD_MAX))]
 
 
 async def _ctx(
@@ -809,7 +828,9 @@ async def _recordar(
             ctx.proyecto_id,
         )
     )
-    _registrar_actividad("store", contenido, [str(evento.id)], src=fuente)
+    _registrar_actividad(
+        "store", contenido, [str(evento.id)], src=fuente, ws=str(ctx.workspace_id)
+    )
     respuesta.update(
         {
             "id": str(evento.id),
@@ -1057,6 +1078,7 @@ async def _disparar_intencion(
         modelo.intencion,
         [str(recordatorio.id)],
         src=_cliente_actual(),
+        ws=str(modelo.workspace_id),
     )
     return recordatorio
 
@@ -1573,6 +1595,7 @@ async def _consultar(
             consulta,
             [r.evento_id for r in resultados],
             src=_cliente_actual(),
+            ws=str(ctx.workspace_id),
         )
     serializados = []
     for r in resultados:

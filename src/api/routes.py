@@ -764,19 +764,25 @@ async def predict_ai(request_body: PredictRequest) -> dict[str, Any]:
 
 
 @router.get("/activity", dependencies=[Depends(verificar_token)])
-async def activity(limit: int = 50) -> list[dict[str, Any]]:
+async def activity(
+    limit: int = 50, workspace: str | None = None
+) -> list[dict[str, Any]]:
     """Recent brain activity for the live visualization.
 
     ``store`` events (new imprint) and ``recall`` events (evocation
-    with hits), newest first.
+    with hits), newest first. Scoped to the effective workspace —
+    traces of other workspaces do not reach the caller's feed.
 
     Args:
         limit: Maximum events (1-100).
+        workspace: Optional workspace override (requires membership).
 
     Returns:
-        List of events {kind, q, ids, ts}.
+        List of events {kind, q, ids, ts, src}.
     """
-    return traducir_payload(tools_impl.actividad_reciente(limit))
+    return traducir_payload(
+        await tools_impl.actividad_reciente(limit, workspace)
+    )
 
 
 @router.get("/benchmarks", dependencies=[Depends(verificar_token)])
