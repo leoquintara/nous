@@ -772,7 +772,10 @@ async def _recordar(
             # Neuro-5 — write-approval: con el flag, la escritura es
             # propuesta (staged) — indexada pero fuera del recall
             # hasta que el humano apruebe.
-            staged=get_settings().escritura_aprobacion,
+            staged=(
+                get_settings().escritura_aprobacion
+                or ctx.aprobacion_escritura
+            ),
             # Neuro-6 — contenido afirmado desde los pesos del
             # modelo, no observado: techo epistémico al recall.
             parametrica=parametrica,
@@ -4519,6 +4522,82 @@ async def _asignar_proyecto(
     )
     _invalidar_recall()
     return {"moved": resultado["moved"], "project": resultado["destino"]}
+
+
+# ── Catálogo de skills/agentes (nous skills) ────────────────────────
+
+
+def _descripcion_artefacto(contenido: str) -> str:
+    """Lee ``description`` del frontmatter YAML del artefacto.
+
+    La descripción puede estar doblada en varias líneas (YAML folded):
+    se concatenan las líneas indentadas siguientes.
+    """
+    if not contenido.startswith("---"):
+        return ""
+    fm = contenido.split("---", 2)[1]
+    lineas = fm.splitlines()
+    for i, ln in enumerate(lineas):
+        if ln.startswith("description:"):
+            partes = [ln.split(":", 1)[1].strip()]
+            for cont in lineas[i + 1 :]:
+                if cont.startswith((" ", "\t")) and cont.strip():
+                    partes.append(cont.strip())
+                else:
+                    break
+            return " ".join(partes)
+    return ""
+
+
+async def _catalogo_skills(nombre: str | None = None) -> dict[str, Any]:
+    """Catálogo de artefactos propios de Nous (skills y agentes).
+
+    ``nombre=None`` lista el catálogo con descripciones; con nombre
+    devuelve el contenido completo para que el agente se lo instale
+    en su entorno (equivalente remoto de ``nous skills install``).
+    """
+    from src.cli import skills as skills_pkg
+
+    if nombre is None:
+        return {
+            "artifacts": [
+                {
+                    "name": a.nombre,
+                    "kind": "agent" if a.es_agente else "skill",
+                    "description": _descripcion_artefacto(a.contenido),
+                }
+                for a in skills_pkg.ARTEFACTOS
+            ],
+            "install": {
+                "cli": (
+                    "nous skills install --target "
+                    "<.agents|.claude|.cursor|.opencode> --root <project>"
+                ),
+                "remote": (
+                    "call skills(name=...) and write content to "
+                    "<target>/skills/<name>/SKILL.md for skills, "
+                    "<target>/agents/<name>.md for agents"
+                ),
+            },
+        }
+    art = next(
+        (a for a in skills_pkg.ARTEFACTOS if a.nombre == nombre), None
+    )
+    if art is None:
+        disponibles = ", ".join(a.nombre for a in skills_pkg.ARTEFACTOS)
+        raise ErrorValidacion(
+            f"artifact not found: {nombre!r} — available: {disponibles}"
+        )
+    return {
+        "name": art.nombre,
+        "kind": "agent" if art.es_agente else "skill",
+        "path_hint": (
+            f"agents/{art.nombre}.md"
+            if art.es_agente
+            else f"skills/{art.nombre}/SKILL.md"
+        ),
+        "content": art.contenido,
+    }
 
 
 # ── Projects: alias ES (deprecated — usar los canónicos EN) ────────

@@ -475,6 +475,8 @@ class KeyRequest(BaseModel):
 
     name: str | None = Field(default=None, max_length=80)
     workspace_default_id: str | None = Field(default=None)
+    # True → la key escribe staged: sus memorias esperan aprobación.
+    approval: bool = False
 
 
 class KeyResponse(BaseModel):
@@ -485,6 +487,7 @@ class KeyResponse(BaseModel):
     name: str | None
     workspace_default_id: str | None
     revoked: bool
+    staged_writes: bool
     last_used: datetime | None
     created_at: datetime
 

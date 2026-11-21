@@ -212,6 +212,22 @@ def _vis_eventos(ctx: Contexto | None) -> ColumnElement[bool] | None:
     )
 
 
+def _vis_moderacion(ctx: Contexto | None) -> ColumnElement[bool] | None:
+    """Visibilidad de la cola de aprobación: todo lo staged del workspace.
+
+    Una propuesta staged es una solicitud dirigida al workspace — el
+    revisor debe verla aunque el autor la escribió con scope
+    ``personal``; si no, la cola quedaría vacía para quien aprueba.
+    Mantiene la frontera de project (``_predicado_proyecto``).
+    """
+    if ctx is None:
+        return None
+    return and_(
+        EventoModel.workspace_id == ctx.workspace_id,
+        *_predicado_proyecto(EventoModel, ctx),
+    )
+
+
 def _vis_generico(modelo: Any, ctx: Contexto | None) -> ColumnElement[bool] | None:
     """Misma regla de visibilidad para entidades con scope+autor."""
     if ctx is None:
@@ -244,6 +260,11 @@ class EventoRepository:
     def _vis(self) -> list[ColumnElement[bool]]:
         """Filtros de visibilidad a incluir en las lecturas."""
         clausula = _vis_eventos(self._ctx)
+        return [clausula] if clausula is not None else []
+
+    def _vis_mod(self) -> list[ColumnElement[bool]]:
+        """Filtros de la cola de aprobación (workspace + project)."""
+        clausula = _vis_moderacion(self._ctx)
         return [clausula] if clausula is not None else []
 
     async def crear(self, evento: EventoModel) -> EventoModel:
@@ -1157,7 +1178,10 @@ class EventoRepository:
         """Propuestas de escritura pendientes de aprobación humana."""
         stmt = (
             select(EventoModel)
-            .where(EventoModel.staged.is_(True), *self._vis())
+            .where(
+                EventoModel.staged.is_(True),
+                *self._vis_mod(),
+            )
             .order_by(EventoModel.timestamp_unix)
             .limit(limite)
         )
@@ -1178,7 +1202,7 @@ class EventoRepository:
             .where(
                 EventoModel.id.in_(evento_ids),
                 EventoModel.staged.is_(True),
-                *self._vis(),
+                *self._vis_mod(),
             )
             .values(staged=False, parametrica=False)
         )
@@ -1192,7 +1216,7 @@ class EventoRepository:
         stmt = delete(EventoModel).where(
             EventoModel.id.in_(evento_ids),
             EventoModel.staged.is_(True),
-            *self._vis(),
+            *self._vis_mod(),
         )
         resultado = cast(CursorResult[EventoModel], await self._session.execute(stmt))
         return resultado.rowcount

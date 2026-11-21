@@ -93,6 +93,12 @@ def registrar_subparsers(sub: "argparse._SubParsersAction") -> None:  # type: ig
         help="Default workspace for the key (slug or UUID).",
     )
     k_crear.add_argument("--name", "--nombre", default=None, help="Label (laptop, cursor…).")
+    k_crear.add_argument(
+        "--approval",
+        "--aprobacion",
+        action="store_true",
+        help="Staged writes: the key's memories await human approval.",
+    )
     k_rev = k_sub.add_parser("revoke", help="Revokes a key by UUID or prefix.")
     k_rev.add_argument("ref", metavar="ref", help="UUID or ns_u_xxxx prefix of the key.")
     k_list = k_sub.add_parser("list", help="Lists keys (no hash).")
@@ -299,6 +305,7 @@ async def _keys_create(args: argparse.Namespace) -> int:
             usuario.id,
             ws.id if ws else None,
             nombre=args.name,
+            aprobacion=args.approval,
         )
     finally:
         await engine.dispose()
@@ -338,6 +345,7 @@ async def _keys_list(args: argparse.Namespace) -> int:
             ),
             "nombre": k.nombre,
             "revocada": k.revocada,
+            "aprobacion": k.aprobacion,
             "ultimo_uso": (k.ultimo_uso.isoformat() if k.ultimo_uso else None),
         }
         for k in filas
@@ -347,5 +355,8 @@ async def _keys_list(args: argparse.Namespace) -> int:
     else:
         for k in salida:
             marca = ui.error("revocada") if k["revocada"] else ui.ok("activa")
-            sys.stdout.write(f"{k['prefijo']}… {marca} {ui.suave(str(k['nombre'] or ''))}\n")
+            aprob = " +aprobacion" if k["aprobacion"] else ""
+            sys.stdout.write(
+                f"{k['prefijo']}… {marca}{aprob} {ui.suave(str(k['nombre'] or ''))}\n"
+            )
     return 0

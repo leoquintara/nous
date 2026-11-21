@@ -71,6 +71,9 @@ class Contexto:
     proyecto_estado: str | None = None  # 'activo' | 'archivado'
     projects_visibles: frozenset[uuid.UUID] | None = None
     key_proyecto_id: uuid.UUID | None = None
+    # La key exige aprobación humana de sus escrituras (propuestas
+    # staged) — agentes externos cuya memoria se revisa antes de entrar.
+    aprobacion_escritura: bool = False
 
     @property
     def puede_escribir(self) -> bool:
@@ -340,6 +343,7 @@ async def _resolver_key_usuario(
                 if proyecto_key is not None
                 else None
             ),
+            aprobacion_escritura=fila.aprobacion,
             projects_visibles=(
                 frozenset({proyecto_key.id})
                 if proyecto_key is not None
@@ -852,6 +856,7 @@ async def emitir_key_usuario(
     usuario_id: uuid.UUID,
     workspace_default_id: uuid.UUID | None = None,
     nombre: str | None = None,
+    aprobacion: bool = False,
 ) -> str:
     """Emite una key ``ns_u_*`` para un usuario.
 
@@ -864,6 +869,8 @@ async def emitir_key_usuario(
         workspace_default_id: Workspace activo por defecto (None =
             primera membresía del usuario al resolver).
         nombre: Etiqueta opcional ("laptop", "cursor").
+        aprobacion: True → escrituras de esta key caen ``staged``
+            (propuestas pendientes de aprobación humana).
 
     Returns:
         La key en claro — mostrar al usuario una sola vez.
@@ -877,6 +884,7 @@ async def emitir_key_usuario(
                 usuario_id=usuario_id,
                 workspace_default_id=workspace_default_id,
                 nombre=nombre,
+                aprobacion=aprobacion,
             )
         )
         await session.commit()

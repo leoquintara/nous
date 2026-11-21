@@ -280,6 +280,96 @@ async def test_activity_se_acota_al_workspace(
 
 
 @pytest.mark.asyncio
+async def test_key_con_aprobacion_escribe_staged(
+    cliente: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Una key ``aprobacion=true`` escribe propuestas, no memorias.
+
+    La escritura cae ``staged=true`` (fuera del recall), aparece en
+    /approvals/pending y un humano la aprueba. Una key normal escribe
+    directo aunque el flag global esté apagado.
+    """
+    import uuid as _uuid
+
+    from sqlalchemy import select as _s
+    from sqlalchemy import text as _t
+
+    from src.api import auth as _auth
+    from src.api import routes as _routes
+    from src.core import identidad as idn
+    from src.storage.database import get_session, obtener_engine
+    from src.storage.models import MiembroModel, WorkspaceModel
+
+    engine = obtener_engine()
+    # auth resuelve la key contra su propio obtener_engine — apuntarlo
+    # a nous_test o la resolución pega en la DB real.
+    monkeypatch.setattr(_auth, "obtener_engine", lambda: engine)
+    monkeypatch.setattr(_routes, "obtener_engine", lambda: engine)
+
+    async with get_session(engine) as s:
+        ws_id = (
+            await s.execute(
+                _s(WorkspaceModel.id).where(
+                    WorkspaceModel.slug == "personal"
+                )
+            )
+        ).scalar_one()
+    handle = f"stg-{_uuid.uuid4().hex[:8]}"
+    u = await idn.crear_usuario(engine, handle, "Staged Test")
+    async with get_session(engine) as s:
+        s.add(
+            MiembroModel(workspace_id=ws_id, usuario_id=u.id, rol="member")
+        )
+        await s.commit()
+    key = await idn.emitir_key_usuario(
+        engine, u.id, ws_id, aprobacion=True
+    )
+
+    try:
+        marca = f"qzx staged {_uuid.uuid4().hex[:8]} zq9"
+        r = await cliente.post(
+            "/api/events",
+            json={"content": marca},
+            headers={"Authorization": f"Bearer {key}"},
+        )
+        assert r.status_code in (200, 201)
+        assert r.json().get("staged") is True
+        staged_id = r.json()["id"]
+
+        r_directo = await cliente.post(
+            "/api/events", json={"content": f"{marca} direct"}
+        )
+        assert "staged" not in r_directo.json()
+
+        r_pend = await cliente.get("/api/approvals/pending")
+        assert r_pend.status_code == 200
+        assert staged_id in [e["id"] for e in r_pend.json()]
+
+        r_ok = await cliente.post(
+            f"/api/approvals/{staged_id}/approve"
+        )
+        assert r_ok.status_code == 200
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(
+                _t("DELETE FROM eventos WHERE contenido LIKE :m"),
+                {"m": "qzx staged%"},
+            )
+            await conn.execute(
+                _t("DELETE FROM api_keys WHERE usuario_id = :u"),
+                {"u": u.id},
+            )
+            await conn.execute(
+                _t("DELETE FROM miembros WHERE usuario_id = :u"),
+                {"u": u.id},
+            )
+            await conn.execute(
+                _t("DELETE FROM usuarios WHERE id = :u"), {"u": u.id}
+            )
+
+
+@pytest.mark.asyncio
 async def test_relaciones_endpoint_devuelve_vinculos(
     cliente: AsyncClient,
 ) -> None:

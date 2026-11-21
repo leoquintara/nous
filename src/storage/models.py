@@ -225,6 +225,13 @@ class ApiKeyModel(Base):
         DateTime(timezone=True)
     )
     revocada: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    # True → las escrituras de esta key caen ``staged`` aunque el flag
+    # global ``NOUS_ESCRITURA_APROBACION`` esté apagado: propuestas de
+    # agentes externos que un humano aprueba antes de que entren al
+    # recall. La aprobación sigue por pending_approvals/approve_event.
+    aprobacion: Mapped[bool] = mapped_column(
+        Boolean, server_default="false"
+    )
     creado_en: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

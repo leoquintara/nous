@@ -117,8 +117,8 @@ el dominio interno y el storage conservan vocabulario español.
 | DELETE | `/workspaces/{ref}/members/{uid}` | Expulsa miembro — solo owner; último owner protegido |
 | POST | `/workspaces/{ref}/invitations` | Emite `ns_inv_*` (rol, días) — solo owner; se ve una vez |
 | POST | `/invitations/redeem` | **Público** (rate-limited): token + handle + nombre → key `ns_u_*` una vez |
-| GET | `/keys` | Keys del llamante (sin secretos) |
-| POST | `/keys` | Emite key propia — en claro una sola vez |
+| GET | `/keys` | Keys del llamante (sin secretos) — incluye `approval` por key |
+| POST | `/keys` | Emite key propia — en claro una sola vez. `{"approval": true}` marca la key como **staged-write**: todo lo que escriba cae en la cola de `/approvals/pending` en vez de entrar al recall directo (para agentes externos como Muse/Qwen). CLI: `nous keys create --approval` |
 | DELETE | `/keys/{ref}` | Revoca por UUID o prefijo — solo las propias |
 
 ## Projects (subdivisión del workspace)

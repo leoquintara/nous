@@ -1405,6 +1405,7 @@ def _key_summary(k: object) -> KeyResponse:
             str(k.workspace_default_id) if k.workspace_default_id is not None else None
         ),
         revoked=k.revocada,
+        staged_writes=k.aprobacion,
         last_used=k.ultimo_uso,
         created_at=k.creado_en,
     )
@@ -1436,7 +1437,13 @@ async def create_key(request_body: KeyRequest) -> dict[str, str]:
     )
     if request_body.workspace_default_id is not None:
         await idn.resolver_workspace(engine, ctx, request_body.workspace_default_id)
-    key = await idn.emitir_key_usuario(engine, ctx.usuario_id, ws_default, request_body.name)
+    key = await idn.emitir_key_usuario(
+        engine,
+        ctx.usuario_id,
+        ws_default,
+        request_body.name,
+        aprobacion=request_body.approval,
+    )
     return {"key": key}
 
 
