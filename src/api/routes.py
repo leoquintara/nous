@@ -1914,15 +1914,25 @@ async def pending_approvals(limit: int = 50, workspace: str | None = None) -> li
     "/approvals/{event_id}/approve",
     dependencies=[Depends(requerir_escritura)],
 )
-async def approve_event(event_id: str) -> dict[str, Any]:
+async def approve_event(
+    event_id: str,
+    workspace: str | None = None,
+) -> dict[str, Any]:
     """Approves a staged proposal — it enters recall."""
-    return traducir_payload(await tools_impl._aprobar_evento(event_id))
+    return traducir_payload(
+        await tools_impl._aprobar_evento(event_id, workspace)
+    )
 
 
 @router.delete("/approvals/{event_id}", dependencies=[Depends(requerir_escritura)])
-async def reject_event(event_id: str) -> dict[str, Any]:
+async def reject_event(
+    event_id: str,
+    workspace: str | None = None,
+) -> dict[str, Any]:
     """Rejects a staged proposal — the write never existed."""
-    return traducir_payload(await tools_impl._rechazar_evento(event_id))
+    return traducir_payload(
+        await tools_impl._rechazar_evento(event_id, workspace)
+    )
 
 
 @router.post("/approvals/approve-all", dependencies=[Depends(requerir_escritura)])
