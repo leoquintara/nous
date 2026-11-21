@@ -51,6 +51,12 @@ services:
       NOUS_MCP_ALLOWED_HOSTS: ${NOUS_MCP_ALLOWED_HOSTS:-}
       NOUS_MCP_ALLOWED_ORIGINS: ${NOUS_MCP_ALLOWED_ORIGINS:-}
       NOUS_HF_OFFLINE: "true"
+      # System One (ADR-002): Ollama corre en el host Windows —
+      # localhost dentro del container no lo alcanza. 172.20.224.1 es
+      # la IP del vNIC de WSL vista desde Debian (puede cambiar; si el
+      # provider deja de resolver, redefinir NOUS_OLLAMA_ENDPOINT).
+      NOUS_OLLAMA_ENDPOINT: ${NOUS_OLLAMA_ENDPOINT:-http://172.20.224.1:11434}
+      NOUS_OLLAMA_MODEL: ${NOUS_OLLAMA_MODEL:-tev1:latest}
     ports:
       - "8720:8720"
     healthcheck:
@@ -63,10 +69,12 @@ services:
 
   # Dashboard separado (ADR-001) — repo hermano nous-dashboard.
   # Se activa solo con el profile: `docker compose --profile dashboard up -d`
+  # restart "no": el puerto 3000 es de uso común en desarrollo local —
+  # el dashboard se levanta manualmente y no vuelve tras un reboot.
   dashboard:
     build: ../nous-dashboard
     container_name: nous-dashboard
-    restart: unless-stopped
+    restart: "no"
     depends_on:
       app:
         condition: service_healthy
