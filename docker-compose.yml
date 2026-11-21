@@ -2,7 +2,9 @@ services:
   db:
     image: pgvector/pgvector:pg18
     container_name: nous-db
-    restart: unless-stopped
+    # restart "no": la app usa el postgres externo (postgres18 :5433);
+    # este servicio queda para desarrollo standalone y se levanta manual.
+    restart: "no"
     environment:
       POSTGRES_USER: ${NOUS_DB_USER:-nous}
       POSTGRES_PASSWORD: ${NOUS_DB_PASSWORD:-nous}
