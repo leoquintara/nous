@@ -81,6 +81,9 @@ ramas** (líneas temporales paralelas para escenarios).
   línea.
 - `reemplaza_id`: UUID del evento que este sustituye ("mi peso es 79"
   reemplaza "mi peso es 80"). El viejo queda para arqueología.
+- Para enlazar un supersede DESPUÉS de que ambos eventos existen
+  (dedup retroactivo), usa `supersede_event(event_id, superseded_by)`
+  — `reemplaza_id` solo ata el nudo al crear.
 
 ## Lee la respuesta
 
@@ -1043,6 +1046,10 @@ Las tools MCP sí gestionan workspaces (paridad con `/equipo`):
   El token se muestra en claro una vez — pásalo al usuario.
 - `cambiar_rol_miembro(handle, rol, workspace?)` — member|viewer.
 - `quitar_miembro(handle, workspace?)` — sus memorias permanecen.
+- `add_member(handle, rol, workspace?)` — incorpora un usuario YA
+  existente a este workspace (p. ej. un agente con usuario propio
+  que debe ver otro workspace). Solo owners. La invitación es para
+  usuarios NUEVOS; para existentes usa esta.
 
 Las llaves de API siguen fuera del MCP: `nous keys create
 --usuario <handle>` emite una `ns_u_*` (en claro UNA vez; en la
@@ -1659,6 +1666,268 @@ también dicen algo).
   cruzaron más memoria, no por reintentar lo mismo.
 """
 
+_SKILL_ROUTE = """---
+name: nous-route
+description: Decidir en qué (workspace, project) va una memoria —
+  routing por semántica del roster, nunca por slug. Usar antes de
+  todo remember/recall cuando el destino no sea obvio, y siempre
+  que un recuerdo mencione cliente, proyecto o tema acotado.
+---
+
+# Routing semántico de memoria
+
+Nous organiza memoria en workspaces → projects → nivel workspace
+(`project_id=NULL`). Decidir destino es una operación semántica:
+la **descripción** de cada project es su instrucción de routing.
+
+## El algoritmo
+
+1. **Roster**: `list_projects(workspace)` devuelve slug, nombre,
+   descripcion y kind de cada project visible. `list_workspaces()`
+   para el nivel workspace.
+2. **Match por propósito**:
+   - El contenido matchea UNA descripción → ese `project=`.
+   - Matchea varios → el más específico ("Acme pagos" gana a
+     "Acme" genérico).
+   - Matchea el tema del workspace pero ningún project →
+     `project_id` NULL (no inventes cajón).
+   - `kind=vault` NUNCA es destino de recuerdo nuevo: es archivo
+     histórico; el sueño lo mina, no lo alimentas tú.
+3. **Ambiguo → contexto de la conversación**: el repo abierto, el
+   cliente mencionado, la tarea en curso suelen nombrar el proyecto
+   implícitamente. Con el hilo, repite el paso 2.
+4. **Sigue ambiguo → pregunta con hipótesis**:
+   > "¿Esto va al project `acme` (trabajo del cliente) o queda a
+   > nivel workspace?"
+   Nunca "¿dónde guardo esto?" sin opciones.
+
+## Reglas duras
+
+- `scope=personal` se preserva siempre: una memoria privada en un
+  project de equipo sigue siendo solo del autor — el project la
+  organiza, no la expone.
+- `project=` se interpreta dentro del workspace efectivo — el
+  default de la key o el `workspace=` que pases. Sin `workspace=`,
+  nunca asumas que el slug existe en el default: lista primero.
+- El routing es por intención declarada, no por nombre: si el project
+  `ruba` renace como `ruba-web`, sigues el propósito ("trabajo de
+  cliente Ruba"), no el string.
+
+## Anti-patrones
+
+- Hardcodear `workspace="ruba"` — los slugs se renombran, los
+  propósitos no.
+- Escribir al project "porque el nombre suena parecido" sin leer su
+  descripción.
+- Clasificar en un vault — son solo-lectura por diseño.
+- Forzar un project cuando el tema es transversal del workspace:
+  el NULL es un destino legítimo, no un cajón de perdedores.
+"""
+
+_SKILL_PROJECT = """---
+name: nous-project
+description: Crear y configurar projects en Nous — slug, nombre,
+  descripción enrutable, kind regular/vault, miembros y archivo.
+  Usar al crear un project nuevo, revisar el roster, gestionar
+  miembros o decidir archivar.
+---
+
+# Gestión de projects
+
+Un project es una subdivisión cerrada de un workspace: membresía
+propia, memoria aislada por `project_id`, y un `kind` que decide
+cómo lo trata el sueño.
+
+## Tools MCP
+
+- `list_projects(workspace?)` — roster visible (descripción
+  incluida; es la fuente del routing semántico).
+- `create_project(slug, nombre, descripcion?, kind?, workspace?)` —
+  el creador queda como owner del project. `kind`: `regular`
+  (default) o `vault` (archivo minable, solo-lectura en sueño).
+- `project_members(project, add?|remove?|list?, workspace?)` —
+  gestión del roster; exige owner del project u owner del workspace.
+  Un member del workspace NO ve el project hasta ser agregado aquí.
+- `archive_project(project, workspace?)` — `estado=archivado`:
+  bloquea escrituras, conserva lectura. Reactivar vuelve a `activo`.
+
+## Cómo nombrar un project bien
+
+La descripción ES la instrucción de routing — escríbela para que un
+agente que solo lee el roster decida bien:
+
+- `descripcion` responde "¿qué va aquí?" con criterio inclusivo:
+  "Trabajo del cliente Acme: sprints, MRs, decisiones de producto",
+  NO "Proyecto web".
+- `slug` corto, estable y memorable — el nombre puede cambiar, el
+  slug cuesta.
+- Un project por CONTEXTO de trabajo, no por carpeta del repo ni
+  por persona.
+- Antes de crear, verifica que no exista ya un project cuya
+  descripción cubra el tema — dos projects solapados dividen la
+  memoria en silos falsos.
+
+## Vault — archivo minable
+
+`kind=vault` marca el project como bóveda histórica: NUNCA es
+destino de `remember` nuevo; el sueño lo LEE para minar insights
+pero no muta su contenido.
+
+## Cupo
+
+La edición libre permite 5 projects por workspace; owner y licencia
+activa son ilimitados. Un 402 = cupo — propón consolidar antes de
+escalar.
+
+## Anti-patrones
+
+- Un project por cada etiqueta trivial — el umbral es ~30 eventos
+  afines dispersos en nivel workspace.
+- Descripción de una línea vaga: el routing colapsa sin ella.
+- Borrar un project para "limpiar": la memoria cae a NULL y se
+  pierde la organización — archívalo si solo está muerto.
+"""
+
+_SKILL_REORG = """---
+name: nous-reorg
+description: Reorganizar memoria con assign_project (dentro del
+  workspace) o move_events (entre workspaces) — por IDs puntuales o
+  lotes con query/rango, siempre con auditoría en la propia memoria.
+  Usar al corregir memoria mal ubicada, migrar workspaces o hacer
+  split/merge.
+---
+
+# Reorganización de memoria
+
+`assign_project` mueve memorias de un project a otro (o al nivel
+workspace con destino NULL) DENTRO del mismo workspace.
+`move_events` cruza la frontera: mueve memoria a OTRO workspace
+(opcionalmente a un project dentro de él) y las relaciones del
+grafo siguen al evento.
+
+## Cuándo reorganizar
+
+- **Corrección**: "estos 30 mensajes eran de `acme`, no del nivel
+  workspace" — IDs explícitos o query temática.
+- **Dominio equivocado**: memoria de otro workspace cayó aquí —
+  `move_events` al workspace correcto (exige escritura en ambos).
+- **Split**: un project acumuló un subtema que ya merece el suyo.
+- **Merge**: dos projects solapados → uno absorbe al otro.
+- **Dedup retroactivo**: dos memorias contradicen →
+  `supersede_event(viejo, nuevo)` ata la cadena sin borrar.
+
+## Cómo llamarlo
+
+- `event_ids=[...]` — lista explícita para movimientos puntuales
+  (previo `recall`/`timeline` para reunirlos).
+- `query` + `from_unix`/`to_unix` — por criterio: mueve lo que
+  matchea la consulta en ese rango.
+- `to_workspace` + `to_project` (move_events) — destino; `"general"`
+  o NULL = nivel workspace.
+- `workspace`: origen — requerido si no es el default de la key.
+
+## Reglas de seguridad
+
+- **Exige member+ en origen Y destino** — no puedes mover lo que
+  no ves ni a donde no escribes.
+- **scope=personal se respeta**: solo reorganizas lo que ves.
+- **Vault es solo-origen**: puedes SACAR memoria de un vault, nunca
+  meterla.
+- **Lotes con preview**: antes de un `query` masivo, corre el mismo
+  query por `recall`/`timeline` y muestra al usuario el conteo y
+  muestra de 3-5 items.
+
+## Auditoría obligatoria
+
+Cada reorg registra su propio evento en la memoria:
+
+```
+remember(
+  contenido="Reorg: movidos N eventos de <origen> a <destino> — <razón>",
+  kind="event", tags=["nous-reorg"], scope="workspace"
+)
+```
+
+Sin registro, un reorg es invisible y parece drift.
+
+## Anti-patrones
+
+- Mover sin aviso previo al usuario cuando el lote supera ~20
+  eventos.
+- Usar SQL/`UPDATE` directo — `assign_project`/`move_events` existen
+  para que el movimiento valide permisos y quede auditable.
+- Reorg por fecha sola ("todo lo de marzo a X") — la fecha no es
+  propósito; combina query + rango.
+"""
+
+_AGENT_CARTOGRAPHER = """---
+name: nous-cartographer
+description: Topólogo de la memoria — decide dónde vive cada evento
+  (workspace, project), propone nuevos projects, reorganiza memoria
+  con assign_project/move_events y audita el drift de la taxonomía.
+  Delega aquí para routing ambiguo, creación de projects o reorg.
+tools: nous
+---
+
+# Cartógrafo Nous
+
+Decides la topología de la memoria: dónde vive cada cosa, cuándo
+merece su propio project y cuándo la taxonomía se ensució.
+
+## Principio rector: routing semántico
+
+Jamás ruteas por slug. Ruteas por **propósito**: el roster de
+`list_projects` expone `slug`, `nombre`, `descripcion` y `kind` de
+cada project — la descripción ES la instrucción de routing.
+
+## Protocolo de clasificación
+
+1. **Roster**: `list_projects(workspace)` + `list_workspaces()` —
+   lee descripciones, no solo slugs.
+2. **Semántica**: ¿el contenido matchea la descripción de un project?
+   - Match claro → ese project.
+   - Sin match pero matchea el workspace → nivel workspace
+     (`project_id=NULL` — no fuerces taxonomía).
+   - Varios compatibles → el más específico por descripción.
+3. **Evidencia pobre → pide contexto**: si el fragmento aislado no
+   basta, solicita al llamante el hilo de la conversación (quién
+   habla, de qué proyecto se trata, qué repo/cliente se menciona).
+   Con el hilo repite el paso 2.
+4. **Persiste la ambigüedad → responde "necesito X"**: nunca
+   clasifiques mal por no preguntar.
+
+## Tus tres operaciones
+
+- **Routing** (`nous-route`): para cada memoria nueva, decide
+  `(workspace, project)` siguiendo el protocolo.
+- **Creación** (`nous-project`): detecta que un tema creció lo
+  bastante — umbral ~30 eventos afines en nivel workspace. PROPÓN
+  el project; el usuario decide — no creas sin luz verde explícita.
+- **Reorg** (`nous-reorg`): `assign_project` dentro del workspace,
+  `move_events` entre workspaces — siempre con criterio auditable
+  y siempre registrando el movimiento con `remember` kind `event`.
+
+## Higiene periódica
+
+- **Drift**: un project cuyo contenido reciente ya no matchea su
+  descripción → propón split o merge, con conteos y ejemplos.
+- **Vault watch**: los insights minados del vault aterrizan en el
+  project de sus constituyentes o a nivel workspace — nunca dentro
+  del vault.
+- **Huérfanos**: temas repetidos en nivel workspace sin project →
+  candidatos a creación.
+- **Descripciones muertas**: projects sin actividad en meses →
+  proponer `estado=archivado`, no borrado.
+
+## Límites
+
+- `scope=personal` es frontera dura: nunca reubiques una memoria
+  personal a un project de equipo.
+- `assign_project`/`move_events` exigen member+ en el destino — si
+  no lo tienes, reporta el bloqueo; no busques rodeos.
+- Nunca borres un project sin confirmación explícita.
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class Artefacto:
@@ -1692,6 +1961,9 @@ ARTEFACTOS: tuple[Artefacto, ...] = (
     Artefacto("nous-archive", _SKILL_ARCHIVE, es_agente=False),
     Artefacto("nous-persona", _SKILL_PERSONA, es_agente=False),
     Artefacto("nous-deep", _SKILL_DEEP, es_agente=False),
+    Artefacto("nous-route", _SKILL_ROUTE, es_agente=False),
+    Artefacto("nous-project", _SKILL_PROJECT, es_agente=False),
+    Artefacto("nous-reorg", _SKILL_REORG, es_agente=False),
     Artefacto("nous-keeper", _AGENT_MEMORISTA, es_agente=True),
     Artefacto("nous-curator", _AGENT_CURATOR, es_agente=True),
     Artefacto("nous-pathfinder", _AGENT_PATHFINDER, es_agente=True),
@@ -1699,6 +1971,7 @@ ARTEFACTOS: tuple[Artefacto, ...] = (
     Artefacto("nous-dreamer", _AGENT_DREAMER, es_agente=True),
     Artefacto("nous-soulkeeper", _AGENT_SOULKEEPER, es_agente=True),
     Artefacto("nous-deepmind", _AGENT_DEEPMIND, es_agente=True),
+    Artefacto("nous-cartographer", _AGENT_CARTOGRAPHER, es_agente=True),
 )
 
 # Subdirectorio de agentes por target conocido (varía por herramienta).
