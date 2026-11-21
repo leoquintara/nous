@@ -84,3 +84,47 @@ def test_cliente_actual_normaliza_nombre() -> None:
         assert _cliente_actual() == "gemini-cli-1-0"
     finally:
         request_ctx.reset(token)
+
+
+def test_catalogo_skills_lista_artefactos() -> None:
+    """El catálogo expone skills y agentes con descripción e instalación."""
+    import asyncio
+
+    from src.mcp.tools import _catalogo_skills
+
+    catalogo = asyncio.run(_catalogo_skills())
+    nombres = {a["name"] for a in catalogo["artifacts"]}
+    assert "nous-remember" in nombres
+    assert "nous-keeper" in nombres
+    assert {"cli", "remote"} <= set(catalogo["install"])
+    assert all(a["kind"] in ("skill", "agent") for a in catalogo["artifacts"])
+    assert any(a["description"] for a in catalogo["artifacts"])
+
+
+def test_catalogo_skills_devuelve_contenido_por_nombre() -> None:
+    """Con nombre devuelve el SKILL.md completo y su ruta destino."""
+    import asyncio
+
+    from src.mcp.tools import _catalogo_skills
+
+    art = asyncio.run(_catalogo_skills("nous-remember"))
+    assert art["kind"] == "skill"
+    assert art["path_hint"] == "skills/nous-remember/SKILL.md"
+    assert art["content"].startswith("---")
+
+    agente = asyncio.run(_catalogo_skills("nous-keeper"))
+    assert agente["kind"] == "agent"
+    assert agente["path_hint"] == "agents/nous-keeper.md"
+
+
+def test_catalogo_skills_nombre_invalido_lista_disponibles() -> None:
+    """Nombre inexistente → ErrorValidacion con el listado."""
+    import asyncio
+
+    import pytest
+
+    from src.core.exceptions import ErrorValidacion
+    from src.mcp.tools import _catalogo_skills
+
+    with pytest.raises(ErrorValidacion, match="nous-remember"):
+        asyncio.run(_catalogo_skills("no-existe"))

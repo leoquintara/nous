@@ -1757,3 +1757,27 @@ async def assign_project(
             project, event_ids, query, from_unix, to_unix, workspace
         )
     )
+
+
+@mcp_server.tool()
+async def skills(name: str | None = None) -> dict[str, Any]:
+    """Nous's own skills and agents catalog — discover and self-install.
+
+    Nous ships packaged skills (nous-remember, nous-recall, nous-route…)
+    and agents (nous-keeper, nous-curator…) that teach an AI agent the
+    memory conventions and how to use these tools. A remote agent that
+    cannot run ``nous skills install`` discovers them here and writes
+    the files into its own environment.
+
+    USE WHEN: onboarding a new agent to Nous, or when an agent asks
+    "what skills/agents does Nous provide?" — list with no args, fetch
+    content by ``name`` to install.
+
+    Args:
+        name: Artifact name (e.g. "nous-remember"); omit to list all.
+
+    Returns:
+        Catalog of {name, kind, description} + install hints, or the
+        full {name, kind, path_hint, content} for one artifact.
+    """
+    return traducir_payload(await _es._catalogo_skills(name))
