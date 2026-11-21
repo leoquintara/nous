@@ -32,6 +32,7 @@ from src.core.identidad import (
     Contexto,
     _slugs_disponibles,
     _verificar_cupo_projects,
+    resolver_workspace,
 )
 from src.storage.database import get_session
 from src.storage.models import (
@@ -520,4 +521,127 @@ async def asignar_proyecto(
         return {
             "moved": int(resultado.rowcount or 0),
             "destino": destino_slug,
+        }
+
+
+async def mover_workspace(
+    engine: AsyncEngine,
+    ctx: Contexto,
+    a_workspace: str,
+    destino: str | None = None,
+    evento_ids: list[str] | None = None,
+    query: str | None = None,
+    desde: int | None = None,
+    hasta: int | None = None,
+) -> dict[str, Any]:
+    """Mueve eventos a OTRO workspace (y opcionalmente a un project).
+
+    Exige escritura en el origen (``_ctx_escritura`` ya lo verificó)
+    y en el destino — la membresía del llamante en el destino fija su
+    rol allí. La selección filtra por la visibilidad del llamante en
+    el origen: nunca toca lo que no puede ver. Las relaciones del
+    grafo siguen al evento (``relaciones.workspace_id`` se actualiza).
+
+    Args:
+        a_workspace: Slug/UUID del workspace destino.
+        destino: Slug/UUID del project dentro del destino, o
+            ``None``/``"general"`` para el nivel workspace.
+        evento_ids: Selección explícita de UUIDs.
+        query: Filtro de texto (tsv español).
+        desde/hasta: Ventana ``timestamp_unix`` opcional.
+
+    Returns:
+        ``{"moved": n, "workspace": ref, "project": slug|None}``.
+    """
+    if ctx.key_proyecto_id is not None:
+        raise PermisoDenegadoError(
+            "project-scoped key cannot move events across workspaces"
+        )
+    ctx_dst = await resolver_workspace(engine, ctx, a_workspace)
+    if ctx_dst.workspace_id == ctx.workspace_id:
+        raise ErrorValidacion(
+            "source and destination are the same workspace — "
+            "use assign_project for moves inside a workspace"
+        )
+    if not ctx_dst.puede_escribir:
+        raise PermisoDenegadoError(
+            f"write access required in destination: {a_workspace!r}"
+        )
+    destino_id: uuid.UUID | None = None
+    destino_slug: str | None = None
+    async with get_session(engine) as session:
+        if destino and destino != "general":
+            proyecto = await _proyecto_o_error(session, ctx_dst, destino)
+            rol = _requerir_miembro_project(
+                await _rol_proyecto(session, ctx_dst, proyecto), destino
+            )
+            _requerir_escritura_project(proyecto, rol, destino)
+            destino_id = proyecto.id
+            destino_slug = proyecto.slug
+        condiciones = [EventoModel.workspace_id == ctx.workspace_id]
+        if ctx.usuario_id is not None:
+            condiciones.append(
+                or_(
+                    EventoModel.scope == "workspace",
+                    EventoModel.autor_id == ctx.usuario_id,
+                    EventoModel.autor_id.is_(None),
+                )
+            )
+        if ctx.projects_visibles is not None:
+            condiciones.append(
+                or_(
+                    EventoModel.project_id.is_(None),
+                    EventoModel.project_id.in_(ctx.projects_visibles),
+                )
+            )
+        if evento_ids:
+            ids = [uuid.UUID(e) for e in evento_ids]
+            condiciones.append(EventoModel.id.in_(ids))
+        if query:
+            condiciones.append(
+                EventoModel.contenido_tsv.op("@@")(
+                    func.plainto_tsquery("spanish", query)
+                )
+            )
+        if desde is not None:
+            condiciones.append(EventoModel.timestamp_unix >= desde)
+        if hasta is not None:
+            condiciones.append(EventoModel.timestamp_unix <= hasta)
+        if not (evento_ids or query or desde is not None or hasta):
+            raise ErrorValidacion(
+                "move_events needs a selector: event_ids, query "
+                "or a time range"
+            )
+        resultado = cast(
+            CursorResult[EventoModel],
+            await session.execute(
+                update(EventoModel)
+                .where(*condiciones)
+                .values(
+                    workspace_id=ctx_dst.workspace_id,
+                    project_id=destino_id,
+                )
+                .returning(EventoModel.id)
+            ),
+        )
+        ids_movidos = list(resultado.scalars().all())
+        if ids_movidos:
+            from src.storage.models import RelacionModel
+
+            await session.execute(
+                update(RelacionModel)
+                .where(
+                    RelacionModel.workspace_id == ctx.workspace_id,
+                    or_(
+                        RelacionModel.origen_id.in_(ids_movidos),
+                        RelacionModel.destino_id.in_(ids_movidos),
+                    ),
+                )
+                .values(workspace_id=ctx_dst.workspace_id)
+            )
+        await session.commit()
+        return {
+            "moved": len(ids_movidos),
+            "workspace": a_workspace,
+            "project": destino_slug,
         }

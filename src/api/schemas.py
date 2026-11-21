@@ -395,6 +395,13 @@ class MemberPatch(BaseModel):
     role: Literal["member", "viewer"]
 
 
+class MemberAddRequest(BaseModel):
+    """Body to add an existing user to a workspace by handle."""
+
+    handle: str = Field(min_length=1, max_length=64)
+    role: Literal["member", "viewer"] = "member"
+
+
 class ProjectRequest(BaseModel):
     """Body to create a project inside a workspace."""
 
@@ -470,6 +477,14 @@ class RedeemResponse(BaseModel):
     key: str
 
 
+class KeyPatch(BaseModel):
+    """Body to update an own key (label, default ws, staged writes)."""
+
+    name: str | None = Field(default=None, max_length=80)
+    workspace_default_id: str | None = Field(default=None)
+    approval: bool | None = None
+
+
 class KeyRequest(BaseModel):
     """Body to issue a new own key."""
 
@@ -541,6 +556,25 @@ class ArchiveRequest(BaseModel):
     """Body to manually archive an event — reversible forgetting."""
 
     reason: str | None = Field(default=None, max_length=200)
+    workspace: str | None = Field(default=None, max_length=64)
+
+
+class SupersedeRequest(BaseModel):
+    """Body to mark an event as superseded by another (retroactive)."""
+
+    superseded_by: str = Field(min_length=1, max_length=64)
+    workspace: str | None = Field(default=None, max_length=64)
+
+
+class MoveEventsRequest(BaseModel):
+    """Body to move events across workspaces (cross-workspace reorg)."""
+
+    to_workspace: str = Field(min_length=1, max_length=64)
+    to_project: str | None = Field(default=None, max_length=80)
+    event_ids: list[str] | None = None
+    query: str | None = Field(default=None, max_length=2000)
+    from_unix: int | None = None
+    to_unix: int | None = None
     workspace: str | None = Field(default=None, max_length=64)
 
 

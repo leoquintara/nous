@@ -817,6 +817,34 @@ async def remove_member(handle: str, workspace: str | None = None) -> dict[str, 
 
 
 @mcp_server.tool()
+async def add_member(
+    handle: str,
+    role: str = "member",
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Adds an EXISTING user to the workspace. Requires owner.
+
+    ``invite_member`` creates a new identity via an invitation token;
+    this grants access to an identity that already exists — e.g. an
+    agent with its own user that must also see another workspace.
+
+    USE WHEN: an agent/user already registered needs membership in an
+    additional workspace (multi-workspace access).
+
+    Args:
+        handle: Existing user handle (from ``list_users``).
+        role: "member" (write) or "viewer" (read-only).
+        workspace: Slug or UUID; None uses the key's default.
+
+    Returns:
+        Dict with "handle" and "role".
+    """
+    return traducir_payload(
+        await _es._agregar_miembro_workspace(handle, role, workspace)
+    )
+
+
+@mcp_server.tool()
 async def create_intention(
     intention: str,
     at: str | int | None = None,
@@ -1531,6 +1559,34 @@ async def approve_all_pending(workspace: str | None = None) -> dict[str, Any]:
     return traducir_payload(await _es._aprobar_pendientes(workspace))
 
 
+@mcp_server.tool()
+async def supersede_event(
+    event_id: str,
+    superseded_by: str,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Marks an existing event as superseded by another — retroactive.
+
+    ``remember`` only links a supersede chain at creation time
+    (``supersedes_id``). This tool ties the knot afterwards: the old
+    event stays as archaeology but recall treats it as replaced.
+
+    USE WHEN: two memories contradict or duplicate each other and the
+    newer one should win — e.g. an outdated phone number or rule.
+
+    Args:
+        event_id: The event being superseded (stays as archaeology).
+        superseded_by: The newer event that replaces it (chain head).
+        workspace: Slug or UUID; None uses the key's default.
+
+    Returns:
+        {"id": old_id, "superseded_by": new_id}.
+    """
+    return traducir_payload(
+        await _es._sustituir_evento(event_id, superseded_by, workspace)
+    )
+
+
 # ── Projects (spec 2026-10-30) ────────────────────────────────────
 # Projects subdivide a workspace: closed compartments with their own
 # membership. NULL project_id = workspace-level memory. kind="vault"
@@ -1755,6 +1811,49 @@ async def assign_project(
     return traducir_payload(
         await _es._asignar_proyecto(
             project, event_ids, query, from_unix, to_unix, workspace
+        )
+    )
+
+
+@mcp_server.tool()
+async def move_events(
+    to_workspace: str,
+    to_project: str | None = None,
+    event_ids: list[str] | None = None,
+    query: str | None = None,
+    from_unix: int | None = None,
+    to_unix: int | None = None,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Moves memories to ANOTHER workspace — cross-workspace reorg.
+
+    ``assign_project`` moves memory inside a workspace; this tool
+    crosses the boundary (e.g. Ruba-domain events misplaced in
+    ``personal`` → ``ruba``). Relation edges follow the events.
+
+    Requires write access in BOTH source and destination; selection
+    only touches what the caller can see in the source. A selector is
+    mandatory — refuses to move everything blindly.
+
+    USE WHEN: memory landed in the wrong workspace and must be
+    relocated, or a workspace split/merge reorganizes domains.
+
+    Args:
+        to_workspace: Destination workspace slug/UUID.
+        to_project: Project inside the destination (None/"general" =
+            workspace level).
+        event_ids: Explicit UUID list.
+        query: Full-text filter (Spanish tsvector) for semantic batches.
+        from_unix/to_unix: Optional timestamp window.
+        workspace: Source workspace override (key's default if None).
+
+    Returns:
+        {"moved": n, "workspace": to_workspace, "project": slug|null}.
+    """
+    return traducir_payload(
+        await _es._mover_eventos(
+            to_workspace, to_project, event_ids, query,
+            from_unix, to_unix, workspace,
         )
     )
 

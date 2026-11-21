@@ -765,3 +765,208 @@ async def test_objetivos_validacion(cliente: AsyncClient) -> None:
         },
     )
     assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_supersede_event_enlaza_retroactivo(
+    cliente: AsyncClient,
+) -> None:
+    """POST /events/{id}/supersede marca el viejo reemplazado por el nuevo."""
+    import uuid as _uuid
+
+    marca = _uuid.uuid4().hex[:8]
+    r_viejo = await cliente.post(
+        "/api/events",
+        json={"content": f"qzx regla vieja {marca} zq9"},
+    )
+    r_nuevo = await cliente.post(
+        "/api/events",
+        json={"content": f"qzx regla nueva {marca} zq9"},
+    )
+    assert r_viejo.status_code in (200, 201)
+    viejo_id = r_viejo.json()["id"]
+    nuevo_id = r_nuevo.json()["id"]
+
+    r = await cliente.post(
+        f"/api/events/{viejo_id}/supersede",
+        json={"superseded_by": nuevo_id},
+    )
+    assert r.status_code == 200
+    assert r.json()["superseded_by"] == nuevo_id
+
+    r_list = await cliente.get(f"/api/events?query={marca}")
+    viejo = [e for e in r_list.json() if e["id"] == viejo_id][0]
+    assert viejo["superseded_by"] == nuevo_id
+
+    r_self = await cliente.post(
+        f"/api/events/{nuevo_id}/supersede",
+        json={"superseded_by": nuevo_id},
+    )
+    assert r_self.status_code == 422
+    for eid in (viejo_id, nuevo_id):
+        await cliente.delete(f"/api/events/{eid}")
+
+
+@pytest.mark.asyncio
+async def test_move_events_cruza_workspaces(
+    cliente: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POST /events/move reubica memoria a otro workspace.
+
+    El origen filtra por visibilidad del llamante; el destino exige
+    escritura (owner cumple). Las relaciones siguen al evento.
+    """
+    import uuid as _uuid
+
+    from sqlalchemy import text as _t
+
+    from src.api import auth as _auth
+    from src.api import routes as _routes
+    from src.storage.database import obtener_engine
+
+    engine = obtener_engine()
+    monkeypatch.setattr(_auth, "obtener_engine", lambda: engine)
+    monkeypatch.setattr(_routes, "obtener_engine", lambda: engine)
+
+    slug = f"wsmv-{_uuid.uuid4().hex[:6]}"
+    r_ws = await cliente.post(
+        "/api/workspaces", json={"slug": slug, "name": "MV Test"}
+    )
+    assert r_ws.status_code in (200, 201)
+    ws_id = r_ws.json()["id"]
+
+    marca = f"qzx mv {_uuid.uuid4().hex[:8]} zq9"
+    r_ev = await cliente.post("/api/events", json={"content": marca})
+    ev_id = r_ev.json()["id"]
+
+    try:
+        r = await cliente.post(
+            "/api/events/move",
+            json={"to_workspace": slug, "event_ids": [ev_id]},
+        )
+        assert r.status_code == 200
+        assert r.json()["moved"] == 1
+        assert r.json()["workspace"] == slug
+
+        r_dst = await cliente.get(
+            f"/api/events?workspace={slug}&query={marca}"
+        )
+        assert any(e["id"] == ev_id for e in r_dst.json())
+        r_src = await cliente.get(f"/api/events?query={marca}")
+        assert all(e["id"] != ev_id for e in r_src.json())
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(
+                _t("DELETE FROM eventos WHERE contenido LIKE 'qzx mv%'")
+            )
+            await conn.execute(
+                _t("DELETE FROM miembros WHERE workspace_id = :w"),
+                {"w": ws_id},
+            )
+            await conn.execute(
+                _t("DELETE FROM workspaces WHERE id = :w"), {"w": ws_id}
+            )
+
+
+@pytest.mark.asyncio
+async def test_add_member_incorpora_usuario_existente(
+    cliente: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POST /workspaces/{ref}/members agrega un usuario por handle."""
+    import uuid as _uuid
+
+    from sqlalchemy import text as _t
+
+    from src.api import auth as _auth
+    from src.api import routes as _routes
+    from src.core import identidad as idn
+    from src.storage.database import obtener_engine
+
+    engine = obtener_engine()
+    monkeypatch.setattr(_auth, "obtener_engine", lambda: engine)
+    monkeypatch.setattr(_routes, "obtener_engine", lambda: engine)
+
+    handle = f"am-{_uuid.uuid4().hex[:8]}"
+    u = await idn.crear_usuario(engine, handle, "Add Member")
+    slug = f"wsam-{_uuid.uuid4().hex[:6]}"
+    r_ws = await cliente.post(
+        "/api/workspaces", json={"slug": slug, "name": "AM Test"}
+    )
+    assert r_ws.status_code in (200, 201)
+    ws_id = r_ws.json()["id"]
+
+    try:
+        r = await cliente.post(
+            f"/api/workspaces/{slug}/members",
+            json={"handle": handle, "role": "member"},
+        )
+        assert r.status_code == 201
+        assert r.json()["handle"] == handle
+
+        r_dup = await cliente.post(
+            f"/api/workspaces/{slug}/members",
+            json={"handle": handle, "role": "member"},
+        )
+        assert r_dup.status_code == 422
+
+        r_roster = await cliente.get(f"/api/workspaces/{slug}/members")
+        assert handle in [m["handle"] for m in r_roster.json()]
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(
+                _t("DELETE FROM miembros WHERE usuario_id = :u"),
+                {"u": u.id},
+            )
+            await conn.execute(
+                _t("DELETE FROM usuarios WHERE id = :u"), {"u": u.id}
+            )
+            await conn.execute(
+                _t("DELETE FROM workspaces WHERE id = :w"), {"w": ws_id}
+            )
+
+
+@pytest.mark.asyncio
+async def test_update_key_cambia_aprobacion(
+    cliente: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PATCH /keys/{ref} alterna staged-writes de una key propia."""
+
+    from sqlalchemy import text as _t
+
+    from src.api import auth as _auth
+    from src.api import routes as _routes
+    from src.core.identidad import USUARIO_OWNER_ID, emitir_key_usuario
+    from src.storage.database import obtener_engine
+
+    engine = obtener_engine()
+    monkeypatch.setattr(_auth, "obtener_engine", lambda: engine)
+    monkeypatch.setattr(_routes, "obtener_engine", lambda: engine)
+
+    key = await emitir_key_usuario(engine, USUARIO_OWNER_ID)
+    prefijo = key[:11]
+    try:
+        r = await cliente.patch(
+            f"/api/keys/{prefijo}", json={"approval": True}
+        )
+        assert r.status_code == 200
+        assert r.json()["staged_writes"] is True
+
+        r_off = await cliente.patch(
+            f"/api/keys/{prefijo}", json={"approval": False}
+        )
+        assert r_off.status_code == 200
+        assert r_off.json()["staged_writes"] is False
+
+        r_404 = await cliente.patch(
+            "/api/keys/ns_u_000000", json={"approval": True}
+        )
+        assert r_404.status_code == 404
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(
+                _t("DELETE FROM api_keys WHERE prefijo = :p"),
+                {"p": prefijo},
+            )

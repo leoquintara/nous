@@ -49,13 +49,16 @@ from src.api.schemas import (
     IntentionRequest,
     InvitationRequest,
     InvitationResponse,
+    KeyPatch,
     KeyRequest,
     KeyResponse,
     LicenseSummary,
     LoginRequest,
     LoginResponse,
+    MemberAddRequest,
     MemberPatch,
     MemberSummary,
+    MoveEventsRequest,
     PingsStats,
     PredictionRequest,
     PredictRequest,
@@ -74,6 +77,7 @@ from src.api.schemas import (
     SourcePatch,
     SourceRequest,
     SourceResponse,
+    SupersedeRequest,
     TagResponse,
     TrustSourceRequest,
     UserSummary,
@@ -1145,6 +1149,27 @@ async def list_members(ref: str) -> list[MemberSummary]:
     ]
 
 
+@router.post(
+    "/workspaces/{ref}/members",
+    dependencies=[Depends(requerir_escritura)],
+    status_code=201,
+)
+async def add_member(ref: str, request_body: MemberAddRequest) -> dict[str, Any]:
+    """Adds an EXISTING user to the workspace by handle — owners only.
+
+    Invitations create new users; this grants an already-registered
+    identity (e.g. an agent's user) membership in another workspace.
+    """
+    _ctx, ctx_ws = await _ctx_owner_en(ref)
+    await idn.agregar_miembro_workspace(
+        obtener_engine(),
+        ctx_ws.workspace_id,
+        request_body.handle,
+        request_body.role,
+    )
+    return {"handle": request_body.handle, "role": request_body.role}
+
+
 @router.patch(
     "/workspaces/{ref}/members/{uid}",
     dependencies=[Depends(requerir_escritura)],
@@ -1430,13 +1455,14 @@ async def create_key(request_body: KeyRequest) -> dict[str, str]:
     ctx = await contexto_actual(engine)
     if ctx.usuario_id is None:
         raise HTTPException(422, "no user identity (development mode)")
-    ws_default = (
-        _uuid(request_body.workspace_default_id)
-        if request_body.workspace_default_id
-        else ctx.workspace_id
-    )
     if request_body.workspace_default_id is not None:
-        await idn.resolver_workspace(engine, ctx, request_body.workspace_default_id)
+        # Slug o UUID — el resolver valida membresía en el destino.
+        ctx_dst = await idn.resolver_workspace(
+            engine, ctx, request_body.workspace_default_id
+        )
+        ws_default = ctx_dst.workspace_id
+    else:
+        ws_default = ctx.workspace_id
     key = await idn.emitir_key_usuario(
         engine,
         ctx.usuario_id,
@@ -1445,6 +1471,36 @@ async def create_key(request_body: KeyRequest) -> dict[str, str]:
         aprobacion=request_body.approval,
     )
     return {"key": key}
+
+
+@router.patch(
+    "/keys/{ref}",
+    dependencies=[Depends(verificar_token)],
+)
+async def update_key(ref: str, request_body: KeyPatch) -> KeyResponse:
+    """Updates an own key: label, default workspace, staged writes."""
+    engine = obtener_engine()
+    ctx = await contexto_actual(engine)
+    if ctx.usuario_id is None:
+        raise HTTPException(422, "no user identity (development mode)")
+    ws_default = None
+    if request_body.workspace_default_id is not None:
+        # Slug o UUID — el resolver valida membresía en el destino.
+        ctx_dst = await idn.resolver_workspace(
+            engine, ctx, request_body.workspace_default_id
+        )
+        ws_default = ctx_dst.workspace_id
+    fila = await idn.actualizar_key_usuario(
+        engine,
+        ctx.usuario_id,
+        ref,
+        nombre=request_body.name,
+        workspace_default_id=ws_default,
+        aprobacion=request_body.approval,
+    )
+    if fila is None:
+        raise HTTPException(404, "key not found")
+    return _key_summary(fila)
 
 
 @router.delete(
@@ -1618,6 +1674,51 @@ async def curate_event(
     """
     curado = True if request_body is None else request_body.curated
     return traducir_payload(await tools_impl._marcar_curado(event_id, curado, workspace))
+
+
+@router.post(
+    "/events/{event_id}/supersede",
+    dependencies=[Depends(requerir_escritura)],
+)
+async def supersede_event(
+    event_id: str,
+    request_body: SupersedeRequest,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Marks this memory as superseded by another — retroactive link.
+
+    The old event stays as archaeology; the new one heads the chain.
+    """
+    ws = workspace or request_body.workspace
+    return traducir_payload(
+        await tools_impl._sustituir_evento(
+            event_id, request_body.superseded_by, ws
+        )
+    )
+
+
+@router.post(
+    "/events/move",
+    dependencies=[Depends(requerir_escritura)],
+)
+async def move_events(request_body: MoveEventsRequest) -> dict[str, Any]:
+    """Moves events to another workspace — cross-workspace reorg.
+
+    Requires write access in both source and destination; selection
+    only touches what the caller can see in the source.
+    """
+    b = request_body
+    return traducir_payload(
+        await tools_impl._mover_eventos(
+            b.to_workspace,
+            b.to_project,
+            b.event_ids,
+            b.query,
+            b.from_unix,
+            b.to_unix,
+            b.workspace,
+        )
+    )
 
 
 # ---------------------------------------------------------------------

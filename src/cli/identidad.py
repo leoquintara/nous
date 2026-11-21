@@ -16,6 +16,7 @@ from src.cli.main import _json
 from src.core.exceptions import ErrorValidacion
 from src.core.identidad import (
     USUARIO_OWNER_ID,
+    actualizar_key_usuario,
     canjear_invitacion,
     crear_invitacion,
     crear_usuario,
@@ -101,6 +102,34 @@ def registrar_subparsers(sub: "argparse._SubParsersAction") -> None:  # type: ig
     )
     k_rev = k_sub.add_parser("revoke", help="Revokes a key by UUID or prefix.")
     k_rev.add_argument("ref", metavar="ref", help="UUID or ns_u_xxxx prefix of the key.")
+    k_upd = k_sub.add_parser(
+        "update", help="Updates label, default workspace or approval flag."
+    )
+    k_upd.add_argument("ref", metavar="ref", help="UUID or ns_u_xxxx prefix of the key.")
+    k_upd.add_argument(
+        "--user", "--usuario", required=True, help="User handle (keys are per-user)."
+    )
+    k_upd.add_argument(
+        "--workspace",
+        default=None,
+        help="New default workspace (slug or UUID).",
+    )
+    k_upd.add_argument("--name", "--nombre", default=None, help="New label.")
+    k_flag = k_upd.add_mutually_exclusive_group()
+    k_flag.add_argument(
+        "--approval",
+        "--aprobacion",
+        dest="approval",
+        action="store_true",
+        default=None,
+        help="Enable staged writes for this key.",
+    )
+    k_flag.add_argument(
+        "--no-approval",
+        dest="approval",
+        action="store_false",
+        help="Disable staged writes for this key.",
+    )
     k_list = k_sub.add_parser("list", help="Lists keys (no hash).")
     k_list.add_argument("--user", "--usuario", default=None, help="Filter by handle.")
     k_list.add_argument("--json", action="store_true", help="JSON output.")
@@ -117,6 +146,7 @@ def cmd_identidad(comando: str, args: argparse.Namespace) -> int:
         ("workspaces", "redeem"): _ws_canjear,
         ("keys", "create"): _keys_create,
         ("keys", "revoke"): _keys_revoke,
+        ("keys", "update"): _keys_update,
         ("keys", "list"): _keys_list,
     }
     accion = {"canjear": "redeem"}.get(args.accion, args.accion)
@@ -310,6 +340,35 @@ async def _keys_create(args: argparse.Namespace) -> int:
     finally:
         await engine.dispose()
     sys.stdout.write(ui.negrita(f"Key (una sola vez): {key}") + "\n")
+    return 0
+
+
+async def _keys_update(args: argparse.Namespace) -> int:
+    """``nous keys update`` — label, default ws o flag de aprobación."""
+    engine = crear_engine()
+    try:
+        usuario = await _usuario_por_handle(engine, args.user)
+        ws = (
+            await _workspace_por_slug(engine, args.workspace)
+            if args.workspace
+            else None
+        )
+        fila = await actualizar_key_usuario(
+            engine,
+            usuario.id,
+            args.ref,
+            nombre=args.name,
+            workspace_default_id=ws.id if ws else None,
+            aprobacion=args.approval,
+        )
+    finally:
+        await engine.dispose()
+    if fila is None:
+        sys.stderr.write(
+            ui.error(f"key no encontrada para {args.user}: {args.ref}") + "\n"
+        )
+        return 1
+    sys.stdout.write(ui.ok(f"Key actualizada: {fila.prefijo}…") + "\n")
     return 0
 
 

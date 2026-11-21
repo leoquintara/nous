@@ -933,6 +933,52 @@ async def listar_keys(
         return list((await session.execute(stmt)).scalars().all())
 
 
+async def actualizar_key_usuario(
+    engine: AsyncEngine,
+    usuario_id: uuid.UUID,
+    ref: str,
+    nombre: str | None = None,
+    workspace_default_id: uuid.UUID | None = None,
+    aprobacion: bool | None = None,
+) -> ApiKeyModel | None:
+    """Actualiza una key propia por UUID o prefijo ``ns_u_xxxx``.
+
+    Solo campos provistos se tocan — ``None`` = sin cambio. El
+    workspace default cambia a dónde aterriza la key sin
+    ``workspace=`` explícito; ``aprobacion`` activa/apaga staged.
+
+    Returns:
+        La key actualizada, o ``None`` si no existe o no es del
+        llamante.
+    """
+    global _cache_ctx
+    try:
+        key_id = uuid.UUID(ref)
+    except ValueError:
+        key_id = None
+    async with get_session(engine) as session:
+        stmt = select(ApiKeyModel).where(
+            ApiKeyModel.usuario_id == usuario_id,
+            (ApiKeyModel.id == key_id)
+            if key_id is not None
+            else (ApiKeyModel.prefijo == ref),
+        )
+        fila = (await session.execute(stmt)).scalar_one_or_none()
+        if fila is None:
+            return None
+        if nombre is not None:
+            fila.nombre = nombre
+        if workspace_default_id is not None:
+            fila.workspace_default_id = workspace_default_id
+        if aprobacion is not None:
+            fila.aprobacion = aprobacion
+        await session.commit()
+    # El Contexto cachea workspace default + aprobación por key —
+    # sin limpiar, la key seguiría resolviendo la config vieja.
+    _cache_ctx.clear()
+    return fila
+
+
 async def crear_invitacion(
     engine: AsyncEngine,
     workspace_id: uuid.UUID,
@@ -1161,6 +1207,55 @@ async def listar_miembros(
         )
         for m, u in filas
     ]
+
+
+async def agregar_miembro_workspace(
+    engine: AsyncEngine,
+    workspace_id: uuid.UUID,
+    handle: str,
+    rol: str = "member",
+) -> None:
+    """Agrega un usuario existente a un workspace por su handle.
+
+    El alta por invitación crea usuarios nuevos; esta vía incorpora
+    una identidad ya registrada (p. ej. un agente con usuario propio).
+
+    Args:
+        engine: Engine async.
+        workspace_id: Workspace destino.
+        handle: Handle del usuario (``muse``, ``qwen``…).
+        rol: ``member`` o ``viewer`` (owner se crea al crear el ws).
+
+    Raises:
+        ErrorValidacion: Handle inexistente, rol inválido o el
+            usuario ya es miembro.
+    """
+    if rol not in ("member", "viewer"):
+        raise ErrorValidacion(f"invalid role: {rol!r}")
+    async with get_session(engine) as session:
+        usuario = (
+            await session.execute(
+                select(UsuarioModel).where(UsuarioModel.handle == handle)
+            )
+        ).scalar_one_or_none()
+        if usuario is None:
+            raise ErrorValidacion(f"user not found: {handle!r}")
+        existe = (
+            await session.execute(
+                select(MiembroModel).where(
+                    MiembroModel.workspace_id == workspace_id,
+                    MiembroModel.usuario_id == usuario.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if existe is not None:
+            raise ErrorValidacion(f"{handle!r} is already a member")
+        session.add(
+            MiembroModel(
+                workspace_id=workspace_id, usuario_id=usuario.id, rol=rol
+            )
+        )
+        await session.commit()
 
 
 async def _es_ultimo_owner(

@@ -39,6 +39,8 @@ el dominio interno y el storage conservan vocabulario español.
 | DELETE | `/events/{event_id}` | Olvido irreversible — borra el evento y sus vínculos |
 | POST | `/events/{event_id}/forget` | Olvido dirigido — marca sin borrar (auditable) |
 | POST | `/events/{event_id}/archive` · `/events/{event_id}/curate` | Ciclo de vida manual: archivar / promover a curada |
+| POST | `/events/{event_id}/supersede` | Supersede retroactivo — `{"superseded_by": "<uuid>"}` marca el viejo reemplazado por el nuevo |
+| POST | `/events/move` | Mueve memoria a OTRO workspace (`to_workspace`, `to_project?`, `event_ids`\|`query`\|rango) — exige escritura en ambos; las relaciones siguen al evento |
 | GET | `/search` | Búsqueda híbrida (BM25+vector+RRF+recencia+reranker); params `q`, `dimension`, `branch` (default `main`, `"*"` = todas), `project` |
 | GET | `/gaps` | Mapa de lagunas — lo que una consulta NO cubrió (Neuro-6) |
 | GET | `/entity` | Ficha de entidad: card + grafo + span temporal |
@@ -113,12 +115,14 @@ el dominio interno y el storage conservan vocabulario español.
 | GET | `/identity` | Whoami: usuario, workspace activo, workspaces con rol, estado de licencia |
 | POST | `/workspaces` | Crea workspace (el llamante queda owner) |
 | GET | `/workspaces/{ref}/members` | Roster del workspace (cualquier miembro) |
+| POST | `/workspaces/{ref}/members` | Incorpora usuario EXISTENTE por `handle` — solo owner (las invitaciones crean usuarios nuevos) |
 | PATCH | `/workspaces/{ref}/members/{uid}` | Cambia rol member↔viewer — solo owner |
 | DELETE | `/workspaces/{ref}/members/{uid}` | Expulsa miembro — solo owner; último owner protegido |
 | POST | `/workspaces/{ref}/invitations` | Emite `ns_inv_*` (rol, días) — solo owner; se ve una vez |
 | POST | `/invitations/redeem` | **Público** (rate-limited): token + handle + nombre → key `ns_u_*` una vez |
 | GET | `/keys` | Keys del llamante (sin secretos) — incluye `approval` por key |
 | POST | `/keys` | Emite key propia — en claro una sola vez. `{"approval": true}` marca la key como **staged-write**: todo lo que escriba cae en la cola de `/approvals/pending` en vez de entrar al recall directo (para agentes externos como Muse/Qwen). CLI: `nous keys create --approval` |
+| PATCH | `/keys/{ref}` | Actualiza key propia: `name`, `workspace_default_id`, `approval` — solo las propias. CLI: `nous keys update <ref> --user <handle>` |
 | DELETE | `/keys/{ref}` | Revoca por UUID o prefijo — solo las propias |
 
 ## Projects (subdivisión del workspace)

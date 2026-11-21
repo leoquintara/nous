@@ -162,6 +162,9 @@ from src.core.proyectos import (
     listar_proyectos as _listar_proyectos_dom,
 )
 from src.core.proyectos import (
+    mover_workspace as _mover_workspace_dom,
+)
+from src.core.proyectos import (
     quitar_miembro as _quitar_miembro_dom,
 )
 from src.core.reranker import ReordenadorLocal
@@ -2799,6 +2802,35 @@ async def quitar_miembro(
     return {"handle": handle, "expulsado": True}
 
 
+async def _agregar_miembro_workspace(
+    handle: str,
+    rol: str = "member",
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Incorpora un usuario existente al workspace (solo owner).
+
+    La invitación crea usuarios nuevos; esta vía da acceso a una
+    identidad ya registrada — p. ej. un agente con usuario propio
+    que también necesita ver otro workspace.
+    """
+    ctx = await _ctx_owner_en(workspace)
+    await idn.agregar_miembro_workspace(
+        obtener_engine(), ctx.workspace_id, handle, rol
+    )
+    return {"handle": handle, "rol": rol}
+
+
+@mcp_server.tool()
+@ingles
+async def incorporar_miembro(
+    handle: str,
+    rol: str = "member",
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Deprecated alias — use ``add_member`` instead."""
+    return await _agregar_miembro_workspace(handle, rol, workspace)
+
+
 # ---------------------------------------------------------------------
 # ADR-003 — patrones neurocognitivos: intenciones prospectivas,
 # consolidación-sueño, olvido reversible y minería de scripts.
@@ -4404,6 +4436,55 @@ async def aprobar_pendientes(
     return await _aprobar_pendientes(workspace)
 
 
+async def _sustituir_evento(
+    evento_id: str,
+    reemplazado_por: str,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Marca un evento como reemplazado por otro ya existente.
+
+    Supersede retroactivo: ``recordar`` solo enlaza al crear; este
+    impl ata el nudo después — el viejo queda para arqueología y el
+    nuevo queda como cabeza de la cadena.
+    """
+    ctx = await _ctx_escritura(workspace)
+    try:
+        viejo_id = uuid.UUID(str(evento_id))
+    except (ValueError, AttributeError) as e:
+        raise ErrorValidacion(f"event_id is not a valid UUID: {evento_id!r}") from e
+    try:
+        nuevo_id = uuid.UUID(str(reemplazado_por))
+    except (ValueError, AttributeError) as e:
+        raise ErrorValidacion(
+            f"superseded_by is not a valid UUID: {reemplazado_por!r}"
+        ) from e
+    if viejo_id == nuevo_id:
+        raise ErrorValidacion("an event cannot supersede itself")
+    async with get_session(obtener_engine()) as session:
+        repo = EventoRepository(session, ctx)
+        if await repo.obtener(viejo_id) is None:
+            raise ErrorValidacion(f"event to supersede not found: {evento_id}")
+        if await repo.obtener(nuevo_id) is None:
+            raise ErrorValidacion(
+                f"replacement event not found: {reemplazado_por}"
+            )
+        await repo.marcar_reemplazado(viejo_id, nuevo_id)
+        await session.commit()
+        _invalidar_recall()
+    return {"id": str(viejo_id), "superseded_by": str(nuevo_id)}
+
+
+@mcp_server.tool()
+@ingles
+async def sustituir_evento(
+    evento_id: str,
+    reemplazado_por: str,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Deprecated alias — use ``supersede_event`` instead."""
+    return await _sustituir_evento(evento_id, reemplazado_por, workspace)
+
+
 # ── Projects (spec 2026-10-30) ────────────────────────────────────
 # Implementación interna ES — los contratos públicos canónicos son
 # las tools EN de tools_en.py; no hay alias ES porque la feature es
@@ -4522,6 +4603,31 @@ async def _asignar_proyecto(
     )
     _invalidar_recall()
     return {"moved": resultado["moved"], "project": resultado["destino"]}
+
+
+async def _mover_eventos(
+    a_workspace: str,
+    project: str | None = None,
+    evento_ids: list[str] | None = None,
+    query: str | None = None,
+    desde: int | None = None,
+    hasta: int | None = None,
+    workspace: str | None = None,
+) -> dict[str, Any]:
+    """Mueve eventos a otro workspace — reorg cruzada."""
+    ctx = await _ctx_escritura(workspace)
+    resultado = await _mover_workspace_dom(
+        obtener_engine(),
+        ctx,
+        a_workspace,
+        project,
+        evento_ids,
+        query,
+        desde,
+        hasta,
+    )
+    _invalidar_recall()
+    return resultado
 
 
 # ── Catálogo de skills/agentes (nous skills) ────────────────────────
